@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,7 @@
 namespace folly {
 namespace fibers {
 
-inline EventBaseLoopController::EventBaseLoopController()
-    : callback_(*this), aliveWeak_(destructionCallback_.getWeak()) {}
+inline EventBaseLoopController::EventBaseLoopController() : callback_(*this) {}
 
 inline EventBaseLoopController::~EventBaseLoopController() {
   callback_.cancelLoopCallback();
@@ -38,8 +37,6 @@ inline void EventBaseLoopController::attachEventBase(
   }
 
   eventBase_ = &eventBase;
-  eventBase_->runOnDestruction(&destructionCallback_);
-
   eventBaseAttached_ = true;
 
   if (awaitingScheduling_) {
@@ -59,15 +56,11 @@ inline void EventBaseLoopController::schedule() {
     // Schedule it to run in current iteration.
 
     if (!eventBaseKeepAlive_) {
-      eventBaseKeepAlive_ = eventBase_->getKeepAliveToken();
+      eventBaseKeepAlive_ = getKeepAliveToken(eventBase_);
     }
     eventBase_->getEventBase().runInLoop(&callback_, true);
     awaitingScheduling_ = false;
   }
-}
-
-inline void EventBaseLoopController::cancel() {
-  callback_.cancelLoopCallback();
 }
 
 inline void EventBaseLoopController::runLoop() {
@@ -77,10 +70,12 @@ inline void EventBaseLoopController::runLoop() {
     if (!fm_->hasTasks()) {
       return;
     }
-    eventBaseKeepAlive_ = eventBase_->getKeepAliveToken();
+    eventBaseKeepAlive_ = getKeepAliveToken(eventBase_);
   }
   if (loopRunner_) {
-    loopRunner_->run([&] { fm_->loopUntilNoReadyImpl(); });
+    if (fm_->hasReadyTasks()) {
+      loopRunner_->run([&] { fm_->loopUntilNoReadyImpl(); });
+    }
   } else {
     fm_->loopUntilNoReadyImpl();
   }
@@ -89,8 +84,7 @@ inline void EventBaseLoopController::runLoop() {
   }
 }
 
-inline void EventBaseLoopController::scheduleThreadSafe(
-    std::function<bool()> func) {
+inline void EventBaseLoopController::scheduleThreadSafe() {
   /* The only way we could end up here is if
      1) Fiber thread creates a fiber that awaits (which means we must
         have already attached, fiber thread wouldn't be running).
@@ -98,31 +92,22 @@ inline void EventBaseLoopController::scheduleThreadSafe(
      3) We fulfill the promise from the other thread. */
   assert(eventBaseAttached_);
 
-  auto alive = aliveWeak_.lock();
+  eventBase_->runInEventBaseThread(
+      [this, eventBaseKeepAlive = getKeepAliveToken(eventBase_)]() {
+        if (fm_->shouldRunLoopRemote()) {
+          return runLoop();
+        }
 
-  if (func() && alive) {
-    auto aliveWeak = aliveWeak_;
-    eventBase_->runInEventBaseThread([this, aliveWeak]() {
-      if (!aliveWeak.expired()) {
-        runLoop();
-      }
-    });
-  }
+        if (!fm_->hasTasks()) {
+          eventBaseKeepAlive_.reset();
+        }
+      });
 }
 
-inline void EventBaseLoopController::timedSchedule(
-    std::function<void()> func,
-    TimePoint time) {
+inline HHWheelTimer& EventBaseLoopController::timer() {
   assert(eventBaseAttached_);
 
-  // We want upper bound for the cast, thus we just add 1
-  auto delay_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(time - Clock::now())
-          .count() +
-      1;
-  // If clock is not monotonic
-  delay_ms = std::max<decltype(delay_ms)>(delay_ms, 0);
-  eventBase_->tryRunAfterDelay(func, uint32_t(delay_ms));
+  return eventBase_->timer();
 }
-}
-} // folly::fibers
+} // namespace fibers
+} // namespace folly

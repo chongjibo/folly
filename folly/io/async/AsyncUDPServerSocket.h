@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 #pragma once
 
-#include <folly/io/IOBufQueue.h>
 #include <folly/Memory.h>
+#include <folly/io/IOBufQueue.h>
 #include <folly/io/async/AsyncUDPSocket.h>
 #include <folly/io/async/EventBase.h>
 
@@ -35,8 +35,8 @@ namespace folly {
  *       more than 1 packet will not work because they will end up with
  *       different event base to process.
  */
-class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
-                           , public AsyncSocketBase {
+class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback,
+                             public AsyncSocketBase {
  public:
   class Callback {
    public:
@@ -44,25 +44,39 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
      * Invoked when we start reading data from socket. It is invoked in
      * each acceptors/listeners event base thread.
      */
-     virtual void onListenStarted() noexcept = 0;
+    virtual void onListenStarted() noexcept = 0;
 
     /**
      * Invoked when the server socket is closed. It is invoked in each
      * acceptors/listeners event base thread.
      */
-     virtual void onListenStopped() noexcept = 0;
+    virtual void onListenStopped() noexcept = 0;
+
+    /**
+     * Invoked when the server socket is paused. It is invoked in each
+     * acceptors/listeners event base thread.
+     */
+    virtual void onListenPaused() noexcept {}
+
+    /**
+     * Invoked when the server socket is resumed. It is invoked in each
+     * acceptors/listeners event base thread.
+     */
+    virtual void onListenResumed() noexcept {}
 
     /**
      * Invoked when a new packet is received
      */
     virtual void onDataAvailable(
-      std::shared_ptr<AsyncUDPSocket> socket,
-      const folly::SocketAddress& addr,
-      std::unique_ptr<folly::IOBuf> buf,
-      bool truncated) noexcept = 0;
+        std::shared_ptr<AsyncUDPSocket> socket,
+        const folly::SocketAddress& addr,
+        std::unique_ptr<folly::IOBuf> buf,
+        bool truncated) noexcept = 0;
 
     virtual ~Callback() = default;
   };
+
+  enum class DispatchMechanism { RoundRobin, ClientAddressHash };
 
   /**
    * Create a new UDP server socket
@@ -71,13 +85,13 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
    * If packet are larger than this value, as per UDP protocol, remaining data
    * is dropped and you get `truncated = true` in onDataAvailable callback
    */
-  explicit AsyncUDPServerSocket(EventBase* evb, size_t sz = 1500)
-      : evb_(evb),
-        packetSize_(sz),
-        nextListener_(0) {
-  }
+  explicit AsyncUDPServerSocket(
+      EventBase* evb,
+      size_t sz = 1500,
+      DispatchMechanism dm = DispatchMechanism::RoundRobin)
+      : evb_(evb), packetSize_(sz), dispatchMechanism_(dm), nextListener_(0) {}
 
-  ~AsyncUDPServerSocket() {
+  ~AsyncUDPServerSocket() override {
     if (socket_) {
       close();
     }
@@ -88,6 +102,7 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
 
     socket_ = std::make_shared<AsyncUDPSocket>(evb_);
     socket_->setReusePort(reusePort_);
+    socket_->setReuseAddr(reuseAddr_);
     socket_->bind(addy);
   }
 
@@ -95,12 +110,16 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
     reusePort_ = reusePort;
   }
 
+  void setReuseAddr(bool reuseAddr) {
+    reuseAddr_ = reuseAddr;
+  }
+
   folly::SocketAddress address() const {
     CHECK(socket_);
     return socket_->address();
   }
 
-  void getAddress(SocketAddress* a) const {
+  void getAddress(SocketAddress* a) const override {
     *a = address();
   }
 
@@ -114,12 +133,11 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
   void listen() {
     CHECK(socket_) << "Need to bind before listening";
 
-    for (auto& listener: listeners_) {
+    for (auto& listener : listeners_) {
       auto callback = listener.second;
 
-      listener.first->runInEventBaseThread([callback] () mutable {
-        callback->onListenStarted();
-      });
+      listener.first->runInEventBaseThread(
+          [callback]() mutable { callback->onListenStarted(); });
     }
 
     socket_->resumeRead(this);
@@ -127,7 +145,12 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
 
   int getFD() const {
     CHECK(socket_) << "Need to bind before getting FD";
-    return socket_->getFD();
+    return socket_->getNetworkSocket().toFd();
+  }
+
+  NetworkSocket getNetworkSocket() const {
+    CHECK(socket_) << "Need to bind before getting Network Socket";
+    return socket_->getNetworkSocket();
   }
 
   void close() {
@@ -136,19 +159,46 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
     socket_.reset();
   }
 
-  EventBase* getEventBase() const {
+  EventBase* getEventBase() const override {
     return evb_;
+  }
+
+  /**
+   * Pauses accepting datagrams on the underlying socket.
+   */
+  void pauseAccepting() {
+    socket_->pauseRead();
+    for (auto& listener : listeners_) {
+      auto callback = listener.second;
+
+      listener.first->runInEventBaseThread(
+          [callback]() mutable { callback->onListenPaused(); });
+    }
+  }
+
+  /**
+   * Starts accepting datagrams once again.
+   */
+  void resumeAccepting() {
+    socket_->resumeRead(this);
+    for (auto& listener : listeners_) {
+      auto callback = listener.second;
+
+      listener.first->runInEventBaseThread(
+          [callback]() mutable { callback->onListenResumed(); });
+    }
   }
 
  private:
   // AsyncUDPSocket::ReadCallback
-  void getReadBuffer(void** buf, size_t* len) noexcept {
+  void getReadBuffer(void** buf, size_t* len) noexcept override {
     std::tie(*buf, *len) = buf_.preallocate(packetSize_, packetSize_);
   }
 
-  void onDataAvailable(const folly::SocketAddress& clientAddress,
-                       size_t len,
-                       bool truncated) noexcept {
+  void onDataAvailable(
+      const folly::SocketAddress& clientAddress,
+      size_t len,
+      bool truncated) noexcept override {
     buf_.postallocate(len);
     auto data = buf_.split(len);
 
@@ -158,44 +208,56 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
       return;
     }
 
-    if (nextListener_ >= listeners_.size()) {
-      nextListener_ = 0;
+    uint32_t listenerId = 0;
+    uint64_t client_hash_lo = 0;
+    switch (dispatchMechanism_) {
+      case DispatchMechanism::ClientAddressHash:
+        // Hash base on clientAddress.
+        // 1. This logic is samilar to: clientAddress.hash() % listeners_.size()
+        //    But runs faster as it use multiply and shift instead of division.
+        // 2. Only use the lower 32 bit from the address hash result for faster
+        //    computation.
+        client_hash_lo = static_cast<uint32_t>(clientAddress.hash());
+        listenerId = (client_hash_lo * listeners_.size()) >> 32;
+        break;
+      case DispatchMechanism::RoundRobin: // round robin is default.
+      default:
+        if (nextListener_ >= listeners_.size()) {
+          nextListener_ = 0;
+        }
+        listenerId = nextListener_;
+        ++nextListener_;
+        break;
     }
 
-    auto client = clientAddress;
-    auto callback = listeners_[nextListener_].second;
-    auto socket = socket_;
+    auto callback = listeners_[listenerId].second;
 
     // Schedule it in the listener's eventbase
     // XXX: Speed this up
-    auto f = [
-      socket,
-      client,
-      callback,
-      data = std::move(data),
-      truncated
-    ]() mutable {
+    auto f = [socket = socket_,
+              client = clientAddress,
+              callback,
+              data = std::move(data),
+              truncated]() mutable {
       callback->onDataAvailable(socket, client, std::move(data), truncated);
     };
 
-    listeners_[nextListener_].first->runInEventBaseThread(std::move(f));
-    ++nextListener_;
+    listeners_[listenerId].first->runInEventBaseThread(std::move(f));
   }
 
-  void onReadError(const AsyncSocketException& ex) noexcept {
+  void onReadError(const AsyncSocketException& ex) noexcept override {
     LOG(ERROR) << ex.what();
 
     // Lets register to continue listening for packets
     socket_->resumeRead(this);
   }
 
-  void onReadClosed() noexcept {
-    for (auto& listener: listeners_) {
+  void onReadClosed() noexcept override {
+    for (auto& listener : listeners_) {
       auto callback = listener.second;
 
-      listener.first->runInEventBaseThread([callback] () mutable {
-        callback->onListenStopped();
-      });
+      listener.first->runInEventBaseThread(
+          [callback]() mutable { callback->onListenStopped(); });
     }
   }
 
@@ -208,6 +270,8 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
   typedef std::pair<EventBase*, Callback*> Listener;
   std::vector<Listener> listeners_;
 
+  DispatchMechanism dispatchMechanism_;
+
   // Next listener to send packet to
   uint32_t nextListener_;
 
@@ -215,6 +279,7 @@ class AsyncUDPServerSocket : private AsyncUDPSocket::ReadCallback
   folly::IOBufQueue buf_;
 
   bool reusePort_{false};
+  bool reuseAddr_{false};
 };
 
-} // Namespace
+} // namespace folly

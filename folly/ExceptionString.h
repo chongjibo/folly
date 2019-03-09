@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ namespace folly {
  * defined.
  */
 inline fbstring exceptionStr(const std::exception& e) {
-#ifdef FOLLY_HAS_RTTI
+#if FOLLY_HAS_RTTI
   fbstring rv(demangle(typeid(e)));
   rv += ": ";
 #else
@@ -41,27 +41,26 @@ inline fbstring exceptionStr(const std::exception& e) {
   return rv;
 }
 
-// Empirically, this indicates if the runtime supports
-// std::exception_ptr, as not all (arm, for instance) do.
-#if defined(__GNUC__) && defined(__GCC_ATOMIC_INT_LOCK_FREE) && \
-    __GCC_ATOMIC_INT_LOCK_FREE > 1
 inline fbstring exceptionStr(std::exception_ptr ep) {
-  try {
-    std::rethrow_exception(ep);
-  } catch (const std::exception& e) {
-    return exceptionStr(e);
-  } catch (...) {
-    return "<unknown exception>";
+  if (!kHasExceptions) {
+    return "Exception (catch unavailable)";
   }
+  return catch_exception(
+      [&]() -> fbstring {
+        return catch_exception<std::exception const&>(
+            [&]() -> fbstring { std::rethrow_exception(ep); },
+            [](auto&& e) { return exceptionStr(e); });
+      },
+      []() -> fbstring { return "<unknown exception>"; });
 }
-#endif
 
 template <typename E>
 auto exceptionStr(const E& e) -> typename std::
     enable_if<!std::is_base_of<std::exception, E>::value, fbstring>::type {
-#ifdef FOLLY_HAS_RTTI
+#if FOLLY_HAS_RTTI
   return demangle(typeid(e));
 #else
+  (void)e;
   return "Exception (no RTTI available)";
 #endif
 }

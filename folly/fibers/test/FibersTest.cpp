@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,38 +42,31 @@ using folly::Try;
 
 TEST(FiberManager, batonTimedWaitTimeout) {
   bool taskAdded = false;
-  size_t iterations = 0;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
+  std::chrono::steady_clock::time_point start;
 
   auto loopFunc = [&]() {
     if (!taskAdded) {
       manager.addTask([&]() {
         Baton baton;
 
-        auto res = baton.timed_wait(std::chrono::milliseconds(230));
+        start = std::chrono::steady_clock::now();
+        constexpr auto kTimeout = std::chrono::milliseconds(230);
+        auto res = baton.try_wait_for(kTimeout);
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
 
         EXPECT_FALSE(res);
-        EXPECT_EQ(5, iterations);
-
-        loopController.stop();
-      });
-      manager.addTask([&]() {
-        Baton baton;
-
-        auto res = baton.timed_wait(std::chrono::milliseconds(130));
-
-        EXPECT_FALSE(res);
-        EXPECT_EQ(3, iterations);
+        EXPECT_LE(kTimeout, elapsedMs);
 
         loopController.stop();
       });
       taskAdded = true;
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      iterations++;
     }
   };
 
@@ -85,7 +78,7 @@ TEST(FiberManager, batonTimedWaitPost) {
   size_t iterations = 0;
   Baton* baton_ptr;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -95,7 +88,7 @@ TEST(FiberManager, batonTimedWaitPost) {
         Baton baton;
         baton_ptr = &baton;
 
-        auto res = baton.timed_wait(std::chrono::milliseconds(130));
+        auto res = baton.try_wait_for(std::chrono::milliseconds(130));
 
         EXPECT_TRUE(res);
         EXPECT_EQ(2, iterations);
@@ -120,7 +113,7 @@ TEST(FiberManager, batonTimedWaitTimeoutEvb) {
 
   folly::EventBase evb;
 
-  FiberManager manager(folly::make_unique<EventBaseLoopController>());
+  FiberManager manager(std::make_unique<EventBaseLoopController>());
   dynamic_cast<EventBaseLoopController&>(manager.loopController())
       .attachEventBase(evb);
 
@@ -128,7 +121,7 @@ TEST(FiberManager, batonTimedWaitTimeoutEvb) {
     Baton baton;
 
     auto start = EventBaseLoopController::Clock::now();
-    auto res = baton.timed_wait(std::chrono::milliseconds(timeout_ms));
+    auto res = baton.try_wait_for(std::chrono::milliseconds(timeout_ms));
     auto finish = EventBaseLoopController::Clock::now();
 
     EXPECT_FALSE(res);
@@ -159,7 +152,7 @@ TEST(FiberManager, batonTimedWaitPostEvb) {
 
   folly::EventBase evb;
 
-  FiberManager manager(folly::make_unique<EventBaseLoopController>());
+  FiberManager manager(std::make_unique<EventBaseLoopController>());
   dynamic_cast<EventBaseLoopController&>(manager.loopController())
       .attachEventBase(evb);
 
@@ -170,7 +163,7 @@ TEST(FiberManager, batonTimedWaitPostEvb) {
       evb.tryRunAfterDelay([&]() { baton.post(); }, 100);
 
       auto start = EventBaseLoopController::Clock::now();
-      auto res = baton.timed_wait(std::chrono::milliseconds(130));
+      auto res = baton.try_wait_for(std::chrono::milliseconds(130));
       auto finish = EventBaseLoopController::Clock::now();
 
       EXPECT_TRUE(res);
@@ -192,7 +185,7 @@ TEST(FiberManager, batonTimedWaitPostEvb) {
 }
 
 TEST(FiberManager, batonTryWait) {
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
 
   // Check if try_wait and post work as expected
   Baton b;
@@ -224,8 +217,37 @@ TEST(FiberManager, batonTryWait) {
   manager.loopUntilNoReady();
 }
 
+TEST(FiberManager, batonTryWaitConsistent) {
+  folly::EventBase evb;
+  struct ExpectedException {};
+  auto& fm = getFiberManager(evb);
+
+  // Check if try_wait and post have a consistent behavior on a timed out
+  // baton
+  Baton b;
+
+  b.try_wait_for(std::chrono::milliseconds(1));
+  b.try_wait(); // returns false
+
+  b.post();
+  EXPECT_TRUE(b.try_wait());
+  b.reset();
+
+  fm.addTask([&]() {
+    b.try_wait_for(std::chrono::milliseconds(1));
+    b.try_wait(); // returns false
+
+    b.post();
+    EXPECT_TRUE(b.try_wait());
+  });
+
+  while (fm.hasTasks()) {
+    evb.loopOnce();
+  }
+}
+
 TEST(FiberManager, genericBatonFiberWait) {
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
 
   GenericBaton b;
   bool fiberRunning = false;
@@ -254,7 +276,7 @@ TEST(FiberManager, genericBatonFiberWait) {
 }
 
 TEST(FiberManager, genericBatonThreadWait) {
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   GenericBaton b;
   std::atomic<bool> threadWaiting(false);
 
@@ -284,7 +306,7 @@ TEST(FiberManager, addTasksNoncopyable) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -297,7 +319,7 @@ TEST(FiberManager, addTasksNoncopyable) {
             await([&pendingFibers](Promise<int> promise) {
               pendingFibers.push_back(std::move(promise));
             });
-            return folly::make_unique<int>(i * 2 + 1);
+            return std::make_unique<int>(i * 2 + 1);
           });
         }
 
@@ -330,21 +352,19 @@ TEST(FiberManager, awaitThrow) {
   getFiberManager(evb)
       .addTaskFuture([&] {
         EXPECT_THROW(
-          await([](Promise<int> p) {
+            await([](Promise<int> p) {
               p.setValue(42);
               throw ExpectedException();
             }),
-          ExpectedException
-        );
+            ExpectedException);
 
         EXPECT_THROW(
-          await([&](Promise<int> p) {
-              evb.runInEventBaseThread([p = std::move(p)]() mutable {
-                  p.setValue(42);
-                });
+            await([&](Promise<int> p) {
+              evb.runInEventBaseThread(
+                  [p = std::move(p)]() mutable { p.setValue(42); });
               throw ExpectedException();
             }),
-          ExpectedException);
+            ExpectedException);
       })
       .waitVia(&evb);
 }
@@ -353,7 +373,7 @@ TEST(FiberManager, addTasksThrow) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -405,7 +425,7 @@ TEST(FiberManager, addTasksVoid) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -414,7 +434,7 @@ TEST(FiberManager, addTasksVoid) {
       manager.addTask([&]() {
         std::vector<std::function<void()>> funcs;
         for (size_t i = 0; i < 3; ++i) {
-          funcs.push_back([i, &pendingFibers]() {
+          funcs.push_back([&pendingFibers]() {
             await([&pendingFibers](Promise<int> promise) {
               pendingFibers.push_back(std::move(promise));
             });
@@ -447,7 +467,7 @@ TEST(FiberManager, addTasksVoidThrow) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -497,7 +517,7 @@ TEST(FiberManager, addTasksReserve) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -587,7 +607,7 @@ TEST(FiberManager, forEach) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -630,7 +650,7 @@ TEST(FiberManager, collectN) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -670,7 +690,7 @@ TEST(FiberManager, collectNThrow) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -679,7 +699,7 @@ TEST(FiberManager, collectNThrow) {
       manager.addTask([&]() {
         std::vector<std::function<int()>> funcs;
         for (size_t i = 0; i < 3; ++i) {
-          funcs.push_back([i, &pendingFibers]() -> size_t {
+          funcs.push_back([&pendingFibers]() -> size_t {
             await([&pendingFibers](Promise<int> promise) {
               pendingFibers.push_back(std::move(promise));
             });
@@ -709,7 +729,7 @@ TEST(FiberManager, collectNVoid) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -718,7 +738,7 @@ TEST(FiberManager, collectNVoid) {
       manager.addTask([&]() {
         std::vector<std::function<void()>> funcs;
         for (size_t i = 0; i < 3; ++i) {
-          funcs.push_back([i, &pendingFibers]() {
+          funcs.push_back([&pendingFibers]() {
             await([&pendingFibers](Promise<int> promise) {
               pendingFibers.push_back(std::move(promise));
             });
@@ -745,7 +765,7 @@ TEST(FiberManager, collectNVoidThrow) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -754,7 +774,7 @@ TEST(FiberManager, collectNVoidThrow) {
       manager.addTask([&]() {
         std::vector<std::function<void()>> funcs;
         for (size_t i = 0; i < 3; ++i) {
-          funcs.push_back([i, &pendingFibers]() {
+          funcs.push_back([&pendingFibers]() {
             await([&pendingFibers](Promise<int> promise) {
               pendingFibers.push_back(std::move(promise));
             });
@@ -784,7 +804,7 @@ TEST(FiberManager, collectAll) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -823,7 +843,7 @@ TEST(FiberManager, collectAllVoid) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -832,7 +852,7 @@ TEST(FiberManager, collectAllVoid) {
       manager.addTask([&]() {
         std::vector<std::function<void()>> funcs;
         for (size_t i = 0; i < 3; ++i) {
-          funcs.push_back([i, &pendingFibers]() {
+          funcs.push_back([&pendingFibers]() {
             await([&pendingFibers](Promise<int> promise) {
               pendingFibers.push_back(std::move(promise));
             });
@@ -858,7 +878,7 @@ TEST(FiberManager, collectAny) {
   std::vector<Promise<int>> pendingFibers;
   bool taskAdded = false;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -904,21 +924,27 @@ namespace {
 void expectMainContext(bool& ran, int* mainLocation, int* fiberLocation) {
   int here;
   /* 2 pages is a good guess */
-  constexpr ssize_t DISTANCE = 0x2000 / sizeof(int);
+  constexpr auto const kHereToFiberMaxDist = 0x2000 / sizeof(int);
+
+  // With ASAN's detect_stack_use_after_return=1, this must be much larger
+  // I measured 410028 on x86_64, so allow for quadruple that, just in case.
+  constexpr auto const kHereToMainMaxDist =
+      folly::kIsSanitizeAddress ? 4 * 410028 : kHereToFiberMaxDist;
+
   if (fiberLocation) {
-    EXPECT_TRUE(std::abs(&here - fiberLocation) > DISTANCE);
+    EXPECT_GT(std::abs(&here - fiberLocation), kHereToFiberMaxDist);
   }
   if (mainLocation) {
-    EXPECT_TRUE(std::abs(&here - mainLocation) < DISTANCE);
+    EXPECT_LT(std::abs(&here - mainLocation), kHereToMainMaxDist);
   }
 
   EXPECT_FALSE(ran);
   ran = true;
 }
-}
+} // namespace
 
 TEST(FiberManager, runInMainContext) {
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -954,7 +980,7 @@ TEST(FiberManager, runInMainContext) {
 }
 
 TEST(FiberManager, addTaskFinally) {
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -981,7 +1007,7 @@ TEST(FiberManager, fibersPoolWithinLimit) {
   FiberManager::Options opts;
   opts.maxFibersPoolSize = 5;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>(), opts);
+  FiberManager manager(std::make_unique<SimpleLoopController>(), opts);
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -1010,7 +1036,7 @@ TEST(FiberManager, fibersPoolOverLimit) {
   FiberManager::Options opts;
   opts.maxFibersPoolSize = 5;
 
-  FiberManager manager(folly::make_unique<SimpleLoopController>(), opts);
+  FiberManager manager(std::make_unique<SimpleLoopController>(), opts);
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -1032,7 +1058,7 @@ TEST(FiberManager, fibersPoolOverLimit) {
 }
 
 TEST(FiberManager, remoteFiberBasic) {
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -1070,7 +1096,7 @@ TEST(FiberManager, remoteFiberBasic) {
 }
 
 TEST(FiberManager, addTaskRemoteBasic) {
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
 
   int result[2];
   result[0] = result[1] = 0;
@@ -1111,7 +1137,7 @@ TEST(FiberManager, addTaskRemoteBasic) {
 
 TEST(FiberManager, remoteHasTasks) {
   size_t counter = 0;
-  FiberManager fm(folly::make_unique<SimpleLoopController>());
+  FiberManager fm(std::make_unique<SimpleLoopController>());
   std::thread remote([&]() { fm.addTaskRemote([&]() { ++counter; }); });
 
   remote.join();
@@ -1127,7 +1153,7 @@ TEST(FiberManager, remoteHasTasks) {
 TEST(FiberManager, remoteHasReadyTasks) {
   int result = 0;
   folly::Optional<Promise<int>> savedPromise;
-  FiberManager fm(folly::make_unique<SimpleLoopController>());
+  FiberManager fm(std::make_unique<SimpleLoopController>());
   std::thread remote([&]() {
     fm.addTaskRemote([&]() {
       result = await(
@@ -1154,8 +1180,7 @@ TEST(FiberManager, remoteHasReadyTasks) {
 
 template <typename Data>
 void testFiberLocal() {
-  FiberManager fm(
-      LocalType<Data>(), folly::make_unique<SimpleLoopController>());
+  FiberManager fm(LocalType<Data>(), std::make_unique<SimpleLoopController>());
 
   fm.addTask([]() {
     EXPECT_EQ(42, local<Data>().value);
@@ -1230,7 +1255,7 @@ TEST(FiberManager, fiberLocalDestructor) {
   };
 
   FiberManager fm(
-      LocalType<CrazyData>(), folly::make_unique<SimpleLoopController>());
+      LocalType<CrazyData>(), std::make_unique<SimpleLoopController>());
 
   fm.addTask([]() { local<CrazyData>().data = 41; });
 
@@ -1239,7 +1264,7 @@ TEST(FiberManager, fiberLocalDestructor) {
 }
 
 TEST(FiberManager, yieldTest) {
-  FiberManager manager(folly::make_unique<SimpleLoopController>());
+  FiberManager manager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(manager.loopController());
 
@@ -1260,7 +1285,7 @@ TEST(FiberManager, yieldTest) {
 }
 
 TEST(FiberManager, RequestContext) {
-  FiberManager fm(folly::make_unique<SimpleLoopController>());
+  FiberManager fm(std::make_unique<SimpleLoopController>());
 
   bool checkRun1 = false;
   bool checkRun2 = false;
@@ -1311,9 +1336,9 @@ TEST(FiberManager, RequestContext) {
         });
   }
   {
-    folly::RequestContext::setContext(nullptr);
+    folly::RequestContextScopeGuard rctx;
     fm.addTask([&]() {
-      folly::RequestContextScopeGuard rctx;
+      folly::RequestContextScopeGuard rctx2;
       auto rcontext4 = folly::RequestContext::get();
       baton4.wait();
       EXPECT_EQ(rcontext4, folly::RequestContext::get());
@@ -1358,7 +1383,7 @@ TEST(FiberManager, resizePeriodically) {
   opts.fibersPoolResizePeriodMs = 300;
   opts.maxFibersPoolSize = 5;
 
-  FiberManager manager(folly::make_unique<EventBaseLoopController>(), opts);
+  FiberManager manager(std::make_unique<EventBaseLoopController>(), opts);
 
   folly::EventBase evb;
   dynamic_cast<EventBaseLoopController&>(manager.loopController())
@@ -1416,7 +1441,7 @@ TEST(FiberManager, resizePeriodically) {
 }
 
 TEST(FiberManager, batonWaitTimeoutHandler) {
-  FiberManager manager(folly::make_unique<EventBaseLoopController>());
+  FiberManager manager(std::make_unique<EventBaseLoopController>());
 
   folly::EventBase evb;
   dynamic_cast<EventBaseLoopController&>(manager.loopController())
@@ -1448,7 +1473,7 @@ TEST(FiberManager, batonWaitTimeoutHandler) {
 }
 
 TEST(FiberManager, batonWaitTimeoutMany) {
-  FiberManager manager(folly::make_unique<EventBaseLoopController>());
+  FiberManager manager(std::make_unique<EventBaseLoopController>());
 
   folly::EventBase evb;
   dynamic_cast<EventBaseLoopController&>(manager.loopController())
@@ -1478,7 +1503,7 @@ TEST(FiberManager, batonWaitTimeoutMany) {
 }
 
 TEST(FiberManager, remoteFutureTest) {
-  FiberManager fiberManager(folly::make_unique<SimpleLoopController>());
+  FiberManager fiberManager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(fiberManager.loopController());
 
@@ -1487,8 +1512,8 @@ TEST(FiberManager, remoteFutureTest) {
   auto f1 = fiberManager.addTaskFuture([&]() { return testValue1; });
   auto f2 = fiberManager.addTaskRemoteFuture([&]() { return testValue2; });
   loopController.loop([&]() { loopController.stop(); });
-  auto v1 = f1.get();
-  auto v2 = f2.get();
+  auto v1 = std::move(f1).get();
+  auto v2 = std::move(f2).get();
 
   EXPECT_EQ(v1, testValue1);
   EXPECT_EQ(v2, testValue2);
@@ -1496,7 +1521,7 @@ TEST(FiberManager, remoteFutureTest) {
 
 // Test that a void function produes a Future<Unit>.
 TEST(FiberManager, remoteFutureVoidUnitTest) {
-  FiberManager fiberManager(folly::make_unique<SimpleLoopController>());
+  FiberManager fiberManager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(fiberManager.loopController());
 
@@ -1546,58 +1571,61 @@ TEST(FiberManager, nestedFiberManagers) {
 }
 
 TEST(FiberManager, semaphore) {
-  constexpr size_t kTasks = 10;
-  constexpr size_t kIterations = 10000;
-  constexpr size_t kNumTokens = 10;
+  static constexpr size_t kTasks = 10;
+  static constexpr size_t kIterations = 10000;
+  static constexpr size_t kNumTokens = 10;
+  static constexpr size_t kNumThreads = 16;
 
   Semaphore sem(kNumTokens);
-  int counterA = 0;
-  int counterB = 0;
 
-  auto task = [&sem, kTasks, kIterations, kNumTokens](
-      int& counter, folly::fibers::Baton& baton) {
-    FiberManager manager(folly::make_unique<EventBaseLoopController>());
-    folly::EventBase evb;
-    dynamic_cast<EventBaseLoopController&>(manager.loopController())
-        .attachEventBase(evb);
+  struct Worker {
+    explicit Worker(Semaphore& s) : sem(s), t([&] { run(); }) {}
 
-    {
-      std::shared_ptr<folly::EventBase> completionCounter(
-          &evb, [](folly::EventBase* evb) { evb->terminateLoopSoon(); });
+    void run() {
+      FiberManager manager(std::make_unique<EventBaseLoopController>());
+      folly::EventBase evb;
+      dynamic_cast<EventBaseLoopController&>(manager.loopController())
+          .attachEventBase(evb);
 
-      for (size_t i = 0; i < kTasks; ++i) {
-        manager.addTask([&, completionCounter]() {
-          for (size_t j = 0; j < kIterations; ++j) {
-            sem.wait();
-            ++counter;
-            sem.signal();
-            --counter;
+      {
+        std::shared_ptr<folly::EventBase> completionCounter(
+            &evb, [](folly::EventBase* evb_) { evb_->terminateLoopSoon(); });
 
-            EXPECT_LT(counter, kNumTokens);
-            EXPECT_GE(counter, 0);
-          }
-        });
+        for (size_t i = 0; i < kTasks; ++i) {
+          manager.addTask([&, completionCounter]() {
+            for (size_t j = 0; j < kIterations; ++j) {
+              sem.wait();
+              ++counter;
+              sem.signal();
+              --counter;
+
+              EXPECT_LT(counter, kNumTokens);
+              EXPECT_GE(counter, 0);
+            }
+          });
+        }
       }
-
-      baton.wait();
+      evb.loopForever();
     }
-    evb.loopForever();
+
+    Semaphore& sem;
+    int counter{0};
+    std::thread t;
   };
 
-  folly::fibers::Baton batonA;
-  folly::fibers::Baton batonB;
-  std::thread threadA([&] { task(counterA, batonA); });
-  std::thread threadB([&] { task(counterB, batonB); });
+  std::vector<Worker> workers;
+  workers.reserve(kNumThreads);
+  for (size_t i = 0; i < kNumThreads; ++i) {
+    workers.emplace_back(sem);
+  }
 
-  batonA.post();
-  batonB.post();
-  threadA.join();
-  threadB.join();
+  for (auto& worker : workers) {
+    worker.t.join();
+  }
 
-  EXPECT_LT(counterA, kNumTokens);
-  EXPECT_LT(counterB, kNumTokens);
-  EXPECT_GE(counterA, 0);
-  EXPECT_GE(counterB, 0);
+  for (auto& worker : workers) {
+    EXPECT_EQ(0, worker.counter);
+  }
 }
 
 template <typename ExecutorT>
@@ -1614,7 +1642,7 @@ void singleBatchDispatch(ExecutorT& executor, int batchSize, int index) {
 
   auto indexCopy = index;
   auto result = batchDispatcher.add(std::move(indexCopy));
-  EXPECT_EQ(folly::to<std::string>(index), result.get());
+  EXPECT_EQ(folly::to<std::string>(index), std::move(result).get());
 }
 
 TEST(FiberManager, batchDispatchTest) {
@@ -1651,20 +1679,20 @@ folly::Future<std::vector<std::string>> doubleBatchInnerDispatch(
       std::vector<int>,
       std::vector<std::string>,
       ExecutorT>
-  batchDispatcher(executor, [=](std::vector<std::vector<int>>&& batch) {
-    std::vector<std::vector<std::string>> results;
-    int numberOfElements = 0;
-    for (auto& unit : batch) {
-      numberOfElements += unit.size();
-      std::vector<std::string> result;
-      for (auto& element : unit) {
-        result.push_back(folly::to<std::string>(element));
-      }
-      results.push_back(std::move(result));
-    }
-    EXPECT_EQ(totalNumberOfElements, numberOfElements);
-    return results;
-  });
+      batchDispatcher(executor, [=](std::vector<std::vector<int>>&& batch) {
+        std::vector<std::vector<std::string>> results;
+        int numberOfElements = 0;
+        for (auto& unit : batch) {
+          numberOfElements += unit.size();
+          std::vector<std::string> result;
+          for (auto& element : unit) {
+            result.push_back(folly::to<std::string>(element));
+          }
+          results.push_back(std::move(result));
+        }
+        EXPECT_EQ(totalNumberOfElements, numberOfElements);
+        return results;
+      });
 
   return batchDispatcher.add(std::move(input));
 }
@@ -1677,42 +1705,44 @@ void doubleBatchOuterDispatch(
     ExecutorT& executor,
     int totalNumberOfElements,
     int index) {
-  thread_local BatchDispatcher<int, std::string, ExecutorT>
-  batchDispatcher(executor, [=, &executor](std::vector<int>&& batch) {
-    EXPECT_EQ(totalNumberOfElements, batch.size());
-    std::vector<std::string> results;
-    std::vector<folly::Future<std::vector<std::string>>>
-        innerDispatchResultFutures;
+  thread_local BatchDispatcher<int, std::string, ExecutorT> batchDispatcher(
+      executor, [=, &executor](std::vector<int>&& batch) {
+        EXPECT_EQ(totalNumberOfElements, batch.size());
+        std::vector<std::string> results;
+        std::vector<folly::Future<std::vector<std::string>>>
+            innerDispatchResultFutures;
 
-    std::vector<int> group;
-    for (auto unit : batch) {
-      group.push_back(unit);
-      if (group.size() == 5) {
-        auto localGroup = group;
-        group.clear();
+        std::vector<int> group;
+        for (auto unit : batch) {
+          group.push_back(unit);
+          if (group.size() == 5) {
+            auto localGroup = group;
+            group.clear();
 
-        innerDispatchResultFutures.push_back(doubleBatchInnerDispatch(
-            executor, totalNumberOfElements, localGroup));
-      }
-    }
-
-    folly::collectAll(
-        innerDispatchResultFutures.begin(), innerDispatchResultFutures.end())
-        .then([&](
-            std::vector<Try<std::vector<std::string>>> innerDispatchResults) {
-          for (auto& unit : innerDispatchResults) {
-            for (auto& element : unit.value()) {
-              results.push_back(element);
-            }
+            innerDispatchResultFutures.push_back(doubleBatchInnerDispatch(
+                executor, totalNumberOfElements, localGroup));
           }
-        })
-        .get();
-    return results;
-  });
+        }
+
+        folly::collectAllSemiFuture(
+            innerDispatchResultFutures.begin(),
+            innerDispatchResultFutures.end())
+            .toUnsafeFuture()
+            .thenValue([&](std::vector<Try<std::vector<std::string>>>
+                               innerDispatchResults) {
+              for (auto& unit : innerDispatchResults) {
+                for (auto& element : unit.value()) {
+                  results.push_back(element);
+                }
+              }
+            })
+            .get();
+        return results;
+      });
 
   auto indexCopy = index;
   auto result = batchDispatcher.add(std::move(indexCopy));
-  EXPECT_EQ(folly::to<std::string>(index), result.get());
+  EXPECT_EQ(folly::to<std::string>(index), std::move(result).get());
 }
 
 TEST(FiberManager, doubleBatchDispatchTest) {
@@ -1734,7 +1764,7 @@ TEST(FiberManager, doubleBatchDispatchTest) {
 template <typename ExecutorT>
 void batchDispatchExceptionHandling(ExecutorT& executor, int i) {
   thread_local BatchDispatcher<int, int, ExecutorT> batchDispatcher(
-      executor, [=, &executor](std::vector<int> &&) -> std::vector<int> {
+      executor, [](std::vector<int> &&) -> std::vector<int> {
         throw std::runtime_error("Surprise!!");
       });
 
@@ -1918,7 +1948,7 @@ void validateResults(
   EXPECT_EQ(numResultsFilled, expectedNumResults);
 }
 
-} // AtomicBatchDispatcherTesting
+} // namespace AtomicBatchDispatcherTesting
 
 #define SET_UP_TEST_FUNC                                        \
   using namespace AtomicBatchDispatcherTesting;                 \
@@ -2048,19 +2078,19 @@ TEST(FiberManager, VirtualEventBase) {
     folly::ScopedEventBaseThread thread;
 
     auto evb1 =
-        folly::make_unique<folly::VirtualEventBase>(*thread.getEventBase());
+        std::make_unique<folly::VirtualEventBase>(*thread.getEventBase());
     auto& evb2 = thread.getEventBase()->getVirtualEventBase();
 
     getFiberManager(*evb1).addTaskRemote([&] {
       Baton baton;
-      baton.timed_wait(std::chrono::milliseconds{100});
+      baton.try_wait_for(std::chrono::milliseconds{100});
 
       done1 = true;
     });
 
     getFiberManager(evb2).addTaskRemote([&] {
       Baton baton;
-      baton.timed_wait(std::chrono::milliseconds{200});
+      baton.try_wait_for(std::chrono::milliseconds{200});
 
       done2 = true;
     });
@@ -2073,6 +2103,43 @@ TEST(FiberManager, VirtualEventBase) {
     EXPECT_FALSE(done2);
   }
   EXPECT_TRUE(done2);
+}
+
+TEST(TimedMutex, ThreadsAndFibersDontDeadlock) {
+  folly::EventBase evb;
+  auto& fm = getFiberManager(evb);
+  TimedMutex mutex;
+  std::thread testThread([&] {
+    for (int i = 0; i < 100; i++) {
+      mutex.lock();
+      mutex.unlock();
+      {
+        Baton b;
+        b.try_wait_for(std::chrono::milliseconds(1));
+      }
+    }
+  });
+
+  for (int numFibers = 0; numFibers < 100; numFibers++) {
+    fm.addTask([&] {
+      for (int i = 0; i < 20; i++) {
+        mutex.lock();
+        {
+          Baton b;
+          b.try_wait_for(std::chrono::milliseconds(1));
+        }
+        mutex.unlock();
+        {
+          Baton b;
+          b.try_wait_for(std::chrono::milliseconds(1));
+        }
+      }
+    });
+  }
+
+  evb.loop();
+  EXPECT_EQ(0, fm.hasTasks());
+  testThread.join();
 }
 
 TEST(TimedMutex, ThreadFiberDeadlockOrder) {
@@ -2133,19 +2200,34 @@ TEST(TimedMutex, ThreadFiberDeadlockRace) {
   EXPECT_EQ(0, fm.hasTasks());
 }
 
-/**
- * Test that we can properly track fiber stack usage.
- *
- * This functionality can only be enabled when ASAN is disabled, so avoid
- * running this test with ASAN.
- */
+namespace {
+// Checks whether stackHighWatermark is set for non-ASAN builds,
+// and not set for ASAN builds.
 #ifndef FOLLY_SANITIZE_ADDRESS
-TEST(FiberManager, recordStack) {
-  std::thread([] {
+void expectStackHighWatermark(size_t minStackSize, size_t stackHighWatermark) {
+  // Check that we properly accounted fiber stack usage
+  EXPECT_NE(0, stackHighWatermark);
+  EXPECT_LT(minStackSize, stackHighWatermark);
+}
+#else
+void expectStackHighWatermark(size_t, size_t stackHighWatermark) {
+  // For ASAN, stackHighWatermark is not tracked.
+  EXPECT_EQ(0, stackHighWatermark);
+}
+#endif
+} // namespace
+
+/**
+ * Test that we can properly track fiber stack usage, via recordStackEvery
+ * For ASAN builds, it is not recorded.
+ */
+
+TEST(FiberManager, highWaterMarkViaRecordStackEvery) {
+  auto f = [] {
     folly::fibers::FiberManager::Options opts;
     opts.recordStackEvery = 1;
 
-    FiberManager fm(folly::make_unique<SimpleLoopController>(), opts);
+    FiberManager fm(std::make_unique<SimpleLoopController>(), opts);
     auto& loopController =
         dynamic_cast<SimpleLoopController&>(fm.loopController());
 
@@ -2164,9 +2246,123 @@ TEST(FiberManager, recordStack) {
     (void)s;
 
     loopController.loop([&]() { loopController.stop(); });
-
-    // Check that we properly accounted fiber stack usage.
-    EXPECT_LT(n * sizeof(int), fm.stackHighWatermark());
-  }).join();
+    expectStackHighWatermark(n * sizeof(int), fm.stackHighWatermark());
+  };
+  std::thread(f).join();
 }
-#endif
+
+/**
+ * Test that we can properly track fiber stack usage,
+ * via current position estimate. For ASAN builds, it is not recorded.
+ */
+TEST(FiberManager, highWaterMarkViaRecordCurrentPosition) {
+  auto f = [] {
+    FiberManager fm(std::make_unique<SimpleLoopController>());
+    auto& loopController =
+        dynamic_cast<SimpleLoopController&>(fm.loopController());
+
+    static constexpr size_t n = 1000;
+    int s = 0;
+    fm.addTask([&]() {
+      int b[n] = {0};
+      for (size_t i = 0; i < n; ++i) {
+        b[i] = i;
+      }
+      for (size_t i = 0; i + 1 < n; ++i) {
+        s += b[i] * b[i + 1];
+      }
+      // Calls preempt, which calls recordStackPosition.
+      fm.runInMainContext([]() {});
+    });
+
+    (void)s;
+
+    loopController.loop([&]() { loopController.stop(); });
+    expectStackHighWatermark(n * sizeof(int), fm.stackHighWatermark());
+  };
+  std::thread(f).join();
+}
+
+TEST(FiberManager, addTaskEager) {
+  folly::EventBase evb;
+  auto& fm = getFiberManager(evb);
+
+  bool eagerTaskStarted{false};
+  bool eagerTaskDone{false};
+  bool firstTaskDone{false};
+
+  fm.addTask([&] { firstTaskDone = true; });
+
+  fm.addTaskEager([&] {
+    EXPECT_FALSE(firstTaskDone);
+    eagerTaskStarted = true;
+    fm.yield();
+    EXPECT_TRUE(firstTaskDone);
+    eagerTaskDone = true;
+  });
+
+  EXPECT_TRUE(eagerTaskStarted);
+
+  evb.loop();
+
+  EXPECT_TRUE(eagerTaskDone);
+  EXPECT_TRUE(firstTaskDone);
+}
+
+TEST(FiberManager, addTaskEagerFuture) {
+  folly::EventBase evb;
+  auto& fm = getFiberManager(evb);
+
+  bool eagerTaskStarted{false};
+  bool eagerTaskDone{false};
+
+  EXPECT_TRUE(fm.addTaskEagerFuture([&] {}).isReady());
+
+  auto f = fm.addTaskEagerFuture([&] {
+    eagerTaskStarted = true;
+    fm.yield();
+    eagerTaskDone = true;
+  });
+
+  EXPECT_TRUE(eagerTaskStarted);
+
+  evb.loop();
+
+  EXPECT_TRUE(f.isReady());
+
+  EXPECT_TRUE(eagerTaskDone);
+}
+
+TEST(FiberManager, addTaskEagerNested) {
+  folly::EventBase evb;
+  auto& fm = getFiberManager(evb);
+
+  bool eagerTaskStarted{false};
+  bool eagerTaskDone{false};
+  bool firstTaskDone{false};
+  bool secondTaskDone{false};
+
+  fm.addTask([&] {
+    fm.addTaskEager([&] {
+      EXPECT_FALSE(firstTaskDone);
+      EXPECT_FALSE(secondTaskDone);
+      fm.runInMainContext([&] { eagerTaskStarted = true; });
+      fm.yield();
+      EXPECT_TRUE(firstTaskDone);
+      EXPECT_TRUE(secondTaskDone);
+      eagerTaskDone = true;
+    });
+    EXPECT_TRUE(eagerTaskStarted);
+    firstTaskDone = true;
+  });
+
+  fm.addTask([&] {
+    EXPECT_TRUE(firstTaskDone);
+    secondTaskDone = true;
+  });
+
+  evb.loop();
+
+  EXPECT_TRUE(eagerTaskDone);
+  EXPECT_TRUE(secondTaskDone);
+}

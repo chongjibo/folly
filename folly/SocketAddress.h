@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 #include <folly/IPAddress.h>
 #include <folly/Portability.h>
 #include <folly/Range.h>
+#include <folly/net/NetworkSocket.h>
 #include <folly/portability/Sockets.h>
 
 namespace folly {
@@ -47,8 +48,7 @@ class SocketAddress {
    *        This is potentially a very slow operation, so is disabled by
    *        default.
    */
-  SocketAddress(const char* host, uint16_t port,
-                 bool allowNameLookup = false) {
+  SocketAddress(const char* host, uint16_t port, bool allowNameLookup = false) {
     // Initialize the address family first,
     // since setFromHostPort() and setFromIpPort() will check it.
 
@@ -59,8 +59,10 @@ class SocketAddress {
     }
   }
 
-  SocketAddress(const std::string& host, uint16_t port,
-                 bool allowNameLookup = false) {
+  SocketAddress(
+      const std::string& host,
+      uint16_t port,
+      bool allowNameLookup = false) {
     // Initialize the address family first,
     // since setFromHostPort() and setFromIpPort() will check it.
 
@@ -306,18 +308,31 @@ class SocketAddress {
   }
 
   /**
+   * Construct a SocketAddress from a local unix socket path.
+   *
+   * Raises std::invalid_argument on error.
+   *
+   * @param path The Unix domain socket path.
+   */
+  static SocketAddress makeFromPath(StringPiece path) {
+    SocketAddress addr;
+    addr.setFromPath(path);
+    return addr;
+  }
+
+  /**
    * Initialize this SocketAddress from a socket's peer address.
    *
    * Raises std::system_error on error.
    */
-  void setFromPeerAddress(int socket);
+  void setFromPeerAddress(NetworkSocket socket);
 
   /**
    * Initialize this SocketAddress from a socket's local address.
    *
    * Raises std::system_error on error.
    */
-  void setFromLocalAddress(int socket);
+  void setFromLocalAddress(NetworkSocket socket);
 
   /**
    * Initialize this folly::SocketAddress from a struct sockaddr.
@@ -342,8 +357,7 @@ class SocketAddress {
    *                 enough for the full address type required by
    *                 address->sa_family.
    */
-  void setFromSockaddr(const struct sockaddr* address,
-                       socklen_t addrlen);
+  void setFromSockaddr(const struct sockaddr* address, socklen_t addrlen);
 
   /**
    * Initialize this SocketAddress from a struct sockaddr_in.
@@ -367,9 +381,7 @@ class SocketAddress {
    *                 the valid bytes of sun_path, not including any NUL
    *                 terminator.
    */
-  void setFromSockaddr(const struct sockaddr_un* address,
-                       socklen_t addrlen);
-
+  void setFromSockaddr(const struct sockaddr_un* address, socklen_t addrlen);
 
   /**
    * Fill in a given sockaddr_storage with the ip or unix address.
@@ -445,8 +457,7 @@ class SocketAddress {
    * Return true if this is an IPv4-mapped IPv6 address.
    */
   bool isIPv4Mapped() const {
-    return (getFamily() == AF_INET6 &&
-            storage_.addr.isIPv4Mapped());
+    return (getFamily() == AF_INET6 && storage_.addr.isIPv4Mapped());
   }
 
   /**
@@ -540,41 +551,29 @@ class SocketAddress {
    * the heap.
    */
   struct ExternalUnixAddr {
-    struct sockaddr_un *addr;
+    struct sockaddr_un* addr;
     socklen_t len;
-
-    /* For debugging only, will be removed */
-    uint64_t magic;
-    static constexpr uint64_t kMagic = 0x1234faceb00c;
 
     socklen_t pathLength() const {
       return socklen_t(len - offsetof(struct sockaddr_un, sun_path));
     }
 
     void init() {
-      addr = new sockaddr_un;
-      magic = kMagic;
+      addr = new struct sockaddr_un;
       addr->sun_family = AF_UNIX;
       len = 0;
     }
-    void init(const ExternalUnixAddr &other) {
-      addr = new sockaddr_un;
-      magic = kMagic;
+    void init(const ExternalUnixAddr& other) {
+      addr = new struct sockaddr_un;
       len = other.len;
       memcpy(addr, other.addr, size_t(len));
-      // Fill the rest with 0s, just for safety
-      memset(reinterpret_cast<char*>(addr) + len, 0,
-             sizeof(struct sockaddr_un) - len);
     }
-    void copy(const ExternalUnixAddr &other) {
-      CHECK(magic == kMagic);
+    void copy(const ExternalUnixAddr& other) {
       len = other.len;
       memcpy(addr, other.addr, size_t(len));
     }
     void free() {
-      CHECK(magic == kMagic);
       delete addr;
-      magic = 0;
     }
   };
 
@@ -582,9 +581,11 @@ class SocketAddress {
   struct addrinfo* getAddrInfo(const char* host, const char* port, int flags);
   void setFromAddrInfo(const struct addrinfo* results);
   void setFromLocalAddr(const struct addrinfo* results);
-  void setFromSocket(int socket, int (*fn)(int, struct sockaddr*, socklen_t*));
+  void setFromSocket(
+      NetworkSocket socket,
+      int (*fn)(NetworkSocket, struct sockaddr*, socklen_t*));
   std::string getIpString(int flags) const;
-  void getIpString(char *buf, size_t buflen, int flags) const;
+  void getIpString(char* buf, size_t buflen, int flags) const;
 
   void updateUnixAddressLength(socklen_t addrlen);
 
@@ -615,18 +616,15 @@ class SocketAddress {
 size_t hash_value(const SocketAddress& address);
 
 std::ostream& operator<<(std::ostream& os, const SocketAddress& addr);
-
-}
+} // namespace folly
 
 namespace std {
 
 // Provide an implementation for std::hash<SocketAddress>
-template<>
+template <>
 struct hash<folly::SocketAddress> {
-  size_t operator()(
-      const folly::SocketAddress& addr) const {
+  size_t operator()(const folly::SocketAddress& addr) const {
     return addr.hash();
   }
 };
-
-}
+} // namespace std

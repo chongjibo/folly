@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ Core::VersionedData Core::getData() {
   return data_.copy();
 }
 
-size_t Core::refresh(size_t version, bool force) {
+size_t Core::refresh(size_t version) {
   CHECK(ObserverManager::inManagerThread());
 
   ObserverManager::DependencyRecorder::markRefreshDependency(*this);
@@ -61,7 +61,7 @@ size_t Core::refresh(size_t version, bool force) {
       return versionLastChange_;
     }
 
-    bool needRefresh = force || version_ == 0;
+    bool needRefresh = std::exchange(forceRefresh_, false) || version_ == 0;
 
     ObserverManager::DependencyRecorder dependencyRecorder(*this);
 
@@ -90,15 +90,14 @@ size_t Core::refresh(size_t version, bool force) {
     }
 
     try {
-      {
-        VersionedData newData{creator_(), version};
-        if (!newData.data) {
-          throw std::logic_error("Observer creator returned nullptr.");
-        }
-        data_.swap(newData);
+      VersionedData newData{creator_(), version};
+      if (!newData.data) {
+        throw std::logic_error("Observer creator returned nullptr.");
       }
-
-      versionLastChange_ = version;
+      if (data_.copy().data != newData.data) {
+        data_.swap(newData);
+        versionLastChange_ = version;
+      }
     } catch (...) {
       LOG(ERROR) << "Exception while refreshing Observer: "
                  << exceptionStr(std::current_exception());
@@ -144,6 +143,10 @@ size_t Core::refresh(size_t version, bool force) {
   return versionLastChange_;
 }
 
+void Core::setForceRefresh() {
+  forceRefresh_ = true;
+}
+
 Core::Core(folly::Function<std::shared_ptr<const void>()> creator)
     : creator_(std::move(creator)) {}
 
@@ -178,5 +181,5 @@ void Core::removeStaleDependents() {
     }
   });
 }
-}
-}
+} // namespace observer_detail
+} // namespace folly

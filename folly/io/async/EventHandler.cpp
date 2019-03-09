@@ -1,32 +1,29 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #include <folly/io/async/EventHandler.h>
+#include <folly/String.h>
 #include <folly/io/async/EventBase.h>
 
 #include <assert.h>
 
 namespace folly {
 
-EventHandler::EventHandler(EventBase* eventBase, int fd) {
-  folly_event_set(&event_, fd, 0, &EventHandler::libeventCallback, this);
+EventHandler::EventHandler(EventBase* eventBase, NetworkSocket fd) {
+  folly_event_set(&event_, fd.toFd(), 0, &EventHandler::libeventCallback, this);
   if (eventBase != nullptr) {
     setEventBase(eventBase);
   } else {
@@ -94,7 +91,7 @@ bool EventHandler::registerImpl(uint16_t events, bool internal) {
   // more space).
   if (event_add(&event_, nullptr) < 0) {
     LOG(ERROR) << "EventBase: failed to register event handler for fd "
-               << event_.ev_fd << ": " << strerror(errno);
+               << event_.ev_fd << ": " << errnoStr(errno);
     // Call event_del() to make sure the event is completely uninstalled
     event_del(&event_);
     return false;
@@ -114,7 +111,7 @@ void EventHandler::attachEventBase(EventBase* eventBase) {
   assert(event_.ev_base == nullptr);
   assert(!isHandlerRegistered());
   // This must be invoked from the EventBase's thread
-  assert(eventBase->isInEventBaseThread());
+  eventBase->dcheckIsInEventBaseThread();
 
   setEventBase(eventBase);
 }
@@ -124,17 +121,17 @@ void EventHandler::detachEventBase() {
   event_.ev_base = nullptr;
 }
 
-void EventHandler::changeHandlerFD(int fd) {
+void EventHandler::changeHandlerFD(NetworkSocket fd) {
   ensureNotRegistered(__func__);
   // event_set() resets event_base.ev_base, so manually restore it afterwards
   struct event_base* evb = event_.ev_base;
-  folly_event_set(&event_, fd, 0, &EventHandler::libeventCallback, this);
+  folly_event_set(&event_, fd.toFd(), 0, &EventHandler::libeventCallback, this);
   event_.ev_base = evb; // don't use event_base_set(), since evb may be nullptr
 }
 
-void EventHandler::initHandler(EventBase* eventBase, int fd) {
+void EventHandler::initHandler(EventBase* eventBase, NetworkSocket fd) {
   ensureNotRegistered(__func__);
-  folly_event_set(&event_, fd, 0, &EventHandler::libeventCallback, this);
+  folly_event_set(&event_, fd.toFd(), 0, &EventHandler::libeventCallback, this);
   setEventBase(eventBase);
 }
 
@@ -182,4 +179,4 @@ bool EventHandler::isPending() const {
   return false;
 }
 
-} // folly
+} // namespace folly

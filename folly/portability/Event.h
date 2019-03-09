@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,19 @@
 
 #pragma once
 
+#ifdef _MSC_VER
+// This needs to be before the libevent include.
+#include <folly/portability/Windows.h>
+#endif
+
 #include <event.h>
 
 #ifdef _MSC_VER
-# include <event2/event_compat.h>
-# include <folly/portability/Fcntl.h>
-# include <folly/portability/Windows.h>
+#include <event2/event_compat.h> // @manual
+#include <folly/portability/Fcntl.h>
 #endif
+
+#include <folly/net/detail/SocketFileDescriptorMap.h>
 
 namespace folly {
 #ifdef _MSC_VER
@@ -32,25 +38,11 @@ using libevent_fd_t = int;
 #endif
 
 inline libevent_fd_t getLibeventFd(int fd) {
-#ifdef _MSC_VER
-  if (fd == -1) {
-    return (libevent_fd_t)INVALID_HANDLE_VALUE;
-  }
-  return _get_osfhandle(fd);
-#else
-  return fd;
-#endif
+  return netops::detail::SocketFileDescriptorMap::fdToSocket(fd);
 }
 
 inline int libeventFdToFd(libevent_fd_t fd) {
-#ifdef _MSC_VER
-  if (fd == (libevent_fd_t)INVALID_HANDLE_VALUE) {
-    return -1;
-  }
-  return _open_osfhandle((intptr_t)fd, O_RDWR | O_BINARY);
-#else
-  return fd;
-#endif
+  return netops::detail::SocketFileDescriptorMap::socketToFd(fd);
 }
 
 using EventSetCallback = void (*)(libevent_fd_t, short, void*);
@@ -59,4 +51,4 @@ folly_event_set(event* e, int fd, short s, EventSetCallback f, void* arg) {
   auto lfd = getLibeventFd(fd);
   event_set(e, lfd, s, f, arg);
 }
-}
+} // namespace folly

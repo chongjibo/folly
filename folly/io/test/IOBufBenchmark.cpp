@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -70,18 +70,49 @@ BENCHMARK(copyBenchmark, iters) {
   }
 }
 
+BENCHMARK(cloneCoalescedBaseline, iters) {
+  std::unique_ptr<IOBuf> buf = IOBuf::createChain(100, 10);
+  while (iters--) {
+    auto clone = buf->cloneAsValue();
+    clone.coalesce();
+    folly::doNotOptimizeAway(clone.capacity());
+  }
+}
+
+BENCHMARK_RELATIVE(cloneCoalescedBenchmark, iters) {
+  std::unique_ptr<IOBuf> buf = IOBuf::createChain(100, 10);
+  while (iters--) {
+    auto copy = buf->cloneCoalescedAsValue();
+    folly::doNotOptimizeAway(copy.capacity());
+  }
+}
+
+BENCHMARK(takeOwnershipBenchmark, iters) {
+  size_t data = 0;
+  while (iters--) {
+    std::unique_ptr<IOBuf> buf(IOBuf::takeOwnership(
+        &data,
+        sizeof(data),
+        [](void* /*unused*/, void* /*unused*/) {},
+        nullptr));
+  }
+}
+
 /**
  * ============================================================================
  * folly/io/test/IOBufBenchmark.cpp                relative  time/iter  iters/s
  * ============================================================================
- * cloneOneBenchmark                                           49.03ns   20.39M
- * cloneOneIntoBenchmark                                       26.36ns   37.93M
- * cloneBenchmark                                              49.43ns   20.23M
- * cloneIntoBenchmark                                          30.03ns   33.30M
- * moveBenchmark                                               15.35ns   65.14M
- * copyBenchmark                                               33.63ns   29.73M
+ * cloneOneBenchmark                                           35.52ns   28.15M
+ * cloneOneIntoBenchmark                                       21.60ns   46.29M
+ * cloneBenchmark                                              34.91ns   28.65M
+ * cloneIntoBenchmark                                          22.78ns   43.91M
+ * moveBenchmark                                               10.20ns   98.06M
+ * copyBenchmark                                               27.31ns   36.62M
+ * cloneCoalescedBaseline                                     307.72ns    3.25M
+ * cloneCoalescedBenchmark                          633.34%    48.59ns   20.58M
+ * takeOwnershipBenchmark                                     32.32ns   30.94M
  * ============================================================================
-*/
+ */
 
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);

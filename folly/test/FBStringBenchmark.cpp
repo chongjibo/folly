@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,27 +20,26 @@
 #include <folly/FBString.h>
 
 #include <cstdlib>
-#include <list>
 #include <fstream>
+#include <list>
+#include <random>
 #include <sstream>
 
-#include <boost/random.hpp>
-
 #include <folly/Benchmark.h>
-#include <folly/Foreach.h>
 #include <folly/Random.h>
+#include <folly/container/Foreach.h>
 #include <folly/portability/GFlags.h>
 
 using namespace std;
 using namespace folly;
 
 static const int seed = folly::randomNumberSeed();
-typedef boost::mt19937 RandomT;
+using RandomT = std::mt19937;
 static RandomT rng(seed);
 
 template <class Integral1, class Integral2>
 Integral2 random(Integral1 low, Integral2 up) {
-  boost::uniform_int<> range(low, up);
+  std::uniform_int_distribution<> range(low, up);
   return range(rng);
 }
 
@@ -48,18 +47,14 @@ template <class String>
 void randomString(String* toFill, size_t size = 1000) {
   assert(toFill);
   toFill->resize(size);
-  FOR_EACH (i, *toFill) {
-    *i = random('a', 'z');
-  }
+  FOR_EACH (i, *toFill) { *i = random('a', 'z'); }
 }
 
 template <class String>
 void randomBinaryString(String* toFill, size_t size = 1000) {
   assert(toFill);
   toFill->resize(size);
-  FOR_EACH (i, *toFill) {
-    *i = random('0', '1');
-  }
+  FOR_EACH (i, *toFill) { *i = random('0', '1'); }
 }
 
 template <class String, class Integral>
@@ -74,7 +69,7 @@ std::list<char> RandomList(unsigned int maxSize) {
   std::list<char>::iterator i = lst.begin();
   for (; i != lst.end(); ++i) {
     *i = random('a', 'z');
- }
+  }
   return lst;
 }
 

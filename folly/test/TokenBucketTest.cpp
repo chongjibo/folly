@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,16 +62,17 @@ TEST_P(TokenBucketTest, sanity) {
   }
 }
 
-static std::vector<std::pair<double, double> > rateToConsumeSize = {
-  {100, 1},
-  {1000, 1},
-  {10000, 1},
-  {10000, 5},
+static std::vector<std::pair<double, double>> rateToConsumeSize = {
+    {100, 1},
+    {1000, 1},
+    {10000, 1},
+    {10000, 5},
 };
 
-INSTANTIATE_TEST_CASE_P(TokenBucket,
-                        TokenBucketTest,
-                        ::testing::ValuesIn(rateToConsumeSize));
+INSTANTIATE_TEST_CASE_P(
+    TokenBucket,
+    TokenBucketTest,
+    ::testing::ValuesIn(rateToConsumeSize));
 
 void doTokenBucketTest(double maxQps, double consumeSize) {
   const double tenMillisecondBurst = maxQps * 0.010;
@@ -132,4 +133,42 @@ TEST(TokenBucket, drainOnFail) {
   // Again request more tokens than available, but ask to drain
   EXPECT_DOUBLE_EQ(1.0, tokenBucket.consumeOrDrain(5, 10, 10, 1));
   EXPECT_DOUBLE_EQ(0.0, tokenBucket.consumeOrDrain(1, 10, 10, 1));
+}
+
+TEST(TokenBucket, returnTokensTest) {
+  DynamicTokenBucket tokenBucket;
+
+  // Empty the bucket.
+  EXPECT_TRUE(tokenBucket.consume(10, 10, 10, 5));
+  // consume should fail now.
+  EXPECT_FALSE(tokenBucket.consume(1, 10, 10, 5));
+  EXPECT_DOUBLE_EQ(0.0, tokenBucket.consumeOrDrain(1, 10, 10, 5));
+
+  // Return tokens. Return 40 'excess' tokens but they wont be available to
+  // later callers.
+  tokenBucket.returnTokens(50, 10);
+  // Should be able to allocate 10 tokens again but the extra 40 returned in
+  // previous call are gone.
+  EXPECT_TRUE(tokenBucket.consume(10, 10, 10, 5));
+  EXPECT_FALSE(tokenBucket.consume(1, 10, 10, 5));
+}
+
+TEST(TokenBucket, consumeOrBorrowTest) {
+  DynamicTokenBucket tokenBucket;
+
+  // Empty the bucket.
+  EXPECT_TRUE(tokenBucket.consume(10, 10, 10, 1));
+  // consume should fail now.
+  EXPECT_FALSE(tokenBucket.consume(1, 10, 10, 1));
+  // Now borrow from future allocations. Each call is asking for 1s worth of
+  // allocations so it should return (i+1)*1s in the ith iteration as the time
+  // caller needs to wait.
+  for (int i = 0; i < 10; ++i) {
+    auto waitTime = tokenBucket.consumeWithBorrowNonBlocking(10, 10, 10, 1);
+    EXPECT_TRUE(waitTime.has_value());
+    EXPECT_DOUBLE_EQ((i + 1) * 1.0, *waitTime);
+  }
+
+  // No allocation will succeed until nowInSeconds goes higher than 11s.
+  EXPECT_FALSE(tokenBucket.consume(1, 10, 10, 11));
 }

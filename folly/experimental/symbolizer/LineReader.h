@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,16 +18,15 @@
 
 #include <cstddef>
 
-#include <boost/noncopyable.hpp>
-
 #include <folly/Range.h>
 
-namespace folly { namespace symbolizer {
+namespace folly {
+namespace symbolizer {
 
 /**
  * Async-signal-safe line reader.
  */
-class LineReader : private boost::noncopyable {
+class LineReader {
  public:
   /**
    * Create a line reader that reads into a user-provided buffer (of size
@@ -35,10 +34,13 @@ class LineReader : private boost::noncopyable {
    */
   LineReader(int fd, char* buf, size_t bufSize);
 
+  LineReader(const LineReader&) = delete;
+  LineReader& operator=(const LineReader&) = delete;
+
   enum State {
     kReading,
     kEof,
-    kError
+    kError,
   };
   /**
    * Read the next line from the file.
@@ -83,5 +85,5 @@ class LineReader : private boost::noncopyable {
   char* end_;
   State state_;
 };
-
-}}  // namespaces
+} // namespace symbolizer
+} // namespace folly

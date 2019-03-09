@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ static size_t sNumAwaits;
 void runBenchmark(size_t numAwaits, size_t toSend) {
   sNumAwaits = numAwaits;
 
-  FiberManager fiberManager(folly::make_unique<SimpleLoopController>());
+  FiberManager fiberManager(std::make_unique<SimpleLoopController>());
   auto& loopController =
       dynamic_cast<SimpleLoopController&>(fiberManager.loopController());
 
@@ -87,7 +87,7 @@ BENCHMARK(FiberManagerAllocateDeallocatePattern, iters) {
   FiberManager::Options opts;
   opts.maxFibersPoolSize = 0;
 
-  FiberManager fiberManager(folly::make_unique<SimpleLoopController>(), opts);
+  FiberManager fiberManager(std::make_unique<SimpleLoopController>(), opts);
 
   for (size_t iter = 0; iter < iters; ++iter) {
     DCHECK_EQ(0, fiberManager.fibersPoolSize());
@@ -110,7 +110,7 @@ BENCHMARK(FiberManagerAllocateLargeChunk, iters) {
   FiberManager::Options opts;
   opts.maxFibersPoolSize = 0;
 
-  FiberManager fiberManager(folly::make_unique<SimpleLoopController>(), opts);
+  FiberManager fiberManager(std::make_unique<SimpleLoopController>(), opts);
 
   for (size_t iter = 0; iter < iters; ++iter) {
     DCHECK_EQ(0, fiberManager.fibersPoolSize());
@@ -126,6 +126,56 @@ BENCHMARK(FiberManagerAllocateLargeChunk, iters) {
     DCHECK_EQ(10000, fibersRun);
     DCHECK_EQ(0, fiberManager.fibersPoolSize());
   }
+}
+
+void runTimeoutsBenchmark(std::vector<size_t> timeouts) {
+  constexpr size_t kNumIters = 100000;
+  constexpr size_t kNumFibers = 100;
+
+  size_t iter = 0;
+  std::vector<folly::fibers::Baton> batons(kNumFibers);
+
+  FiberManager manager(std::make_unique<EventBaseLoopController>());
+
+  folly::EventBase evb(false /* enableTimeMeasurement */);
+  dynamic_cast<EventBaseLoopController&>(manager.loopController())
+      .attachEventBase(evb);
+
+  for (size_t i = 0; i < kNumFibers; ++i) {
+    manager.addTask([i, &iter, &timeouts, &batons] {
+      while (iter < kNumIters) {
+        auto tmo = timeouts[iter++ % timeouts.size()];
+        batons[i].timed_wait(std::chrono::milliseconds(tmo));
+        batons[i].reset();
+      }
+    });
+  }
+
+  while (iter < kNumIters) {
+    evb.loopOnce();
+    for (auto& b : batons) {
+      b.post();
+    }
+  }
+  evb.loopOnce();
+}
+
+BENCHMARK(FiberManagerCancelledTimeouts_Single_300) {
+  runTimeoutsBenchmark({300});
+}
+
+BENCHMARK(FiberManagerCancelledTimeouts_Five) {
+  runTimeoutsBenchmark({300, 350, 500, 1000, 2000});
+}
+
+BENCHMARK(FiberManagerCancelledTimeouts_TenThousand) {
+  constexpr size_t kNumTimeouts = 10000;
+
+  std::vector<size_t> tmos(kNumTimeouts);
+  for (size_t i = 0; i < kNumTimeouts; ++i) {
+    tmos[i] = 200 + 50 * i;
+  }
+  runTimeoutsBenchmark(std::move(tmos));
 }
 
 int main(int argc, char** argv) {

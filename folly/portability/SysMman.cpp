@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@
 #include <folly/portability/SysMman.h>
 
 #ifdef _WIN32
+
 #include <cassert>
+
 #include <folly/Portability.h>
 #include <folly/portability/Windows.h>
 
@@ -83,7 +85,7 @@ struct MemMapDebugTrailer {
   size_t length;
   uint32_t magic;
 };
-}
+} // namespace
 
 void* mmap(void* addr, size_t length, int prot, int flags, int fd, off_t off) {
   // Make sure it's something we support first.
@@ -93,7 +95,11 @@ void* mmap(void* addr, size_t length, int prot, int flags, int fd, off_t off) {
     return MAP_FAILED;
   }
   // No private copy on write.
-  if ((flags & MAP_PRIVATE) == MAP_PRIVATE && fd != -1) {
+  // If the map isn't writable, we can let it go through as
+  // whether changes to the underlying file are reflected in the map
+  // is defined to be unspecified by the standard.
+  if ((flags & MAP_PRIVATE) == MAP_PRIVATE &&
+      (prot & PROT_WRITE) == PROT_WRITE && fd != -1) {
     return MAP_FAILED;
   }
   // Map isn't anon, must be file backed.
@@ -213,4 +219,5 @@ int munmap(void* addr, size_t length) {
   return 0;
 }
 }
+
 #endif

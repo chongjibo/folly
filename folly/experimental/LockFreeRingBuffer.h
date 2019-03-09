@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,22 +17,20 @@
 #pragma once
 
 #include <atomic>
-#include <boost/noncopyable.hpp>
 #include <cmath>
+#include <cstring>
 #include <memory>
-#include <string.h>
 #include <type_traits>
 
 #include <folly/Portability.h>
+#include <folly/Traits.h>
 #include <folly/detail/TurnSequencer.h>
-#include <folly/portability/TypeTraits.h>
 #include <folly/portability/Unistd.h>
 
 namespace folly {
 namespace detail {
 
-template<typename T,
-         template<typename> class Atom>
+template <typename T, template <typename> class Atom>
 class RingBufferSlot;
 } // namespace detail
 
@@ -55,16 +53,17 @@ class RingBufferSlot;
 /// "future" can optionally block but reads from the "past" will always fail.
 ///
 
-template<typename T, template<typename> class Atom = std::atomic>
-class LockFreeRingBuffer: boost::noncopyable {
+template <typename T, template <typename> class Atom = std::atomic>
+class LockFreeRingBuffer {
+  static_assert(
+      std::is_nothrow_default_constructible<T>::value,
+      "Element type must be nothrow default constructible");
 
-   static_assert(std::is_nothrow_default_constructible<T>::value,
-       "Element type must be nothrow default constructible");
+  static_assert(
+      folly::is_trivially_copyable<T>::value,
+      "Element type must be trivially copyable");
 
-   static_assert(FOLLY_IS_TRIVIALLY_COPYABLE(T),
-       "Element type must be trivially copyable");
-
-public:
+ public:
   /// Opaque pointer to a past or future write.
   /// Can be moved relative to its current location but not in absolute terms.
   struct Cursor {
@@ -90,21 +89,24 @@ public:
       return prevTicket != ticket;
     }
 
-  protected: // for test visibility reasons
+   protected: // for test visibility reasons
     uint64_t ticket;
     friend class LockFreeRingBuffer;
   };
 
   explicit LockFreeRingBuffer(uint32_t capacity) noexcept
-    : capacity_(capacity)
-    , slots_(new detail::RingBufferSlot<T,Atom>[capacity])
-    , ticket_(0)
-  {}
+      : capacity_(capacity),
+        slots_(new detail::RingBufferSlot<T, Atom>[capacity]),
+        ticket_(0) {}
+
+  LockFreeRingBuffer(const LockFreeRingBuffer&) = delete;
+  LockFreeRingBuffer& operator=(const LockFreeRingBuffer&) = delete;
 
   /// Perform a single write of an object of type T.
   /// Writes can block iff a previous writer has not yet completed a write
   /// for the same slot (before the most recent wrap-around).
-  void write(T& value) noexcept {
+  template <typename V>
+  void write(V& value) noexcept {
     uint64_t ticket = ticket_.fetch_add(1);
     slots_[idx(ticket)].write(turn(ticket), value);
   }
@@ -113,7 +115,8 @@ public:
   /// Writes can block iff a previous writer has not yet completed a write
   /// for the same slot (before the most recent wrap-around).
   /// Returns a Cursor pointing to the just-written T.
-  Cursor writeAndGetCursor(T& value) noexcept {
+  template <typename V>
+  Cursor writeAndGetCursor(V& value) noexcept {
     uint64_t ticket = ticket_.fetch_add(1);
     slots_[idx(ticket)].write(turn(ticket), value);
     return Cursor(ticket);
@@ -123,7 +126,8 @@ public:
   /// Returns true if the read succeeded, false otherwise. If the return
   /// value is false, dest is to be considered partially read and in an
   /// inconsistent state. Readers are advised to discard it.
-  bool tryRead(T& dest, const Cursor& cursor) noexcept {
+  template <typename V>
+  bool tryRead(V& dest, const Cursor& cursor) noexcept {
     return slots_[idx(cursor.ticket)].tryRead(dest, turn(cursor.ticket));
   }
 
@@ -131,7 +135,8 @@ public:
   /// Returns true if the read succeeded, false otherwise. If the return
   /// value is false, dest is to be considered partially read and in an
   /// inconsistent state. Readers are advised to discard it.
-  bool waitAndTryRead(T& dest, const Cursor& cursor) noexcept {
+  template <typename V>
+  bool waitAndTryRead(V& dest, const Cursor& cursor) noexcept {
     return slots_[idx(cursor.ticket)].waitAndTryRead(dest, turn(cursor.ticket));
   }
 
@@ -159,13 +164,12 @@ public:
     return Cursor(ticket - backStep);
   }
 
-  ~LockFreeRingBuffer() {
-  }
+  ~LockFreeRingBuffer() {}
 
-private:
+ private:
   const uint32_t capacity_;
 
-  const std::unique_ptr<detail::RingBufferSlot<T,Atom>[]> slots_;
+  const std::unique_ptr<detail::RingBufferSlot<T, Atom>[]> slots_;
 
   Atom<uint64_t> ticket_;
 
@@ -179,16 +183,22 @@ private:
 }; // LockFreeRingBuffer
 
 namespace detail {
-template<typename T, template<typename> class Atom>
+template <typename T, template <typename> class Atom>
 class RingBufferSlot {
-public:
-  explicit RingBufferSlot() noexcept
-    : sequencer_()
-    , data()
-  {
+  void copy(T& dest, T& src) {
+    memcpy(&dest, &src, sizeof(T));
   }
 
-  void write(const uint32_t turn, T& value) noexcept {
+  template <typename V>
+  void copy(V& dest, T& src) {
+    dest = src;
+  }
+
+ public:
+  explicit RingBufferSlot() noexcept : sequencer_(), data() {}
+
+  template <typename V>
+  void write(const uint32_t turn, V& value) noexcept {
     Atom<uint32_t> cutoff(0);
     sequencer_.waitForTurn(turn * 2, cutoff, false);
 
@@ -200,32 +210,33 @@ public:
     // At (turn + 1) * 2
   }
 
-  bool waitAndTryRead(T& dest, uint32_t turn) noexcept {
+  template <typename V>
+  bool waitAndTryRead(V& dest, uint32_t turn) noexcept {
     uint32_t desired_turn = (turn + 1) * 2;
     Atom<uint32_t> cutoff(0);
     if (sequencer_.tryWaitForTurn(desired_turn, cutoff, false) !=
         TurnSequencer<Atom>::TryWaitResult::SUCCESS) {
       return false;
     }
-    memcpy(&dest, &data, sizeof(T));
+    copy(dest, data);
 
     // if it's still the same turn, we read the value successfully
     return sequencer_.isTurn(desired_turn);
   }
 
-  bool tryRead(T& dest, uint32_t turn) noexcept {
+  template <typename V>
+  bool tryRead(V& dest, uint32_t turn) noexcept {
     // The write that started at turn 0 ended at turn 2
     if (!sequencer_.isTurn((turn + 1) * 2)) {
       return false;
     }
-    memcpy(&dest, &data, sizeof(T));
+    copy(dest, data);
 
     // if it's still the same turn, we read the value successfully
     return sequencer_.isTurn((turn + 1) * 2);
   }
 
-
-private:
+ private:
   TurnSequencer<Atom> sequencer_;
   T data;
 }; // RingBufferSlot

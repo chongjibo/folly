@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,10 @@
 
 #include <folly/Portability.h>
 
+#include <cstdint>
+
 #ifdef _MSC_VER
-# include <intrin.h>
+#include <intrin.h>
 #endif
 
 namespace folly {
@@ -36,22 +38,10 @@ inline void asm_volatile_pause() {
   ::_mm_pause();
 #elif defined(__i386__) || FOLLY_X64
   asm volatile("pause");
-#elif FOLLY_A64 || defined(__arm__)
+#elif FOLLY_AARCH64 || defined(__arm__)
   asm volatile("yield");
 #elif FOLLY_PPC64
   asm volatile("or 27,27,27");
 #endif
 }
-
-inline void asm_pause() {
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-  ::_mm_pause();
-#elif defined(__i386__) || FOLLY_X64
-  asm("pause");
-#elif FOLLY_A64 || defined(__arm__)
-  asm("yield");
-#elif FOLLY_PPC64
-  asm("or 31,31,31");
-#endif
-}
-}
+} // namespace folly

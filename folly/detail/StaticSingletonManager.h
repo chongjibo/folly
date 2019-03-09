@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,73 +16,87 @@
 
 #pragma once
 
-#include <cassert>
-#include <mutex>
-#include <typeindex>
-#include <unordered_map>
+#include <atomic>
+#include <typeinfo>
+
+#include <folly/CPortability.h>
+#include <folly/Indestructible.h>
+#include <folly/Likely.h>
+#include <folly/detail/Singleton.h>
+#include <folly/lang/TypeInfo.h>
 
 namespace folly {
 namespace detail {
+
+// Does not support dynamic loading but works without rtti.
+class StaticSingletonManagerSansRtti {
+ public:
+  template <typename T, typename Tag>
+  FOLLY_EXPORT FOLLY_ALWAYS_INLINE static T& create() {
+    std::atomic<T*> cache{};
+    auto const pointer = cache.load(std::memory_order_acquire);
+    return FOLLY_LIKELY(!!pointer) ? *pointer : create_<T, Tag>(cache);
+  }
+
+ private:
+  template <typename T, typename Tag>
+  FOLLY_EXPORT FOLLY_NOINLINE static T& create_(std::atomic<T*>& cache) {
+    static Indestructible<T> instance;
+    cache.store(&*instance, std::memory_order_release);
+    return *instance;
+  }
+};
 
 // This internal-use-only class is used to create all leaked Meyers singletons.
 // It guarantees that only one instance of every such singleton will ever be
 // created, even when requested from different compilation units linked
 // dynamically.
-class StaticSingletonManager {
+//
+// Supports dynamic loading but requires rtti.
+class StaticSingletonManagerWithRtti {
  public:
-  static StaticSingletonManager& instance();
-
-  template <typename T, typename Tag, typename F>
-  inline T* create(F&& creator) {
-    auto& entry = [&]() mutable -> Entry<T>& {
-      std::lock_guard<std::mutex> lg(mutex_);
-
-      auto& id = typeid(TypePair<T, Tag>);
-      auto& entryPtr = map_[id];
-      if (!entryPtr) {
-        entryPtr = new Entry<T>();
-      }
-      assert(dynamic_cast<Entry<T>*>(entryPtr) != nullptr);
-      return *static_cast<Entry<T>*>(entryPtr);
-    }();
-
-    std::lock_guard<std::mutex> lg(entry.mutex);
-
-    if (!entry.ptr) {
-      entry.ptr = creator();
-    }
-    return entry.ptr;
+  template <typename T, typename Tag>
+  FOLLY_EXPORT FOLLY_ALWAYS_INLINE static T& create() {
+    // gcc and clang behave poorly if typeid is hidden behind a non-constexpr
+    // function, but typeid is not constexpr under msvc
+    static Arg arg{{nullptr}, FOLLY_TYPE_INFO_OF(TypeTuple<T, Tag>), make<T>};
+    auto const v = arg.cache.load(std::memory_order_acquire);
+    auto const p = FOLLY_LIKELY(!!v) ? v : create_<noexcept(T())>(arg);
+    return *static_cast<T*>(p);
   }
 
  private:
-  template <typename A, typename B>
-  class TypePair {};
-
-  StaticSingletonManager() {}
-
-  struct EntryIf {
-    virtual ~EntryIf() {}
+  using Key = std::type_info;
+  using Make = void*();
+  using Cache = std::atomic<void*>;
+  struct Arg {
+    Cache cache; // should be first field
+    Key const* key;
+    Make& make;
   };
 
   template <typename T>
-  struct Entry : public EntryIf {
-    T* ptr{nullptr};
-    std::mutex mutex;
-  };
+  static void* make() {
+    return new T();
+  }
 
-  std::unordered_map<std::type_index, EntryIf*> map_;
-  std::mutex mutex_;
+  template <bool Noexcept>
+  FOLLY_ATTR_VISIBILITY_HIDDEN FOLLY_ALWAYS_INLINE static void* create_(
+      Arg& arg) noexcept(Noexcept) {
+    return create_(arg);
+  }
+  FOLLY_NOINLINE static void* create_(Arg& arg);
 };
 
-template <typename T, typename Tag, typename F>
-inline T* createGlobal(F&& creator) {
-  return StaticSingletonManager::instance().create<T, Tag>(
-      std::forward<F>(creator));
-}
+using StaticSingletonManager = std::conditional_t<
+    kHasRtti,
+    StaticSingletonManagerWithRtti,
+    StaticSingletonManagerSansRtti>;
 
 template <typename T, typename Tag>
-inline T* createGlobal() {
-  return createGlobal<T, Tag>([]() { return new T(); });
+FOLLY_ALWAYS_INLINE FOLLY_ATTR_VISIBILITY_HIDDEN T& createGlobal() {
+  return StaticSingletonManager::create<T, Tag>();
 }
-}
-}
+
+} // namespace detail
+} // namespace folly

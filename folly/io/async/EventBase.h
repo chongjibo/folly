@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,17 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #pragma once
 
 #include <atomic>
+#include <cerrno>
+#include <cmath>
 #include <cstdlib>
-#include <errno.h>
 #include <functional>
 #include <list>
-#include <math.h>
 #include <memory>
-#include <mutex>
 #include <queue>
 #include <set>
 #include <stack>
@@ -32,22 +30,24 @@
 #include <utility>
 
 #include <boost/intrusive/list.hpp>
-#include <boost/utility.hpp>
+#include <glog/logging.h>
 
-#include <folly/CallOnce.h>
 #include <folly/Executor.h>
 #include <folly/Function.h>
 #include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
+#include <folly/Synchronized.h>
+#include <folly/executors/DrivableExecutor.h>
+#include <folly/executors/IOExecutor.h>
+#include <folly/executors/ScheduledExecutor.h>
+#include <folly/executors/SequencedExecutor.h>
 #include <folly/experimental/ExecutionObserver.h>
-#include <folly/futures/DrivableExecutor.h>
 #include <folly/io/async/AsyncTimeout.h>
 #include <folly/io/async/HHWheelTimer.h>
 #include <folly/io/async/Request.h>
 #include <folly/io/async/TimeoutManager.h>
-#include <glog/logging.h>
-
-#include <event.h>  // libevent
+#include <folly/portability/Event.h>
+#include <folly/synchronization/CallOnce.h>
 
 namespace folly {
 
@@ -63,7 +63,7 @@ class EventBaseLocalBaseBase {
   virtual void onEventBaseDestruction(EventBase& evb) = 0;
   virtual ~EventBaseLocalBaseBase() = default;
 };
-}
+} // namespace detail
 template <typename T>
 class EventBaseLocal;
 
@@ -73,8 +73,7 @@ class EventBaseObserver {
 
   virtual uint32_t getSampleRate() const = 0;
 
-  virtual void loopSample(
-    int64_t busyTime, int64_t idleTime) = 0;
+  virtual void loopSample(int64_t busyTime, int64_t idleTime) = 0;
 };
 
 // Helper class that sets and retrieves the EventBase associated with a given
@@ -94,6 +93,10 @@ class RequestEventBase : public RequestData {
     RequestContext::get()->setContextData(
         kContextDataName,
         std::unique_ptr<RequestEventBase>(new RequestEventBase(eb)));
+  }
+
+  bool hasCallback() override {
+    return false;
   }
 
  private:
@@ -122,12 +125,13 @@ class VirtualEventBase;
  * EventBase from other threads.  When it is safe to call a method from
  * another thread it is explicitly listed in the method comments.
  */
-class EventBase : private boost::noncopyable,
-                  public TimeoutManager,
-                  public DrivableExecutor {
+class EventBase : public TimeoutManager,
+                  public DrivableExecutor,
+                  public IOExecutor,
+                  public SequencedExecutor,
+                  public ScheduledExecutor {
  public:
   using Func = folly::Function<void()>;
-  using FuncRef = folly::FunctionRef<void()>;
 
   /**
    * A callback interface to use with runInLoop()
@@ -148,6 +152,7 @@ class EventBase : private boost::noncopyable,
 
     virtual void runLoopCallback() noexcept = 0;
     void cancelLoopCallback() {
+      context_.reset();
       unlink();
     }
 
@@ -156,9 +161,9 @@ class EventBase : private boost::noncopyable,
     }
 
    private:
-    typedef boost::intrusive::list<
-      LoopCallback,
-      boost::intrusive::constant_time_size<false> > List;
+    typedef boost::intrusive::
+        list<LoopCallback, boost::intrusive::constant_time_size<false>>
+            List;
 
     // EventBase needs access to LoopCallbackList (and therefore to hook_)
     friend class EventBase;
@@ -196,6 +201,86 @@ class EventBase : private boost::noncopyable,
     Func function_;
   };
 
+  // Base class for user callbacks to be run during EventBase destruction. As
+  // with LoopCallback, users may inherit from this class and provide a concrete
+  // implementation of onEventBaseDestruction(). (Alternatively, users may use
+  // the convenience method EventBase::runOnDestruction(Function<void()> f) to
+  // schedule a function f to be run on EventBase destruction.)
+  //
+  // The only thread-safety guarantees of OnDestructionCallback are as follows:
+  //   - Users may call runOnDestruction() from any thread, provided the caller
+  //     is the only user of the callback, i.e., the callback is not already
+  //     scheduled and there are no concurrent calls to schedule or cancel the
+  //     callback.
+  //   - Users may safely cancel() from any thread. Multiple calls to cancel()
+  //     may execute concurrently. The only caveat is that it is not safe to
+  //     call cancel() within the onEventBaseDestruction() callback.
+  class OnDestructionCallback {
+   public:
+    OnDestructionCallback() = default;
+    OnDestructionCallback(OnDestructionCallback&&) = default;
+    OnDestructionCallback& operator=(OnDestructionCallback&&) = default;
+    virtual ~OnDestructionCallback();
+
+    // Attempt to cancel the callback. If the callback is running or has already
+    // finished running, cancellation will fail. If the callback is running when
+    // cancel() is called, cancel() will block until the callback completes.
+    bool cancel();
+
+    // Callback to be invoked during ~EventBase()
+    virtual void onEventBaseDestruction() noexcept = 0;
+
+   private:
+    boost::intrusive::list_member_hook<
+        boost::intrusive::link_mode<boost::intrusive::normal_link>>
+        listHook_;
+    Function<void(OnDestructionCallback&)> eraser_;
+    Synchronized<bool> scheduled_{in_place, false};
+
+    using List = boost::intrusive::list<
+        OnDestructionCallback,
+        boost::intrusive::member_hook<
+            OnDestructionCallback,
+            decltype(listHook_),
+            &OnDestructionCallback::listHook_>>;
+
+    void schedule(
+        FunctionRef<void(OnDestructionCallback&)> linker,
+        Function<void(OnDestructionCallback&)> eraser);
+
+    friend class EventBase;
+    friend class VirtualEventBase;
+
+   protected:
+    virtual void runCallback() noexcept;
+  };
+
+  class FunctionOnDestructionCallback : public OnDestructionCallback {
+   public:
+    explicit FunctionOnDestructionCallback(Function<void()> f)
+        : f_(std::move(f)) {}
+
+    void onEventBaseDestruction() noexcept final {
+      f_();
+    }
+
+   protected:
+    void runCallback() noexcept override {
+      OnDestructionCallback::runCallback();
+      delete this;
+    }
+
+   private:
+    Function<void()> f_;
+  };
+
+  /**
+   * Create a new EventBase object.
+   *
+   * Same as EventBase(true), which constructs an EventBase that measures time.
+   */
+  EventBase() : EventBase(true) {}
+
   /**
    * Create a new EventBase object.
    *
@@ -205,7 +290,10 @@ class EventBase : private boost::noncopyable,
    *                              that relies on time-measurement, including:
    *                              observer, max latency and avg loop time.
    */
-  explicit EventBase(bool enableTimeMeasurement = true);
+  explicit EventBase(bool enableTimeMeasurement);
+
+  EventBase(const EventBase&) = delete;
+  EventBase& operator=(const EventBase&) = delete;
 
   /**
    * Create a new EventBase object that will use the specified libevent
@@ -221,7 +309,7 @@ class EventBase : private boost::noncopyable,
    *                              observer, max latency and avg loop time.
    */
   explicit EventBase(event_base* evb, bool enableTimeMeasurement = true);
-  ~EventBase();
+  ~EventBase() override;
 
   /**
    * Runs the event loop.
@@ -239,6 +327,12 @@ class EventBase : private boost::noncopyable,
    * occurs waiting for events, false will be returned.
    */
   bool loop();
+
+  /**
+   * Same as loop(), but doesn't wait for all keep-alive tokens to be released.
+   */
+  [[deprecated("This should only be used in legacy unit tests")]] bool
+  loopIgnoreKeepAlive();
 
   /**
    * Wait for some events to become active, run them, then return.
@@ -345,13 +439,19 @@ class EventBase : private boost::noncopyable,
    * Adds the given callback to a queue of things run before destruction
    * of current EventBase.
    *
-   * This allows users of EventBase that run in it, but don't control it,
-   * to be notified before EventBase gets destructed.
+   * This allows users of EventBase that run in it, but don't control it, to be
+   * notified before EventBase gets destructed.
    *
    * Note: will be called from the thread that invoked EventBase destructor,
    *       before the final run of loop callbacks.
    */
-  void runOnDestruction(LoopCallback* callback);
+  void runOnDestruction(OnDestructionCallback& callback);
+
+  /**
+   * Convenience function that allows users to pass in a Function<void()> to be
+   * run on EventBase destruction.
+   */
+  void runOnDestruction(Func f);
 
   /**
    * Adds a callback that will run immediately *before* the event loop.
@@ -369,10 +469,9 @@ class EventBase : private boost::noncopyable,
    * running, the function call will be delayed until the next time the loop is
    * started.
    *
-   * If runInEventBaseThread() returns true the function has successfully been
-   * scheduled to run in the loop thread.  However, if the loop is terminated
-   * (and never later restarted) before it has a chance to run the requested
-   * function, the function will be run upon the EventBase's destruction.
+   * If the loop is terminated (and never later restarted) before it has a
+   * chance to run the requested function, the function will be run upon the
+   * EventBase's destruction.
    *
    * If two calls to runInEventBaseThread() are made from the same thread, the
    * functions will always be run in the order that they were scheduled.
@@ -382,12 +481,9 @@ class EventBase : private boost::noncopyable,
    * @param fn  The function to run.  The function must not throw any
    *     exceptions.
    * @param arg An argument to pass to the function.
-   *
-   * @return Returns true if the function was successfully scheduled, or false
-   *         if there was an error scheduling the function.
    */
   template <typename T>
-  bool runInEventBaseThread(void (*fn)(T*), T* arg);
+  void runInEventBaseThread(void (*fn)(T*), T* arg) noexcept;
 
   /**
    * Run the specified function in the EventBase's thread
@@ -404,33 +500,79 @@ class EventBase : private boost::noncopyable,
    *
    * The function must not throw any exceptions.
    */
-  bool runInEventBaseThread(Func fn);
+  void runInEventBaseThread(Func fn) noexcept;
+
+  /**
+   * Run the specified function in the EventBase's thread.
+   *
+   * This method is thread-safe, and may be called from another thread.
+   *
+   * If runInEventBaseThreadAlwaysEnqueue() is called when the EventBase loop is
+   * not running, the function call will be delayed until the next time the loop
+   * is started.
+   *
+   * If the loop is terminated (and never later restarted) before it has a
+   * chance to run the requested function, the function will be run upon the
+   * EventBase's destruction.
+   *
+   * If two calls to runInEventBaseThreadAlwaysEnqueue() are made from the same
+   * thread, the functions will always be run in the order that they were
+   * scheduled. Ordering between functions scheduled from separate threads is
+   * not guaranteed. If a call is made from the EventBase thread, the function
+   * will not be executed inline and will be queued to the same queue as if the
+   * call would have been made from a different thread
+   *
+   * @param fn  The function to run.  The function must not throw any
+   *     exceptions.
+   * @param arg An argument to pass to the function.
+   */
+  template <typename T>
+  void runInEventBaseThreadAlwaysEnqueue(void (*fn)(T*), T* arg) noexcept;
+
+  /**
+   * Run the specified function in the EventBase's thread
+   *
+   * This version of runInEventBaseThreadAlwaysEnqueue() takes a folly::Function
+   * object. Note that this may be less efficient than the version that takes a
+   * plain function pointer and void* argument, if moving the function is
+   * expensive (e.g., if it wraps a lambda which captures some values with
+   * expensive move constructors).
+   *
+   * If the loop is terminated (and never later restarted) before it has a
+   * chance to run the requested function, the function will be run upon the
+   * EventBase's destruction.
+   *
+   * The function must not throw any exceptions.
+   */
+  void runInEventBaseThreadAlwaysEnqueue(Func fn) noexcept;
 
   /*
    * Like runInEventBaseThread, but the caller waits for the callback to be
    * executed.
    */
   template <typename T>
-  bool runInEventBaseThreadAndWait(void (*fn)(T*), T* arg);
+  void runInEventBaseThreadAndWait(void (*fn)(T*), T* arg) noexcept;
 
   /*
    * Like runInEventBaseThread, but the caller waits for the callback to be
    * executed.
    */
-  bool runInEventBaseThreadAndWait(FuncRef fn);
+  void runInEventBaseThreadAndWait(Func fn) noexcept;
 
   /*
    * Like runInEventBaseThreadAndWait, except if the caller is already in the
    * event base thread, the functor is simply run inline.
    */
   template <typename T>
-  bool runImmediatelyOrRunInEventBaseThreadAndWait(void (*fn)(T*), T* arg);
+  void runImmediatelyOrRunInEventBaseThreadAndWait(
+      void (*fn)(T*),
+      T* arg) noexcept;
 
   /*
    * Like runInEventBaseThreadAndWait, except if the caller is already in the
    * event base thread, the functor is simply run inline.
    */
-  bool runImmediatelyOrRunInEventBaseThreadAndWait(FuncRef fn);
+  void runImmediatelyOrRunInEventBaseThreadAndWait(Func fn) noexcept;
 
   /**
    * Set the maximum desired latency in us and provide a callback which will be
@@ -463,7 +605,7 @@ class EventBase : private boost::noncopyable,
   }
 
   /**
-    * check if the event base loop is running.
+   * check if the event base loop is running.
    */
   bool isRunning() const {
     return loopThread_.load(std::memory_order_relaxed) != std::thread::id();
@@ -492,6 +634,18 @@ class EventBase : private boost::noncopyable,
         std::this_thread::get_id();
   }
 
+  /**
+   * Equivalent to CHECK(isInEventBaseThread()) (and assert/DCHECK for
+   * dcheckIsInEventBaseThread), but it prints more information on
+   * failure.
+   */
+  void checkIsInEventBaseThread() const;
+  void dcheckIsInEventBaseThread() const {
+    if (kIsDebug) {
+      checkIsInEventBaseThread();
+    }
+  }
+
   HHWheelTimer& timer() {
     if (!wheelTimer_) {
       wheelTimer_ = HHWheelTimer::newTimer(this);
@@ -503,7 +657,9 @@ class EventBase : private boost::noncopyable,
   // Avoid using these functions if possible.  These functions are not
   // guaranteed to always be present if we ever provide alternative EventBase
   // implementations that do not use libevent internally.
-  event_base* getLibeventBase() const { return evb_; }
+  event_base* getLibeventBase() const {
+    return evb_;
+  }
   static const char* getLibeventVersion();
   static const char* getLibeventMethod();
 
@@ -515,14 +671,12 @@ class EventBase : private boost::noncopyable,
    * first handler fired within that cycle.
    *
    */
-  void bumpHandlingTime() override final;
+  void bumpHandlingTime() final;
 
   class SmoothLoopTime {
    public:
     explicit SmoothLoopTime(std::chrono::microseconds timeInterval)
-        : expCoeff_(-1.0 / timeInterval.count()),
-          value_(0.0),
-          oldBusyLeftover_(0) {
+        : expCoeff_(-1.0 / timeInterval.count()), value_(0.0) {
       VLOG(11) << "expCoeff_ " << expCoeff_ << " " << __PRETTY_FUNCTION__;
     }
 
@@ -530,11 +684,14 @@ class EventBase : private boost::noncopyable,
     void reset(double value = 0.0);
 
     void addSample(
-        std::chrono::microseconds idle,
+        std::chrono::microseconds total,
         std::chrono::microseconds busy);
 
     double get() const {
-      return value_;
+      // Add the outstanding buffered times linearly, to avoid
+      // expensive exponentiation
+      auto lcoeff = buffer_time_.count() * -expCoeff_;
+      return value_ * (1.0 - lcoeff) + lcoeff * busy_buffer_.count();
     }
 
     void dampen(double factor) {
@@ -544,7 +701,10 @@ class EventBase : private boost::noncopyable,
    private:
     double expCoeff_;
     double value_;
-    std::chrono::microseconds oldBusyLeftover_;
+    std::chrono::microseconds buffer_time_{0};
+    std::chrono::microseconds busy_buffer_{0};
+    std::size_t buffer_cnt_{0};
+    static constexpr std::chrono::milliseconds buffer_interval_{10};
   };
 
   void setObserver(const std::shared_ptr<EventBaseObserver>& observer) {
@@ -585,15 +745,11 @@ class EventBase : private boost::noncopyable,
 
   /// Implements the Executor interface
   void add(Cob fn) override {
-    // runInEventBaseThread() takes a const&,
-    // so no point in doing std::move here.
     runInEventBaseThread(std::move(fn));
   }
 
   /// Implements the DrivableExecutor interface
   void drive() override {
-    // We can't use loopKeepAlive() here since LoopKeepAlive token can only be
-    // released inside a loop.
     ++loopKeepAliveCount_;
     SCOPE_EXIT {
       --loopKeepAliveCount_;
@@ -601,32 +757,22 @@ class EventBase : private boost::noncopyable,
     loopOnce();
   }
 
-  /// Returns you a handle which make loop() behave like loopForever() until
-  /// destroyed. loop() will return to its original behavior only when all
-  /// loop keep-alives are released. Loop holder is safe to release only from
-  /// EventBase thread.
-  KeepAlive getKeepAliveToken() override {
-    if (inRunningEventBaseThread()) {
-      loopKeepAliveCount_++;
-    } else {
-      loopKeepAliveCountAtomic_.fetch_add(1, std::memory_order_relaxed);
-    }
-    return makeKeepAlive();
-  }
+  // Implements the ScheduledExecutor interface
+  void scheduleAt(Func&& fn, TimePoint const& timeout) override;
 
   // TimeoutManager
   void attachTimeoutManager(
       AsyncTimeout* obj,
-      TimeoutManager::InternalEnum internal) override final;
+      TimeoutManager::InternalEnum internal) final;
 
-  void detachTimeoutManager(AsyncTimeout* obj) override final;
+  void detachTimeoutManager(AsyncTimeout* obj) final;
 
   bool scheduleTimeout(AsyncTimeout* obj, TimeoutManager::timeout_type timeout)
-      override final;
+      final;
 
-  void cancelTimeout(AsyncTimeout* obj) override final;
+  void cancelTimeout(AsyncTimeout* obj) final;
 
-  bool isInTimeoutManagerThread() override final {
+  bool isInTimeoutManagerThread() final {
     return isInEventBaseThread();
   }
 
@@ -639,9 +785,23 @@ class EventBase : private boost::noncopyable,
   // don't need to manage the life time of the VirtualEventBase used.
   folly::VirtualEventBase& getVirtualEventBase();
 
+  /// Implements the IOExecutor interface
+  EventBase* getEventBase() override;
+
  protected:
+  bool keepAliveAcquire() override {
+    if (inRunningEventBaseThread()) {
+      loopKeepAliveCount_++;
+    } else {
+      loopKeepAliveCountAtomic_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return true;
+  }
+
   void keepAliveRelease() override {
-    DCHECK(isInEventBaseThread());
+    if (!inRunningEventBaseThread()) {
+      return add([this] { loopKeepAliveCount_--; });
+    }
     loopKeepAliveCount_--;
   }
 
@@ -659,7 +819,7 @@ class EventBase : private boost::noncopyable,
   typedef LoopCallback::List LoopCallbackList;
   class FunctionRunner;
 
-  bool loopBody(int flags = 0);
+  bool loopBody(int flags = 0, bool ignoreKeepAlive = false);
 
   // executes any callbacks queued by runInLoop(); returns false if none found
   bool runLoopCallbacks();
@@ -671,7 +831,7 @@ class EventBase : private boost::noncopyable,
 
   LoopCallbackList loopCallbacks_;
   LoopCallbackList runBeforeLoopCallbacks_;
-  LoopCallbackList onDestructionCallbacks_;
+  Synchronized<OnDestructionCallback::List> onDestructionCallbacks_;
 
   // This will be null most of the time, but point to currentCallbacks
   // if we are in the middle of running loop callbacks, such that
@@ -718,8 +878,8 @@ class EventBase : private boost::noncopyable,
   const bool enableTimeMeasurement_;
 
   // Wrap-around loop counter to detect beginning of each loop
-  uint64_t nextLoopCnt_;
-  uint64_t latestLoopCnt_;
+  std::size_t nextLoopCnt_;
+  std::size_t latestLoopCnt_;
   std::chrono::steady_clock::time_point startWork_;
   // Prevent undefined behavior from invoking event_base_loop() reentrantly.
   // This is needed since many projects use libevent-1.4, which lacks commit
@@ -737,14 +897,11 @@ class EventBase : private boost::noncopyable,
   // Name of the thread running this EventBase
   std::string name_;
 
-  // allow runOnDestruction() to be called from any threads
-  std::mutex onDestructionCallbacksMutex_;
-
   // see EventBaseLocal
   friend class detail::EventBaseLocalBase;
-  template <typename T> friend class EventBaseLocal;
-  std::mutex localStorageMutex_;
-  std::unordered_map<uint64_t, std::shared_ptr<void>> localStorage_;
+  template <typename T>
+  friend class EventBaseLocal;
+  std::unordered_map<std::size_t, std::shared_ptr<void>> localStorage_;
   std::unordered_set<detail::EventBaseLocalBaseBase*> localStorageToDtor_;
 
   folly::once_flag virtualEventBaseInitFlag_;
@@ -752,20 +909,27 @@ class EventBase : private boost::noncopyable,
 };
 
 template <typename T>
-bool EventBase::runInEventBaseThread(void (*fn)(T*), T* arg) {
+void EventBase::runInEventBaseThread(void (*fn)(T*), T* arg) noexcept {
   return runInEventBaseThread([=] { fn(arg); });
 }
 
 template <typename T>
-bool EventBase::runInEventBaseThreadAndWait(void (*fn)(T*), T* arg) {
+void EventBase::runInEventBaseThreadAlwaysEnqueue(
+    void (*fn)(T*),
+    T* arg) noexcept {
+  return runInEventBaseThreadAlwaysEnqueue([=] { fn(arg); });
+}
+
+template <typename T>
+void EventBase::runInEventBaseThreadAndWait(void (*fn)(T*), T* arg) noexcept {
   return runInEventBaseThreadAndWait([=] { fn(arg); });
 }
 
 template <typename T>
-bool EventBase::runImmediatelyOrRunInEventBaseThreadAndWait(
+void EventBase::runImmediatelyOrRunInEventBaseThreadAndWait(
     void (*fn)(T*),
-    T* arg) {
+    T* arg) noexcept {
   return runImmediatelyOrRunInEventBaseThreadAndWait([=] { fn(arg); });
 }
 
-} // folly
+} // namespace folly

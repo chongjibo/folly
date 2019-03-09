@@ -1,30 +1,28 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #pragma once
 
+#include <cstddef>
+
 #include <glog/logging.h>
+
 #include <folly/io/async/EventUtil.h>
+#include <folly/net/NetworkSocket.h>
 #include <folly/portability/Event.h>
-#include <boost/noncopyable.hpp>
-#include <stddef.h>
 
 namespace folly {
 
@@ -37,7 +35,7 @@ class EventBase;
  * Users that wish to wait on I/O events should derive from EventHandler and
  * implement the handlerReady() method.
  */
-class EventHandler : private boost::noncopyable {
+class EventHandler {
  public:
   enum EventFlags {
     NONE = 0,
@@ -63,7 +61,14 @@ class EventHandler : private boost::noncopyable {
    *                   descriptor must be set separately using initHandler() or
    *                   changeHandlerFD() before the handler can be registered.
    */
-  explicit EventHandler(EventBase* eventBase = nullptr, int fd = -1);
+  explicit EventHandler(EventBase* eventBase, int fd)
+      : EventHandler(eventBase, NetworkSocket::fromFd(fd)) {}
+  explicit EventHandler(
+      EventBase* eventBase = nullptr,
+      NetworkSocket fd = NetworkSocket());
+
+  EventHandler(const EventHandler&) = delete;
+  EventHandler& operator=(const EventHandler&) = delete;
 
   /**
    * EventHandler destructor.
@@ -137,7 +142,7 @@ class EventHandler : private boost::noncopyable {
    *
    * This may only be called when the handler is not currently registered.
    */
-  void changeHandlerFD(int fd);
+  void changeHandlerFD(NetworkSocket fd);
 
   /**
    * Attach the handler to a EventBase, and change the file descriptor.
@@ -146,7 +151,7 @@ class EventHandler : private boost::noncopyable {
    * a EventBase.  This is primarily intended to be used to initialize
    * EventHandler objects created using the default constructor.
    */
-  void initHandler(EventBase* eventBase, int fd);
+  void initHandler(EventBase* eventBase, NetworkSocket fd);
 
   /**
    * Return the set of events that we're currently registered for.
@@ -187,4 +192,4 @@ class EventHandler : private boost::noncopyable {
   EventBase* eventBase_;
 };
 
-} // folly
+} // namespace folly

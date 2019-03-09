@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,39 +16,42 @@
 
 #pragma once
 
-#include <folly/futures/Promise.h>
 #include <folly/Portability.h>
+#include <folly/executors/InlineExecutor.h>
+#include <folly/futures/Promise.h>
+#include <folly/lang/Exception.h>
 
 namespace folly {
 
 /*
  * SharedPromise provides the same interface as Promise, but you can extract
  * multiple Futures from it, i.e. you can call getFuture() as many times as
- * you'd like. When the SharedPromise is fulfilled, all of the Futures will be
- * called back. Calls to getFuture() after the SharedPromise is fulfilled return
+ * you'd like. When the SharedPromise is fulfilled, all of the Futures are
+ * completed. Calls to getFuture() after the SharedPromise is fulfilled return
  * a completed Future. If you find yourself constructing collections of Promises
  * and fulfilling them simultaneously with the same value, consider this
  * utility instead. Likewise, if you find yourself in need of setting multiple
  * callbacks on the same Future (which is indefinitely unsupported), consider
  * refactoring to use SharedPromise to "split" the Future.
+ *
+ * The ShardPromise must be kept alive manually. Consider FutureSplitter for
+ * automatic lifetime management.
  */
 template <class T>
 class SharedPromise {
-public:
-  SharedPromise() = default;
-  ~SharedPromise() = default;
-
-  // not copyable
-  SharedPromise(SharedPromise const&) = delete;
-  SharedPromise& operator=(SharedPromise const&) = delete;
-
-  // movable
-  SharedPromise(SharedPromise<T>&&) noexcept;
-  SharedPromise& operator=(SharedPromise<T>&&) noexcept;
+ public:
+  /**
+   * Return a Future tied to the shared core state. Unlike Promise::getFuture,
+   * this can be called an unlimited number of times per SharedPromise.
+   */
+  SemiFuture<T> getSemiFuture();
 
   /**
    * Return a Future tied to the shared core state. Unlike Promise::getFuture,
    * this can be called an unlimited number of times per SharedPromise.
+   * NOTE: This function is deprecated. Please use getSemiFuture and pass the
+   *       appropriate executor to .via on the returned SemiFuture to get a
+   *       valid Future where necessary.
    */
   Future<T> getFuture();
 
@@ -58,18 +61,8 @@ public:
   /** Fulfill the SharedPromise with an exception_wrapper */
   void setException(exception_wrapper ew);
 
-  /** Fulfill the SharedPromise with an exception_ptr, e.g.
-    try {
-      ...
-    } catch (...) {
-      p.setException(std::current_exception());
-    }
-    */
-  FOLLY_DEPRECATED("use setException(exception_wrapper)")
-  void setException(std::exception_ptr const&);
-
   /** Fulfill the SharedPromise with an exception type E, which can be passed to
-    std::make_exception_ptr(). Useful for originating exceptions. If you
+    make_exception_wrapper(). Useful for originating exceptions. If you
     caught an exception the exception_wrapper form is more appropriate.
     */
   template <class E>
@@ -78,15 +71,14 @@ public:
 
   /// Set an interrupt handler to handle interrupts. See the documentation for
   /// Future::raise(). Your handler can do whatever it wants, but if you
-  /// bother to set one then you probably will want to fulfill the SharedPromise with
-  /// an exception (or special value) indicating how the interrupt was
+  /// bother to set one then you probably will want to fulfill the SharedPromise
+  /// with an exception (or special value) indicating how the interrupt was
   /// handled.
   void setInterruptHandler(std::function<void(exception_wrapper const&)>);
 
   /// Sugar to fulfill this SharedPromise<Unit>
   template <class B = T>
-  typename std::enable_if<std::is_same<Unit, B>::value, void>::type
-  setValue() {
+  typename std::enable_if<std::is_same<Unit, B>::value, void>::type setValue() {
     setTry(Try<T>(T()));
   }
 
@@ -107,16 +99,44 @@ public:
 
   bool isFulfilled();
 
-private:
-  std::mutex mutex_;
-  size_t size_{0};
-  bool hasValue_{false};
-  Try<T> try_;
+ private:
+  // this allows SharedPromise move-ctor/move-assign to be defaulted
+  struct Mutex : std::mutex {
+    Mutex() = default;
+    Mutex(Mutex&&) noexcept {}
+    Mutex& operator=(Mutex&&) noexcept {
+      return *this;
+    }
+  };
+
+  template <typename V>
+  struct Defaulted {
+    using Noexcept = StrictConjunction<
+        std::is_nothrow_default_constructible<V>,
+        std::is_nothrow_move_constructible<V>,
+        std::is_nothrow_move_assignable<V>>;
+    V value{V()};
+    Defaulted() = default;
+    Defaulted(Defaulted&& that) noexcept(Noexcept::value)
+        : value(std::exchange(that.value, V())) {}
+    Defaulted& operator=(Defaulted&& that) noexcept(Noexcept::value) {
+      value = std::exchange(that.value, V());
+      return *this;
+    }
+  };
+
+  bool hasResult() {
+    return try_.value.hasValue() || try_.value.hasException();
+  }
+
+  Mutex mutex_;
+  Defaulted<size_t> size_;
+  Defaulted<Try<T>> try_;
   std::vector<Promise<T>> promises_;
   std::function<void(exception_wrapper const&)> interruptHandler_;
 };
 
-}
+} // namespace folly
 
 #include <folly/futures/Future.h>
 #include <folly/futures/SharedPromise-inl.h>

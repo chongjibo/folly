@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,29 +17,38 @@
 
 namespace folly {
 
-VirtualEventBase::VirtualEventBase(EventBase& evb) : evb_(evb) {
-  evbLoopKeepAlive_ = evb_.getKeepAliveToken();
-}
+VirtualEventBase::VirtualEventBase(EventBase& evb)
+    : evb_(getKeepAliveToken(evb)) {}
 
 std::future<void> VirtualEventBase::destroy() {
-  CHECK(evb_.runInEventBaseThread([this] { loopKeepAlive_.reset(); }));
+  evb_->runInEventBaseThread([this] { loopKeepAlive_.reset(); });
 
   return std::move(destroyFuture_);
 }
 
 void VirtualEventBase::destroyImpl() {
-  // Make sure we release EventBase KeepAlive token even if exception occurs
-  auto evbLoopKeepAlive = std::move(evbLoopKeepAlive_);
   try {
-    clearCobTimeouts();
+    {
+      // After destroyPromise_ is posted this object may be destroyed, so make
+      // sure we release EventBase's keep-alive token before that.
+      SCOPE_EXIT {
+        evb_.reset();
+      };
 
-    onDestructionCallbacks_.withWLock([&](LoopCallbackList& callbacks) {
-      while (!callbacks.empty()) {
-        auto& callback = callbacks.front();
-        callbacks.pop_front();
-        callback.runLoopCallback();
+      clearCobTimeouts();
+
+      while (!onDestructionCallbacks_.rlock()->empty()) {
+        // To avoid potential deadlock, do not hold the mutex while invoking
+        // user-supplied callbacks.
+        EventBase::OnDestructionCallback::List callbacks;
+        onDestructionCallbacks_.swap(callbacks);
+        while (!callbacks.empty()) {
+          auto& callback = callbacks.front();
+          callbacks.pop_front();
+          callback.runCallback();
+        }
       }
-    });
+    }
 
     destroyPromise_.set_value();
   } catch (...) {
@@ -51,14 +60,23 @@ VirtualEventBase::~VirtualEventBase() {
   if (!destroyFuture_.valid()) {
     return;
   }
-  CHECK(!evb_.inRunningEventBaseThread());
+  CHECK(!evb_->inRunningEventBaseThread());
   destroy().get();
 }
 
-void VirtualEventBase::runOnDestruction(EventBase::LoopCallback* callback) {
-  onDestructionCallbacks_.withWLock([&](LoopCallbackList& callbacks) {
-    callback->cancelLoopCallback();
-    callbacks.push_back(*callback);
-  });
+void VirtualEventBase::runOnDestruction(
+    EventBase::OnDestructionCallback& callback) {
+  callback.schedule(
+      [this](auto& cb) { onDestructionCallbacks_.wlock()->push_back(cb); },
+      [this](auto& cb) {
+        onDestructionCallbacks_.withWLock(
+            [&](auto& list) { list.erase(list.iterator_to(cb)); });
+      });
 }
+
+void VirtualEventBase::runOnDestruction(Func f) {
+  auto* callback = new EventBase::FunctionOnDestructionCallback(std::move(f));
+  runOnDestruction(*callback);
 }
+
+} // namespace folly

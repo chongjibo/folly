@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@
 
 #include <chrono>
 #include <functional>
+
+#include <folly/io/async/HHWheelTimer-fwd.h>
 
 namespace folly {
 namespace fibers {
@@ -37,7 +39,7 @@ class LoopController {
 
   /**
    * Called by FiberManager to schedule the loop function run
-   * at some point in the future.
+   * at some point in the futufre.
    */
   virtual void schedule() = 0;
 
@@ -49,20 +51,13 @@ class LoopController {
 
   /**
    * Same as schedule(), but safe to call from any thread.
-   * Runs func and only schedules if func returned true.
    */
-  virtual void scheduleThreadSafe(std::function<bool()> func) = 0;
+  virtual void scheduleThreadSafe() = 0;
 
   /**
-   * Called by FiberManager to cancel a previously scheduled
-   * loop function run.
+   * Used by FiberManager to schedule some function to be run at some time.
    */
-  virtual void cancel() = 0;
-
-  /**
-   * Called by FiberManager to schedule some function to be run at some time.
-   */
-  virtual void timedSchedule(std::function<void()> func, TimePoint time) = 0;
+  virtual HHWheelTimer& timer() = 0;
 };
-}
-} // folly::fibers
+} // namespace fibers
+} // namespace folly

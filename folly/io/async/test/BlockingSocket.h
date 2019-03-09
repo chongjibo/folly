@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,13 @@
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/SSLContext.h>
+#include <folly/net/NetworkSocket.h>
 
 class BlockingSocket : public folly::AsyncSocket::ConnectCallback,
                        public folly::AsyncTransportWrapper::ReadCallback,
                        public folly::AsyncTransportWrapper::WriteCallback {
  public:
-  explicit BlockingSocket(int fd)
+  explicit BlockingSocket(folly::NetworkSocket fd)
       : sock_(new folly::AsyncSocket(&eventBase_, fd)) {}
 
   BlockingSocket(
@@ -84,7 +85,7 @@ class BlockingSocket : public folly::AsyncSocket::ConnectCallback,
   }
 
   int getSocketFD() const {
-    return sock_->getFd();
+    return sock_->getNetworkSocket().toFd();
   }
 
   folly::AsyncSocket* getSocket() {
