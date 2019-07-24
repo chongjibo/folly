@@ -45,16 +45,46 @@
 // the test due to runtime issues or behavior that do not necessarily indicate
 // a problem with the code.
 //
-// googletest does not have a built-in mechanism to report tests as skipped a
-// run time.  We either report the test as successful or failure based on the
-// FOLLY_SKIP_AS_FAILURE configuration setting.  The default is to report the
-// test as successful.  Enabling FOLLY_SKIP_AS_FAILURE can be useful with a
-// test harness that can identify the "Test skipped by client" in the failure
-// message and convert this into a skipped test result.
-#if FOLLY_SKIP_AS_FAILURE
-#define SKIP() GTEST_FATAL_FAILURE_("Test skipped by client")
+// It used to be that `googletest` did NOT have a built-in mechanism to
+// report tests as skipped a run time.  As of the following commit, it has
+// fairly complete support for the feature -- i.e.  `SKIP` does what you
+// expect both in test fixture `SetUp` and in `Environment::SetUp`, as well
+// as in the test body:
+//
+// https://github.com/google/googletest/commit/67c75ff8baf4228e857c09d3aaacd3f1ddf53a8f
+//
+// Open-source projects depending on folly may still use the latest release
+// googletest-1.8.1, which does not have that feature.  Therefore, for
+// backwards compatibility, our `SKIP` only uses `GTEST_SKIP_` when
+// available.
+//
+// Difference from vanilla `GTEST_SKIP`: The skip message diverges from
+// upstream's "Skipped" in order to conform with the historical message in
+// `folly`.  The intention is not to break tooling that depends on that
+// specific pattern.
+//
+// Differences between the new `GTEST_SKIP_` path and the old
+// `GTEST_MESSAGE_` path:
+//   - New path: `SKIP` in `SetUp` prevents the test from running.  Running
+//     the gtest main directly clearly marks SKIPPED tests.
+//   - Old path: Without `skipIsFailure`, `SKIP` in `SetUp` would
+//     unexpectedly execute the test, potentially causing segfaults or
+//     undefined behavior.  We would either report the test as successful or
+//     failed based on whether the `FOLLY_SKIP_AS_FAILURE` environment
+//     variable is set.  The default is to report the test as successful.
+//     Enabling FOLLY_SKIP_AS_FAILURE was to be used with a test harness
+//     that can identify the "Test skipped by client" in the failure message
+//     and convert this into a skipped test result.
+#ifdef GTEST_SKIP_
+#define SKIP(msg) GTEST_SKIP_("Test skipped by client")
 #else
-#define SKIP() return GTEST_SUCCESS_("Test skipped by client")
+#define SKIP()                                       \
+  GTEST_AMBIGUOUS_ELSE_BLOCKER_                      \
+  return GTEST_MESSAGE_(                             \
+      "Test skipped by client",                      \
+      ::folly::test::detail::skipIsFailure()         \
+          ? ::testing::TestPartResult::kFatalFailure \
+          : ::testing::TestPartResult::kSuccess)
 #endif
 
 // Encapsulate conditional-skip, since it's nontrivial to get right.
@@ -142,6 +172,11 @@ AreWithinSecs(T1 val1, T2 val2, std::chrono::seconds acceptableDeltaSecs) {
 }
 
 namespace detail {
+
+inline bool skipIsFailure() {
+  const char* p = getenv("FOLLY_SKIP_AS_FAILURE");
+  return p && (0 == strcmp(p, "1"));
+}
 
 /**
  * Helper class for implementing test macros

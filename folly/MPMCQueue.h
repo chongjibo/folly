@@ -115,6 +115,9 @@ class MPMCQueue : public detail::MPMCQueueBase<MPMCQueue<T, Atom, Dynamic>> {
   MPMCQueue() noexcept {}
 };
 
+/// *** The dynamic version of MPMCQueue is deprecated. ***
+/// Use UnboundedQueue instead.
+
 /// The dynamic version of MPMCQueue allows dynamic expansion of queue
 /// capacity, such that a queue may start with a smaller capacity than
 /// specified and expand only if needed. Users may optionally specify
@@ -1455,9 +1458,9 @@ struct SingleElementQueue {
     } catch (...) {
       // g++ doesn't seem to have std::is_nothrow_destructible yet
     }
-#ifndef NDEBUG
-    memset(&contents_, 'Q', sizeof(T));
-#endif
+    if (kIsDebug) {
+      memset(&contents_, 'Q', sizeof(T));
+    }
   }
 
   /// Tag classes for dispatching to enqueue/dequeue implementation.

@@ -22,6 +22,7 @@
 
 #include <folly/Memory.h>
 #include <folly/Portability.h>
+#include <folly/Traits.h>
 #include <folly/Unit.h>
 #include <folly/container/HeterogeneousAccess.h>
 #include <folly/container/detail/F14Table.h>
@@ -156,13 +157,6 @@ struct BasePolicy
   struct AllocIsAlwaysEqual<A, typename A::is_always_equal>
       : A::is_always_equal {};
 
-  // emulate c++17 has std::is_nothrow_swappable
-  template <typename T>
-  static constexpr bool isNothrowSwap() {
-    using std::swap;
-    return noexcept(swap(std::declval<T&>(), std::declval<T&>()));
-  }
-
  public:
   static constexpr bool kAllocIsAlwaysEqual = AllocIsAlwaysEqual<Alloc>::value;
 
@@ -172,7 +166,7 @@ struct BasePolicy
       std::is_nothrow_default_constructible<Alloc>::value;
 
   static constexpr bool kSwapIsNoexcept = kAllocIsAlwaysEqual &&
-      isNothrowSwap<Hasher>() && isNothrowSwap<KeyEqual>();
+      IsNothrowSwappable<Hasher>{} && IsNothrowSwappable<KeyEqual>{};
 
   static constexpr bool isAvalanchingHasher() {
     return IsAvalanchingHasher<Hasher, Key>::value;
@@ -227,21 +221,40 @@ struct BasePolicy
         KeyEqualHolder{std::move(rhs.keyEqual())},
         AllocHolder{alloc} {}
 
+ private:
+  template <typename Src>
+  void maybeAssignAlloc(std::true_type, Src&& src) {
+    alloc() = std::forward<Src>(src);
+  }
+
+  template <typename Src>
+  void maybeAssignAlloc(std::false_type, Src&&) {}
+
+  template <typename A>
+  void maybeSwapAlloc(std::true_type, A& rhs) {
+    using std::swap;
+    swap(alloc(), rhs);
+  }
+
+  template <typename A>
+  void maybeSwapAlloc(std::false_type, A&) {}
+
+ public:
   BasePolicy& operator=(BasePolicy const& rhs) {
     hasher() = rhs.hasher();
     keyEqual() = rhs.keyEqual();
-    if (AllocTraits::propagate_on_container_copy_assignment::value) {
-      alloc() = rhs.alloc();
-    }
+    maybeAssignAlloc(
+        typename AllocTraits::propagate_on_container_copy_assignment{},
+        rhs.alloc());
     return *this;
   }
 
   BasePolicy& operator=(BasePolicy&& rhs) noexcept {
     hasher() = std::move(rhs.hasher());
     keyEqual() = std::move(rhs.keyEqual());
-    if (AllocTraits::propagate_on_container_move_assignment::value) {
-      alloc() = std::move(rhs.alloc());
-    }
+    maybeAssignAlloc(
+        typename AllocTraits::propagate_on_container_move_assignment{},
+        std::move(rhs.alloc()));
     return *this;
   }
 
@@ -249,9 +262,8 @@ struct BasePolicy
     using std::swap;
     swap(hasher(), rhs.hasher());
     swap(keyEqual(), rhs.keyEqual());
-    if (AllocTraits::propagate_on_container_swap::value) {
-      swap(alloc(), rhs.alloc());
-    }
+    maybeSwapAlloc(
+        typename AllocTraits::propagate_on_container_swap{}, rhs.alloc());
   }
 
   Hasher& hasher() {
@@ -387,7 +399,7 @@ struct BasePolicy
   }
 
   void afterDestroyWithoutDeallocate(Value* addr, std::size_t n) {
-    if (kIsSanitizeAddress) {
+    if (kIsLibrarySanitizeAddress) {
       memset(static_cast<void*>(addr), 0x66, sizeof(Value) * n);
     }
   }
@@ -647,7 +659,7 @@ class ValueContainerPolicy : public BasePolicy<
 
   //////// F14BasicMap/Set policy
 
-  Iter makeIter(ItemIter const& underlying) const {
+  FOLLY_ALWAYS_INLINE Iter makeIter(ItemIter const& underlying) const {
     return Iter{underlying};
   }
   ConstIter makeConstIter(ItemIter const& underlying) const {
@@ -837,7 +849,9 @@ class NodeContainerPolicy
     auto p = std::addressof(**itemAddr);
     // TODO(T31574848): clean up assume-s used to optimize placement new
     assume(p != nullptr);
+    auto rollback = makeGuard([&] { AllocTraits::deallocate(a, p, 1); });
     AllocTraits::construct(a, p, std::forward<Args>(args)...);
+    rollback.dismiss();
   }
 
   void moveItemDuringRehash(Item* itemAddr, Item& src) {
@@ -882,7 +896,7 @@ class NodeContainerPolicy
 
   //////// F14BasicMap/Set policy
 
-  Iter makeIter(ItemIter const& underlying) const {
+  FOLLY_ALWAYS_INLINE Iter makeIter(ItemIter const& underlying) const {
     return Iter{underlying};
   }
   ConstIter makeConstIter(ItemIter const& underlying) const {
@@ -1366,7 +1380,7 @@ class VectorContainerPolicy : public BasePolicy<
             &*outChunkAllocation + valuesOffset(chunkAllocSize))));
 
     if (size > 0) {
-      Alloc& a{this->alloc()};
+      Alloc& a = this->alloc();
       transfer(a, std::addressof(before[0]), std::addressof(after[0]), size);
     }
 

@@ -52,8 +52,9 @@
 #include <folly/container/HeterogeneousAccess.h>
 #include <folly/container/detail/F14Defaults.h>
 #include <folly/container/detail/F14IntrinsicsAvailability.h>
+#include <folly/container/detail/F14Mask.h>
 
-#if FOLLY_ASAN_ENABLED && defined(FOLLY_TLS)
+#if FOLLY_LIBRARY_SANITIZE_ADDRESS && defined(FOLLY_TLS)
 #define FOLLY_F14_TLS_IF_ASAN FOLLY_TLS
 #else
 #define FOLLY_F14_TLS_IF_ASAN
@@ -187,6 +188,16 @@ struct StdNodeReplica<
 
 #endif
 
+template <class Container, class Predicate>
+void erase_if_impl(Container& c, Predicate& predicate) {
+  for (auto i = c.begin(), last = c.end(); i != last;) {
+    auto prev = i++;
+    if (predicate(*prev)) {
+      c.erase(prev);
+    }
+  }
+}
+
 } // namespace detail
 } // namespace f14
 
@@ -218,40 +229,27 @@ class F14HashToken final {
 
 namespace f14 {
 namespace detail {
-//// Defaults should be selected using void
 
+//// Defaults should be selected using void
 template <typename Arg, typename Default>
 using VoidDefault =
     std::conditional_t<std::is_same<Arg, Default>::value, void, Arg>;
 
 template <typename Arg, typename Default>
 using Defaulted =
-    typename std::conditional_t<std::is_same<Arg, void>::value, Default, Arg>;
-
-template <
-    typename TableKey,
-    typename Hasher,
-    typename KeyEqual,
-    typename ArgKey,
-    typename Void = void>
-struct EligibleForHeterogeneousFind : std::false_type {};
+    std::conditional_t<std::is_same<Arg, void>::value, Default, Arg>;
 
 template <
     typename TableKey,
     typename Hasher,
     typename KeyEqual,
     typename ArgKey>
-struct EligibleForHeterogeneousFind<
-    TableKey,
-    Hasher,
-    KeyEqual,
-    ArgKey,
-    void_t<
-        typename Hasher::is_transparent,
-        typename KeyEqual::is_transparent,
-        invoke_result_t<Hasher, ArgKey const&>,
-        invoke_result_t<KeyEqual, ArgKey const&, TableKey const&>>>
-    : std::true_type {};
+struct EligibleForHeterogeneousFind
+    : Conjunction<
+          is_transparent<Hasher>,
+          is_transparent<KeyEqual>,
+          is_invocable<Hasher, ArgKey const&>,
+          is_invocable<KeyEqual, ArgKey const&, TableKey const&>> {};
 
 template <
     typename TableKey,
@@ -305,28 +303,10 @@ FOLLY_ALWAYS_INLINE static void prefetchAddr(T const* ptr) {
 #endif
 }
 
-template <typename T>
-FOLLY_ALWAYS_INLINE static unsigned findFirstSetNonZero(T mask) {
-  assume(mask != 0);
-  if (sizeof(mask) == sizeof(unsigned)) {
-    return __builtin_ctz(static_cast<unsigned>(mask));
-  } else {
-    return __builtin_ctzll(mask);
-  }
-}
-
 #if FOLLY_NEON
 using TagVector = uint8x16_t;
-
-using MaskType = uint64_t;
-
-constexpr unsigned kMaskSpacing = 4;
 #else // SSE2
 using TagVector = __m128i;
-
-using MaskType = uint32_t;
-
-constexpr unsigned kMaskSpacing = 1;
 #endif
 
 // We could use unaligned loads to relax this requirement, but that
@@ -340,195 +320,6 @@ using EmptyTagVectorType = std::aligned_storage_t<
     alignof(max_align_t)>;
 
 extern EmptyTagVectorType kEmptyTagVector;
-
-template <unsigned BitCount>
-struct FullMask {
-  static constexpr MaskType value =
-      (FullMask<BitCount - 1>::value << kMaskSpacing) + 1;
-};
-
-template <>
-struct FullMask<1> : std::integral_constant<MaskType, 1> {};
-
-#if FOLLY_ARM
-// Mask iteration is different for ARM because that is the only platform
-// for which the mask is bigger than a register.
-
-// Iterates a mask, optimized for the case that only a few bits are set
-class SparseMaskIter {
-  static_assert(kMaskSpacing == 4, "");
-
-  uint32_t interleavedMask_;
-
- public:
-  explicit SparseMaskIter(MaskType mask)
-      : interleavedMask_{static_cast<uint32_t>(((mask >> 32) << 2) | mask)} {}
-
-  bool hasNext() {
-    return interleavedMask_ != 0;
-  }
-
-  unsigned next() {
-    FOLLY_SAFE_DCHECK(hasNext(), "");
-    unsigned i = findFirstSetNonZero(interleavedMask_);
-    interleavedMask_ &= (interleavedMask_ - 1);
-    return ((i >> 2) | (i << 2)) & 0xf;
-  }
-};
-
-// Iterates a mask, optimized for the case that most bits are set
-class DenseMaskIter {
-  static_assert(kMaskSpacing == 4, "");
-
-  std::size_t count_;
-  unsigned index_;
-  uint8_t const* tags_;
-
- public:
-  explicit DenseMaskIter(uint8_t const* tags, MaskType mask) {
-    if (mask == 0) {
-      count_ = 0;
-    } else {
-      count_ = popcount(static_cast<uint32_t>(((mask >> 32) << 2) | mask));
-      if (LIKELY((mask & 1) != 0)) {
-        index_ = 0;
-      } else {
-        index_ = findFirstSetNonZero(mask) / kMaskSpacing;
-      }
-      tags_ = tags;
-    }
-  }
-
-  bool hasNext() {
-    return count_ > 0;
-  }
-
-  unsigned next() {
-    auto rv = index_;
-    --count_;
-    if (count_ > 0) {
-      do {
-        ++index_;
-      } while ((tags_[index_] & 0x80) == 0);
-    }
-    FOLLY_SAFE_DCHECK(index_ < 16, "");
-    return rv;
-  }
-};
-
-#else
-// Iterates a mask, optimized for the case that only a few bits are set
-class SparseMaskIter {
-  MaskType mask_;
-
- public:
-  explicit SparseMaskIter(MaskType mask) : mask_{mask} {}
-
-  bool hasNext() {
-    return mask_ != 0;
-  }
-
-  unsigned next() {
-    FOLLY_SAFE_DCHECK(hasNext(), "");
-    unsigned i = findFirstSetNonZero(mask_);
-    mask_ &= (mask_ - 1);
-    return i / kMaskSpacing;
-  }
-};
-
-// Iterates a mask, optimized for the case that most bits are set
-class DenseMaskIter {
-  MaskType mask_;
-  unsigned index_{0};
-
- public:
-  explicit DenseMaskIter(uint8_t const*, MaskType mask) : mask_{mask} {}
-
-  bool hasNext() {
-    return mask_ != 0;
-  }
-
-  unsigned next() {
-    FOLLY_SAFE_DCHECK(hasNext(), "");
-    if (LIKELY((mask_ & 1) != 0)) {
-      mask_ >>= kMaskSpacing;
-      return index_++;
-    } else {
-      unsigned s = findFirstSetNonZero(mask_);
-      unsigned rv = index_ + (s / kMaskSpacing);
-      mask_ >>= (s + kMaskSpacing);
-      index_ = rv + 1;
-      return rv;
-    }
-  }
-};
-#endif
-
-// Iterates a mask, returning pairs of [begin,end) index covering blocks
-// of set bits
-class MaskRangeIter {
-  MaskType mask_;
-  unsigned shift_{0};
-
- public:
-  explicit MaskRangeIter(MaskType mask) {
-    // If kMaskSpacing is > 1 then there will be empty bits even for
-    // contiguous ranges.  Fill them in.
-    mask_ = mask * ((1 << kMaskSpacing) - 1);
-  }
-
-  bool hasNext() {
-    return mask_ != 0;
-  }
-
-  std::pair<unsigned, unsigned> next() {
-    FOLLY_SAFE_DCHECK(hasNext(), "");
-    auto s = shift_;
-    unsigned b = findFirstSetNonZero(mask_);
-    unsigned e = findFirstSetNonZero(~(mask_ | (mask_ - 1)));
-    mask_ >>= e;
-    shift_ = s + e;
-    return std::make_pair((s + b) / kMaskSpacing, (s + e) / kMaskSpacing);
-  }
-};
-
-// Holds the result of an index query that has an optional result,
-// interpreting a mask of 0 to be the empty answer and the index of the
-// last set bit to be the non-empty answer
-class LastOccupiedInMask {
-  MaskType mask_;
-
- public:
-  explicit LastOccupiedInMask(MaskType mask) : mask_{mask} {}
-
-  bool hasIndex() const {
-    return mask_ != 0;
-  }
-
-  unsigned index() const {
-    assume(mask_ != 0);
-    return (findLastSet(mask_) - 1) / kMaskSpacing;
-  }
-};
-
-// Holds the result of an index query that has an optional result,
-// interpreting a mask of 0 to be the empty answer and the index of the
-// first set bit to be the non-empty answer
-class FirstEmptyInMask {
-  MaskType mask_;
-
- public:
-  explicit FirstEmptyInMask(MaskType mask) : mask_{mask} {}
-
-  bool hasIndex() const {
-    return mask_ != 0;
-  }
-
-  unsigned index() const {
-    FOLLY_SAFE_DCHECK(mask_ != 0, "");
-    return findFirstSetNonZero(mask_) / kMaskSpacing;
-  }
-};
 
 template <typename ItemType>
 struct alignas(kRequiredVectorAlignment) F14Chunk {
@@ -1265,7 +1056,7 @@ class F14Table : public Policy {
 
   // Hash values are used to compute the desired position, which is the
   // chunk index at which we would like to place a value (if there is no
-  // overflow), and the tag, which is an additional 8 bits of entropy.
+  // overflow), and the tag, which is an additional 7 bits of entropy.
   //
   // The standard's definition of hash function quality only refers to
   // the probability of collisions of the entire hash value, not to the
@@ -1276,7 +1067,7 @@ class F14Table : public Policy {
   //
   // If the user-supplied hasher is an avalanching one (each bit of the
   // hash value has a 50% chance of being the same for differing hash
-  // inputs), then we can just take 1 byte of the hash value for the tag
+  // inputs), then we can just take 7 bits of the hash value for the tag
   // and the rest for the desired position.  Avalanching hashers also
   // let us map hash value to array index position with just a bitmask
   // without risking clumping.  (Many hash tables just accept the risk
@@ -1302,7 +1093,7 @@ class F14Table : public Policy {
     std::size_t tag;
     if (!isAvalanchingHasher()) {
 #if FOLLY_F14_CRC_INTRINSIC_AVAILABLE
-#if FOLLY_SSE
+#if FOLLY_SSE_PREREQ(4, 2)
       // SSE4.2 CRC
       std::size_t c = _mm_crc32_u64(0, hash);
       tag = (c >> 24) | 0x80;
@@ -1353,7 +1144,7 @@ class F14Table : public Policy {
     uint8_t tag;
     if (!isAvalanchingHasher()) {
 #if FOLLY_F14_CRC_INTRINSIC_AVAILABLE
-#if FOLLY_SSE
+#if FOLLY_SSE_PREREQ(4, 2)
       // SSE4.2 CRC
       auto c = _mm_crc32_u32(0, hash);
       tag = static_cast<uint8_t>(~(c >> 25));
@@ -1782,12 +1573,12 @@ class F14Table : public Policy {
         chunks_->setCapacityScale(scale);
       }
     } else {
-      std::size_t maxChunkIndex = src.lastOccupiedChunk() - src.chunks_;
-
-      // happy path, no rehash but pack items toward bottom of chunk and
-      // use copy constructor
-      auto srcChunk = &src.chunks_[maxChunkIndex];
-      Chunk* dstChunk = &chunks_[maxChunkIndex];
+      // Happy path, no rehash but pack items toward bottom of chunk
+      // and use copy constructor.  Don't try to optimize by using
+      // lastOccupiedChunk() because there may be higher unoccupied chunks
+      // with the overflow bit set.
+      auto srcChunk = &src.chunks_[chunkMask_];
+      Chunk* dstChunk = &chunks_[chunkMask_];
       do {
         dstChunk->copyOverflowInfoFrom(*srcChunk);
 
@@ -1816,6 +1607,7 @@ class F14Table : public Policy {
 
       // reset doesn't care about packedBegin, so we don't fix it until the end
       if (kEnableItemIteration) {
+        std::size_t maxChunkIndex = src.lastOccupiedChunk() - src.chunks_;
         sizeAndPackedBegin_.packedBegin() =
             ItemIter{chunks_ + maxChunkIndex,
                      chunks_[maxChunkIndex].lastOccupied().index()}
@@ -2162,7 +1954,7 @@ class F14Table : public Policy {
   // sanitizer builds
 
   FOLLY_ALWAYS_INLINE void debugModeOnReserve(std::size_t capacity) {
-    if (kIsSanitizeAddress || kIsDebug) {
+    if (kIsLibrarySanitizeAddress || kIsDebug) {
       if (capacity > size()) {
         tlsPendingSafeInserts(static_cast<std::ptrdiff_t>(capacity - size()));
       }
@@ -2186,14 +1978,14 @@ class F14Table : public Policy {
     // One way to fix this is to call map.reserve(N) before such a
     // sequence, where N is the number of keys that might be inserted
     // within the section that retains references plus the existing size.
-    if (kIsSanitizeAddress && !tlsPendingSafeInserts() && size() > 0 &&
+    if (kIsLibrarySanitizeAddress && !tlsPendingSafeInserts() && size() > 0 &&
         tlsMinstdRand(size()) == 0) {
       debugModeSpuriousRehash();
     }
   }
 
   FOLLY_ALWAYS_INLINE void debugModeAfterInsert() {
-    if (kIsSanitizeAddress || kIsDebug) {
+    if (kIsLibrarySanitizeAddress || kIsDebug) {
       tlsPendingSafeInserts(-1);
     }
   }
@@ -2226,7 +2018,6 @@ class F14Table : public Policy {
     reserveImpl(capacity);
   }
 
-  // Returns true iff a rehash was performed
   void reserveForInsert(size_t incoming = 1) {
     FOLLY_SAFE_DCHECK(incoming > 0, "");
 
@@ -2401,7 +2192,7 @@ class F14Table : public Policy {
   }
 
   void clear() noexcept {
-    if (kIsSanitizeAddress) {
+    if (kIsLibrarySanitizeAddress) {
       // force recycling of heap memory
       auto bc = bucket_count();
       reset();
@@ -2602,7 +2393,7 @@ class F14Table : public Policy {
 namespace f14 {
 namespace test {
 inline void disableInsertOrderRandomization() {
-  if (kIsSanitizeAddress || kIsDebug) {
+  if (kIsLibrarySanitizeAddress || kIsDebug) {
     detail::tlsPendingSafeInserts(static_cast<std::ptrdiff_t>(
         (std::numeric_limits<std::size_t>::max)() / 2));
   }

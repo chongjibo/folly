@@ -210,6 +210,18 @@ TEST(ManualExecutor, drainsOnDestruction) {
   EXPECT_EQ(1, count);
 }
 
+TEST(ManualExecutor, keepAlive) {
+  auto future = [] {
+    ManualExecutor ex;
+    return futures::sleep(std::chrono::milliseconds{100})
+        .via(&ex)
+        .thenValue([](auto) { return 42; })
+        .semi();
+  }();
+  EXPECT_TRUE(future.isReady());
+  EXPECT_EQ(42, std::move(future).get());
+}
+
 TEST(Executor, InlineExecutor) {
   InlineExecutor x;
   size_t counter = 0;
@@ -275,10 +287,11 @@ class CrappyExecutor : public Executor {
 TEST(Executor, CrappyExecutor) {
   CrappyExecutor x;
   bool flag = false;
-  auto f = folly::via(&x).onError([&](std::runtime_error& e) {
-    EXPECT_STREQ("bad", e.what());
-    flag = true;
-  });
+  auto f = folly::via(&x).thenError(
+      folly::tag_t<std::runtime_error>{}, [&](std::runtime_error&& e) {
+        EXPECT_STREQ("bad", e.what());
+        flag = true;
+      });
   EXPECT_TRUE(flag);
 }
 

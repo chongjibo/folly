@@ -20,42 +20,38 @@
 
 namespace folly {
 namespace pushmi {
-
 namespace detail {
 
 PUSHMI_TEMPLATE(class SideEffects, class Out)
-(requires Receiver<SideEffects>&& Receiver<Out>)
+(requires Receiver<SideEffects>&& Receiver<Out>) //
 struct tap_ {
   SideEffects sideEffects;
   Out out;
 
   // side effect has no effect on the properties.
-  using properties = properties_t<Out>;
+  using receiver_category = receiver_category_t<Out>;
 
   PUSHMI_TEMPLATE(class... VN)
-  (requires ReceiveValue<SideEffects, const std::remove_reference_t<VN>...>&&
-       ReceiveValue<
-           Out,
-           std::remove_reference_t<VN>...>)
+  (requires ReceiveValue<SideEffects&, const std::remove_reference_t<VN>&...>&&
+       ReceiveValue<Out&, VN...>) //
   void value(VN&&... vn) {
-    set_value(sideEffects, as_const(vn)...);
+    set_value(sideEffects, folly::as_const(vn)...);
     set_value(out, (VN &&) vn...);
   }
   PUSHMI_TEMPLATE(class E)
-  (requires ReceiveError<SideEffects, const E>&&
-       ReceiveError<Out, E>)
-  void error(E e) noexcept {
-    set_error(sideEffects, as_const(e));
-    set_error(out, std::move(e));
+  (requires ReceiveError<SideEffects&, const std::remove_reference_t<E>&>&&
+       ReceiveError<Out&, E>) //
+   void error(E&& e) noexcept {
+    set_error(sideEffects, folly::as_const(e));
+    set_error(out, (E&&) e);
   }
   void done() {
     set_done(sideEffects);
     set_done(out);
   }
-  PUSHMI_TEMPLATE(class Up, class UUp = std::remove_reference_t<Up>)
-  (requires FlowReceiver<SideEffects>&& FlowReceiver<Out>)
-  void starting(
-      Up&& up) {
+  PUSHMI_TEMPLATE(class Up)
+  (requires FlowReceiver<SideEffects>&& FlowReceiver<Out>) //
+  void starting(Up&& up) {
     // up is not made const because sideEffects is allowed to call methods on up
     set_starting(sideEffects, up);
     set_starting(out, (Up &&) up);
@@ -64,64 +60,64 @@ struct tap_ {
 
 PUSHMI_INLINE_VAR constexpr struct make_tap_fn {
   PUSHMI_TEMPLATE(class SideEffects, class Out)
-  (requires Receiver<SideEffects>&& Receiver<Out>&&
-       Receiver<tap_<SideEffects, Out>>)
-  auto operator()(SideEffects se, Out out) const {
-    return tap_<SideEffects, Out>{std::move(se), std::move(out)};
+  (requires Receiver<std::decay_t<SideEffects>>&& Receiver<std::decay_t<Out>>&&
+       Receiver<tap_<std::decay_t<SideEffects>, std::decay_t<Out>>>) //
+  auto operator()(const SideEffects& se, Out&& out) const {
+    return tap_<std::decay_t<SideEffects>, std::decay_t<Out>>{se, (Out &&) out};
   }
 } const make_tap{};
 
 struct tap_fn {
  private:
-  PUSHMI_TEMPLATE(class In, class SideEffects)
-  (requires Sender<In>&& Receiver<SideEffects>)
-  static auto impl(
-      In in,
-      SideEffects sideEffects) {
-    return ::folly::pushmi::detail::sender_from(
-        std::move(in),
-        ::folly::pushmi::detail::submit_transform_out<In>(
-            out_impl<In, SideEffects>{std::move(sideEffects)}));
-  }
-
-  template <class... AN>
-  struct in_impl {
-    std::tuple<AN...> args_;
-    PUSHMI_TEMPLATE(class In)
-    (requires Sender<In>)
-    auto operator()(In in) {
-      return tap_fn::impl(
-          std::move(in),
-          ::folly::pushmi::detail::receiver_from_fn<In>()(std::move(args_)));
+  struct impl_fn {
+    PUSHMI_TEMPLATE(class In, class SideEffects)
+    (requires SenderTo<In, SideEffects>) //
+    auto operator()(In&& in, SideEffects&& sideEffects) {
+      return ::folly::pushmi::detail::sender_from(
+          (In &&) in,
+          submit_impl<In, std::decay_t<SideEffects>>{(SideEffects &&)
+                                                       sideEffects});
     }
   };
+
+  template <class... AN>
+  struct adapt_impl {
+    std::tuple<AN...> args_;
+    PUSHMI_TEMPLATE(class In)
+    (requires Sender<In>) //
+    auto operator()(In&& in) {
+      return tap_fn::impl_fn{}(
+          (In &&) in,
+          receiver_from_fn<In>()(std::move(args_)));
+    }
+  };
+
   PUSHMI_TEMPLATE(class In, class SideEffects)
-  (requires Sender<In>&& Receiver<SideEffects>)
-  struct out_impl {
+  (requires Sender<In> && Receiver<SideEffects>) //
+  struct submit_impl {
     SideEffects sideEffects_;
-    template<class Out>
-    using tap_t =
-      decltype(
-        detail::make_tap(
-          std::declval<const SideEffects&>(),
-          std::declval<Out>()));
-    template<class Out>
-    using receiver_t = invoke_result_t<receiver_from_fn<In>, tap_t<Out>>;
-    PUSHMI_TEMPLATE(class Out)
-    (requires Receiver<Out>&& SenderTo<In, Out>&& SenderTo<
-        In,
-        receiver_t<Out>>)
-    auto operator()(Out out) const {
-      auto gang{::folly::pushmi::detail::receiver_from_fn<In>()(
-          detail::make_tap(sideEffects_, std::move(out)))};
-      return gang;
+    template <class Out>
+    using tap_t = decltype(detail::make_tap(
+        std::declval<const SideEffects&>(),
+        std::declval<Out>()));
+    template <class Out>
+    using receiver_t =
+        invoke_result_t<receiver_from_fn<std::decay_t<In>>, tap_t<Out>>;
+    PUSHMI_TEMPLATE(class Data, class Out)
+    (requires Receiver<std::decay_t<Out>> &&
+      SenderTo<In, Out>&&
+      SenderTo<In, receiver_t<Out>>) //
+    auto operator()(Data&& in, Out&& out) const {
+      auto gang{receiver_from_fn<std::decay_t<In>>()(
+          detail::make_tap(sideEffects_, (Out &&) out))};
+      submit((In &&) in, std::move(gang));
     }
   };
 
  public:
   template <class... AN>
   auto operator()(AN... an) const {
-    return in_impl<AN...>{std::tuple<AN...>{std::move(an)...}};
+    return adapt_impl<AN...>{std::tuple<AN...>{std::move(an)...}};
   }
 };
 

@@ -20,12 +20,14 @@
 #include <functional>
 #include <utility>
 
+#include <glog/logging.h>
+
 #include <folly/Format.h>
 #include <folly/portability/GFlags.h>
 #include <folly/portability/SysMman.h>
 
 #ifdef __linux__
-#include <folly/experimental/io/HugePages.h>
+#include <folly/experimental/io/HugePages.h> // @manual
 #endif
 
 #include <fcntl.h>

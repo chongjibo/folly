@@ -98,7 +98,16 @@ class RequestData {
   struct DestructPtr {
     void operator()(RequestData* ptr);
   };
-  using SharedPtr = std::unique_ptr<RequestData, DestructPtr>;
+  struct SharedPtr : public std::unique_ptr<RequestData, DestructPtr> {
+    SharedPtr() = default;
+    using std::unique_ptr<RequestData, DestructPtr>::unique_ptr;
+    SharedPtr(const SharedPtr& other) : SharedPtr(constructPtr(other.get())) {}
+    SharedPtr& operator=(const SharedPtr& other) {
+      return operator=(constructPtr(other.get()));
+    }
+    SharedPtr(SharedPtr&&) = default;
+    SharedPtr& operator=(SharedPtr&&) = default;
+  };
 
   // Initialize the pseudo-shared ptr, increment the counter
   static SharedPtr constructPtr(RequestData* ptr);
@@ -191,7 +200,9 @@ class RequestContext {
   // A shared_ptr is used, because many request may fan out across
   // multiple threads, or do post-send processing, etc.
   static std::shared_ptr<RequestContext> setContext(
-      std::shared_ptr<RequestContext> ctx);
+      std::shared_ptr<RequestContext> const& ctx);
+  static std::shared_ptr<RequestContext> setContext(
+      std::shared_ptr<RequestContext>&& ctx);
 
   static std::shared_ptr<RequestContext> saveContext() {
     return getStaticContext();
@@ -271,7 +282,9 @@ class RequestContextScopeGuard {
 
   // Set a RequestContext that was previously captured by saveContext(). It will
   // be automatically reset to the original value when this goes out of scope.
-  explicit RequestContextScopeGuard(std::shared_ptr<RequestContext> ctx)
+  explicit RequestContextScopeGuard(std::shared_ptr<RequestContext> const& ctx)
+      : prev_(RequestContext::setContext(ctx)) {}
+  explicit RequestContextScopeGuard(std::shared_ptr<RequestContext>&& ctx)
       : prev_(RequestContext::setContext(std::move(ctx))) {}
 
   ~RequestContextScopeGuard() {

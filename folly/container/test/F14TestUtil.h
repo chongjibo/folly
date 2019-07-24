@@ -118,6 +118,30 @@ struct MoveOnlyTestInt {
   }
 };
 
+struct ThrowOnCopyTestInt {
+  int x{0};
+
+  ThrowOnCopyTestInt() {}
+
+  __attribute__((__noreturn__))
+  ThrowOnCopyTestInt(const ThrowOnCopyTestInt& other)
+      : x(other.x) {
+    throw std::exception{};
+  }
+
+  ThrowOnCopyTestInt& operator=(const ThrowOnCopyTestInt&) {
+    throw std::exception{};
+  }
+
+  bool operator==(const ThrowOnCopyTestInt& other) const {
+    return x == other.x;
+  }
+
+  bool operator!=(const ThrowOnCopyTestInt& other) const {
+    return !(x == other.x);
+  }
+};
+
 // Tracked is implicitly constructible across tags
 struct Counts {
   uint64_t copyConstruct{0};
@@ -397,7 +421,8 @@ class SwapTrackingAlloc {
     std::size_t extra =
         std::max<std::size_t>(1, sizeof(std::size_t) / sizeof(T));
     T* p = a_.allocate(extra + n);
-    std::memcpy(p, &n, sizeof(std::size_t));
+    void* raw = static_cast<void*>(p);
+    *static_cast<std::size_t*>(raw) = n;
     return p + extra;
   }
   void deallocate(T* p, size_t n) {
@@ -406,7 +431,8 @@ class SwapTrackingAlloc {
     std::size_t extra =
         std::max<std::size_t>(1, sizeof(std::size_t) / sizeof(T));
     std::size_t check;
-    std::memcpy(&check, p - extra, sizeof(std::size_t));
+    void* raw = static_cast<void*>(p - extra);
+    check = *static_cast<std::size_t*>(raw);
     FOLLY_SAFE_CHECK(check == n, "");
     a_.deallocate(p - extra, n + extra);
   }
@@ -587,6 +613,13 @@ namespace std {
 template <>
 struct hash<folly::f14::MoveOnlyTestInt> {
   std::size_t operator()(folly::f14::MoveOnlyTestInt const& val) const {
+    return val.x;
+  }
+};
+
+template <>
+struct hash<folly::f14::ThrowOnCopyTestInt> {
+  std::size_t operator()(folly::f14::ThrowOnCopyTestInt const& val) const {
     return val.x;
   }
 };

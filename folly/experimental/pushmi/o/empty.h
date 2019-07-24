@@ -18,39 +18,27 @@
 #include <folly/experimental/pushmi/detail/functional.h>
 #include <folly/experimental/pushmi/o/extension_operators.h>
 #include <folly/experimental/pushmi/o/submit.h>
+#include <folly/experimental/pushmi/sender/properties.h>
 
 namespace folly {
 namespace pushmi {
-namespace detail {
-struct single_empty_sender_base : single_sender<ignoreSF, inlineEXF> {
-  using properties = property_set<
-      is_sender<>,
-      is_single<>,
-      is_always_blocking<>,
-      is_fifo_sequence<>>;
-};
-template <class... VN>
-struct single_empty_impl {
-  PUSHMI_TEMPLATE(class Out)
-  (requires ReceiveValue<Out, VN...>) //
-      void
-      operator()(single_empty_sender_base&, Out out) {
-    set_done(out);
-  }
-};
-} // namespace detail
-
 namespace operators {
-template <class... VN>
-auto empty() {
-  return make_single_sender(
-      detail::single_empty_sender_base{}, detail::single_empty_impl<VN...>{});
-}
+PUSHMI_INLINE_VAR constexpr struct empty_fn {
+private:
+  struct task : pipeorigin, single_sender_tag::with_values<> {
+    using properties = property_set<is_always_blocking<>>;
 
-inline auto empty() {
-  return make_single_sender(
-      detail::single_empty_sender_base{}, detail::single_empty_impl<>{});
-}
+    PUSHMI_TEMPLATE(class Out)
+    (requires Receiver<Out>) //
+    void submit(Out&& out) {
+      set_done(out);
+    }
+  };
+public:
+  auto operator()() const {
+    return task{};
+  }
+} empty {};
 
 } // namespace operators
 } // namespace pushmi

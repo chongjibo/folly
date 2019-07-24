@@ -56,8 +56,10 @@ AsyncUDPSocket::~AsyncUDPSocket() {
 }
 
 void AsyncUDPSocket::bind(const folly::SocketAddress& address) {
-  NetworkSocket socket =
-      netops::socket(address.getFamily(), SOCK_DGRAM, IPPROTO_UDP);
+  NetworkSocket socket = netops::socket(
+      address.getFamily(),
+      SOCK_DGRAM,
+      address.getFamily() != AF_UNIX ? IPPROTO_UDP : 0);
   if (socket == NetworkSocket()) {
     throw AsyncSocketException(
         AsyncSocketException::NOT_OPEN,
@@ -171,7 +173,7 @@ void AsyncUDPSocket::bind(const folly::SocketAddress& address) {
   // attach to EventHandler
   EventHandler::changeHandlerFD(fd_);
 
-  if (address.getPort() != 0) {
+  if (address.getFamily() == AF_UNIX || address.getPort() != 0) {
     localAddress_ = address;
   } else {
     localAddress_.setFromLocalAddress(fd_);
@@ -270,13 +272,21 @@ ssize_t AsyncUDPSocket::writev(
     size_t iovec_len,
     int gso) {
   CHECK_NE(NetworkSocket(), fd_) << "Socket not yet bound";
-
   sockaddr_storage addrStorage;
   address.getAddress(&addrStorage);
 
   struct msghdr msg;
-  msg.msg_name = reinterpret_cast<void*>(&addrStorage);
-  msg.msg_namelen = address.getActualSize();
+  if (!connected_) {
+    msg.msg_name = reinterpret_cast<void*>(&addrStorage);
+    msg.msg_namelen = address.getActualSize();
+  } else {
+    if (connectedAddress_ != address) {
+      errno = ENOTSUP;
+      return -1;
+    }
+    msg.msg_name = nullptr;
+    msg.msg_namelen = 0;
+  }
   msg.msg_iov = const_cast<struct iovec*>(vec);
   msg.msg_iovlen = iovec_len;
   msg.msg_control = nullptr;
@@ -531,8 +541,13 @@ int AsyncUDPSocket::connect(const folly::SocketAddress& address) {
   CHECK_NE(NetworkSocket(), fd_) << "Socket not yet bound";
   sockaddr_storage addrStorage;
   address.getAddress(&addrStorage);
-  return netops::connect(
+  int ret = netops::connect(
       fd_, reinterpret_cast<sockaddr*>(&addrStorage), address.getActualSize());
+  if (ret == 0) {
+    connected_ = true;
+    connectedAddress_ = address;
+  }
+  return ret;
 }
 
 void AsyncUDPSocket::handleRead() noexcept {
@@ -643,6 +658,14 @@ int AsyncUDPSocket::getGSO() {
   }
 
   return gso_.value();
+}
+
+void AsyncUDPSocket::setTrafficClass(int tclass) {
+  if (netops::setsockopt(
+          fd_, IPPROTO_IPV6, IPV6_TCLASS, &tclass, sizeof(int)) != 0) {
+    throw AsyncSocketException(
+        AsyncSocketException::NOT_OPEN, "Failed to set IPV6_TCLASS", errno);
+  }
 }
 
 void AsyncUDPSocket::detachEventBase() {

@@ -16,6 +16,8 @@
 
 #include <folly/Format.h>
 
+#include <cassert>
+
 #include <folly/ConstexprMath.h>
 #include <folly/CppAttributes.h>
 #include <folly/container/Array.h>
@@ -49,7 +51,8 @@ struct format_table_conv_make_item {
     std::size_t index{};
     constexpr explicit make_item(std::size_t index_) : index(index_) {} // gcc49
     constexpr char alpha(std::size_t ord) const {
-      return ord < 10 ? '0' + ord : (Upper ? 'A' : 'a') + (ord - 10);
+      return static_cast<char>(
+          ord < 10 ? '0' + ord : (Upper ? 'A' : 'a') + (ord - 10));
     }
     constexpr char operator()(std::size_t offset) const {
       return alpha(index / constexpr_pow(Base, Size - offset - 1) % Base);
@@ -206,9 +209,9 @@ void FormatValue<double>::formatHelper(
       arg.error("invalid specifier '", arg.presentation, "'");
   }
 
-  int len = builder.position();
+  auto len = builder.position();
   builder.Finalize();
-  DCHECK_GT(len, 0);
+  assert(len > 0);
 
   // Add '+' or ' ' sign if needed
   char* p = buf + 1;

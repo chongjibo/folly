@@ -27,6 +27,7 @@
 #include <sstream>
 
 #include <boost/algorithm/string.hpp>
+#include <glog/logging.h>
 
 #include <folly/Conv.h>
 #include <folly/Portability.h>
@@ -93,7 +94,7 @@ void clause11_21_4_2_b(String& test) {
 template <class String>
 void clause11_21_4_2_c(String& test) {
   // Test move constructor. There is a more specialized test, see
-  // TEST(FBString, testMoveCtor)
+  // testMoveCtor test
   String donor(test);
   String test2(std::move(donor));
   EXPECT_EQ(test2, test);
@@ -1736,5 +1737,18 @@ TEST(WFBString, compareToStdWStringLong) {
   EXPECT_TRUE(fbB >= stdA);
   EXPECT_TRUE(stdB >= fbB);
   EXPECT_TRUE(fbB >= stdB);
+}
+#endif
+
+#if FOLLY_HAS_STRING_VIEW
+struct custom_traits : public std::char_traits<char> {};
+
+TEST(FBString, convertToStringView) {
+  folly::fbstring s("foo");
+  std::string_view sv = s;
+  EXPECT_EQ(sv, "foo");
+  folly::basic_fbstring<char, custom_traits> s2("bar");
+  std::basic_string_view<char, custom_traits> sv2 = s2;
+  EXPECT_EQ(sv2, "bar");
 }
 #endif

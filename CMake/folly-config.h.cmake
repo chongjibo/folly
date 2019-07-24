@@ -43,10 +43,13 @@
 #endif
 
 #cmakedefine FOLLY_HAVE_MEMRCHR 1
+#cmakedefine FOLLY_HAVE_ACCEPT4 1
 #cmakedefine FOLLY_HAVE_PREADV 1
 #cmakedefine FOLLY_HAVE_PWRITEV 1
 #cmakedefine FOLLY_HAVE_CLOCK_GETTIME 1
 #cmakedefine FOLLY_HAVE_PIPE2 1
+#cmakedefine FOLLY_HAVE_SENDMMSG 1
+#cmakedefine FOLLY_HAVE_RECVMMSG 1
 #cmakedefine FOLLY_HAVE_OPENSSL_ASN1_TIME_DIFF 1
 
 #cmakedefine FOLLY_HAVE_IFUNC 1
@@ -61,7 +64,6 @@
 #cmakedefine FOLLY_HAVE_WCHAR_SUPPORT 1
 #cmakedefine FOLLY_HAVE_EXTRANDOM_SFMT19937 1
 #cmakedefine FOLLY_USE_LIBCPP 1
-#cmakedefine FOLLY_HAVE_XSI_STRERROR_R 1
 #cmakedefine HAVE_VSNPRINTF_ERRORS 1
 
 #cmakedefine FOLLY_USE_SYMBOLIZER 1
@@ -76,6 +78,6 @@
 #cmakedefine FOLLY_HAVE_LIBZSTD 1
 #cmakedefine FOLLY_HAVE_LIBBZ2 1
 
-#cmakedefine FOLLY_ASAN_ENABLED 1
+#cmakedefine01 FOLLY_LIBRARY_SANITIZE_ADDRESS
 
 #cmakedefine FOLLY_SUPPORT_SHARED_LIBRARY 1

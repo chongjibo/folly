@@ -80,7 +80,7 @@ struct GlobalStatic {
     ttlsDisabledSet.clear();
   }
   // for each fd, tracks whether TTLS is disabled or not
-  std::set<int /* fd */> ttlsDisabledSet;
+  std::unordered_set<folly::NetworkSocket /* fd */> ttlsDisabledSet;
 };
 
 // the constructor will be called before main() which is all we care about
@@ -97,7 +97,7 @@ int setsockopt(
     const void* optval,
     socklen_t optlen) {
   if (optname == SO_NO_TRANSPARENT_TLS) {
-    globalStatic.ttlsDisabledSet.insert(sockfd);
+    globalStatic.ttlsDisabledSet.insert(folly::NetworkSocket::fromFd(sockfd));
     return 0;
   }
   return real_setsockopt_(sockfd, level, optname, optval, optlen);
@@ -205,6 +205,49 @@ TEST(AsyncSSLSocketTest, ConnectWriteReadClose) {
   // read()
   uint8_t readbuf[128];
   uint32_t bytesRead = socket->readAll(readbuf, sizeof(readbuf));
+  EXPECT_EQ(bytesRead, 128);
+  EXPECT_EQ(memcmp(buf, readbuf, bytesRead), 0);
+
+  // close()
+  socket->close();
+
+  cerr << "ConnectWriteReadClose test completed" << endl;
+  EXPECT_EQ(socket->getSSLSocket()->getTotalConnectTimeout().count(), 10000);
+}
+
+/**
+ * Same as above simple test, but with a large read len to test
+ * clamping behavior.
+ */
+TEST(AsyncSSLSocketTest, ConnectWriteReadLargeClose) {
+  // Start listening on a local port
+  WriteCallbackBase writeCallback;
+  ReadCallback readCallback(&writeCallback);
+  HandshakeCallback handshakeCallback(&readCallback);
+  SSLServerAcceptCallback acceptCallback(&handshakeCallback);
+  TestSSLServer server(&acceptCallback);
+
+  // Set up SSL context.
+  std::shared_ptr<SSLContext> sslContext(new SSLContext());
+  sslContext->ciphers("ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH");
+  // sslContext->loadTrustedCertificates("./trusted-ca-certificate.pem");
+  // sslContext->authenticate(true, false);
+
+  // connect
+  auto socket =
+      std::make_shared<BlockingSocket>(server.getAddress(), sslContext);
+  socket->open(std::chrono::milliseconds(10000));
+
+  // write()
+  uint8_t buf[128];
+  memset(buf, 'a', sizeof(buf));
+  socket->write(buf, sizeof(buf));
+
+  // read()
+  uint8_t readbuf[128];
+  // we will fake the read len but that should be fine
+  size_t readLen = 1L << 33;
+  uint32_t bytesRead = socket->read(readbuf, readLen);
   EXPECT_EQ(bytesRead, 128);
   EXPECT_EQ(memcmp(buf, readbuf, bytesRead), 0);
 
@@ -853,15 +896,20 @@ TEST(AsyncSSLSocketTest, GetClientCertificate) {
   auto srvSocket = std::move(server).moveSocket();
 
   // Client cert retrieved from server side.
-  folly::ssl::X509UniquePtr serverPeerCert = srvSocket->getPeerCert();
+  auto serverPeerCert = srvSocket->getPeerCertificate();
   CHECK(serverPeerCert);
 
   // Client cert retrieved from client side.
-  const X509* clientSelfCert = cliSocket->getSelfCert();
+  auto clientSelfCert = cliSocket->getSelfCertificate();
   CHECK(clientSelfCert);
 
+  auto serverX509 = serverPeerCert->getX509();
+  auto clientX509 = clientSelfCert->getX509();
+  CHECK(serverX509);
+  CHECK(clientX509);
+
   // The two certs should be the same.
-  EXPECT_EQ(0, X509_cmp(clientSelfCert, serverPeerCert.get()));
+  EXPECT_EQ(0, X509_cmp(clientX509.get(), serverX509.get()));
 }
 
 TEST(AsyncSSLSocketTest, SSLParseClientHelloOnePacket) {
@@ -1402,8 +1450,9 @@ static int customRsaPrivEnc(
   int ret = 0;
   int* retptr = &ret;
 
-  auto asyncPipeWriter =
-      folly::AsyncPipeWriter::newWriter(asyncJobEvb, pipefds[1]);
+  auto hand = folly::NetworkSocket::native_handle_type(pipefds[1]);
+  auto asyncPipeWriter = folly::AsyncPipeWriter::newWriter(
+      asyncJobEvb, folly::NetworkSocket(hand));
 
   asyncJobEvb->runInEventBaseThread([retptr = retptr,
                                      flen = flen,
@@ -2164,7 +2213,7 @@ TEST(AsyncSSLSocketTest, TTLSDisabled) {
       std::make_shared<BlockingSocket>(server.getAddress(), sslContext);
   socket->open();
 
-  EXPECT_EQ(1, globalStatic.ttlsDisabledSet.count(socket->getSocketFD()));
+  EXPECT_EQ(1, globalStatic.ttlsDisabledSet.count(socket->getNetworkSocket()));
 
   // write()
   std::array<uint8_t, 128> buf;
@@ -2216,7 +2265,7 @@ TEST(AsyncSSLSocketTest, TTLSDisabledWithTFO) {
   socket->enableTFO();
   socket->open();
 
-  EXPECT_EQ(1, globalStatic.ttlsDisabledSet.count(socket->getSocketFD()));
+  EXPECT_EQ(1, globalStatic.ttlsDisabledSet.count(socket->getNetworkSocket()));
 
   // write()
   std::array<uint8_t, 128> buf;
@@ -2555,7 +2604,7 @@ TEST(AsyncSSLSocketTest, SendMsgParamsCallback) {
 #ifdef FOLLY_HAVE_MSG_ERRQUEUE
 /**
  * Test connecting to, writing to, reading from, and closing the
- * connection to the SSL server.
+ * connection to the SSL server with ancillary data from the application.
  */
 TEST(AsyncSSLSocketTest, SendMsgDataCallback) {
   // This test requires Linux kernel v4.6 or later
@@ -2574,7 +2623,7 @@ TEST(AsyncSSLSocketTest, SendMsgDataCallback) {
   }
 
   // Start listening on a local port
-  SendMsgDataCallback msgCallback;
+  SendMsgAncillaryDataCallback msgCallback;
   WriteCheckTimestampCallback writeCallback(&msgCallback);
   ReadCallback readCallback(&writeCallback);
   HandshakeCallback handshakeCallback(&readCallback);
@@ -2590,11 +2639,17 @@ TEST(AsyncSSLSocketTest, SendMsgDataCallback) {
       std::make_shared<BlockingSocket>(server.getAddress(), sslContext);
   socket->open();
 
-  // Adding MSG_EOR flag to the message flags - it'll trigger
-  // timestamp generation for the last byte of the message.
-  msgCallback.resetFlags(MSG_DONTWAIT | MSG_NOSIGNAL | MSG_EOR);
+  // we'll pass the EOR and TIMESTAMP_TX flags with the write back
+  // EOR tracking must be enabled for WriteFlags be passed
+  const auto writeFlags =
+      folly::WriteFlags::EOR | folly::WriteFlags::TIMESTAMP_TX;
+  readCallback.setWriteFlags(writeFlags);
+  msgCallback.setEorTracking(true);
 
   // Init ancillary data buffer to trigger timestamp notification
+  //
+  // We generate the same ancillary data regardless of the specific WriteFlags,
+  // we verify that the WriteFlags are observed as expected below.
   union {
     uint8_t ctrl_data[CMSG_LEN(sizeof(uint32_t))];
     struct cmsghdr cmsg;
@@ -2609,9 +2664,9 @@ TEST(AsyncSSLSocketTest, SendMsgDataCallback) {
   memcpy(ctrl.data(), u.ctrl_data, CMSG_LEN(sizeof(uint32_t)));
   msgCallback.resetData(std::move(ctrl));
 
-  // write()
+  // write(), including flags
   std::vector<uint8_t> buf(128, 'a');
-  socket->write(buf.data(), buf.size());
+  socket->write(buf.data(), buf.size(), writeFlags);
 
   // read()
   std::vector<uint8_t> readbuf(buf.size());
@@ -2619,11 +2674,29 @@ TEST(AsyncSSLSocketTest, SendMsgDataCallback) {
   EXPECT_EQ(bytesRead, buf.size());
   EXPECT_TRUE(std::equal(buf.begin(), buf.end(), readbuf.begin()));
 
-  writeCallback.checkForTimestampNotifications();
+  // should receive three timestamps (schedule, TX/SND, ACK)
+  // may take some time for all to arrive, so loop to wait
+  //
+  // socket error queue does not have the equivalent of an EOF, so we must
+  // loop on it unless we want to use libevent for this test...
+  const std::vector<int32_t> timestampsExpected = {
+      SCM_TSTAMP_SCHED, SCM_TSTAMP_SND, SCM_TSTAMP_ACK};
+  std::vector<int32_t> timestampsReceived;
+  while (timestampsExpected.size() != timestampsReceived.size()) {
+    const auto timestamps = writeCallback.getTimestampNotifications();
+    timestampsReceived.insert(
+        timestampsReceived.end(), timestamps.begin(), timestamps.end());
+  }
+  EXPECT_THAT(timestampsReceived, ElementsAreArray(timestampsExpected));
+
+  // check the observed write flags
+  EXPECT_EQ(
+      static_cast<std::underlying_type<folly::WriteFlags>::type>(
+          msgCallback.getObservedWriteFlags()),
+      static_cast<std::underlying_type<folly::WriteFlags>::type>(writeFlags));
 
   // close()
   socket->close();
-
   cerr << "SendMsgDataCallback test completed" << endl;
 }
 #endif // FOLLY_HAVE_MSG_ERRQUEUE

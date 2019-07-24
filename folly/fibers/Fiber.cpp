@@ -174,7 +174,10 @@ void Fiber::preempt(State state) {
     DCHECK_EQ(fiberManager_.activeFiber_, this);
     DCHECK_EQ(state_, RUNNING);
     DCHECK_NE(state, RUNNING);
-    DCHECK(!std::current_exception());
+    if (state != AWAITING_IMMEDIATE) {
+      CHECK(fiberManager_.currentException_ == std::current_exception());
+      CHECK_EQ(fiberManager_.numUncaughtExceptions_, uncaught_exceptions());
+    }
 
     state_ = state;
 

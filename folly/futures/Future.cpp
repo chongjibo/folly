@@ -20,23 +20,6 @@
 #include <folly/futures/ThreadWheelTimekeeper.h>
 
 namespace folly {
-
-// Instantiate the most common Future types to save compile time
-template class SemiFuture<Unit>;
-template class SemiFuture<bool>;
-template class SemiFuture<int>;
-template class SemiFuture<int64_t>;
-template class SemiFuture<std::string>;
-template class SemiFuture<double>;
-template class Future<Unit>;
-template class Future<bool>;
-template class Future<int>;
-template class Future<int64_t>;
-template class Future<std::string>;
-template class Future<double>;
-} // namespace folly
-
-namespace folly {
 namespace futures {
 
 SemiFuture<Unit> sleep(Duration dur, Timekeeper* tk) {
@@ -56,6 +39,36 @@ SemiFuture<Unit> sleep(Duration dur, Timekeeper* tk) {
 Future<Unit> sleepUnsafe(Duration dur, Timekeeper* tk) {
   return sleep(dur, tk).toUnsafeFuture();
 }
+
+#if FOLLY_FUTURE_USING_FIBER
+
+namespace {
+class FutureWaiter : public fibers::Baton::Waiter {
+ public:
+  FutureWaiter(Promise<Unit> promise, std::unique_ptr<fibers::Baton> baton)
+      : promise_(std::move(promise)), baton_(std::move(baton)) {
+    baton_->setWaiter(*this);
+  }
+
+  void post() override {
+    promise_.setValue();
+    delete this;
+  }
+
+ private:
+  Promise<Unit> promise_;
+  std::unique_ptr<fibers::Baton> baton_;
+};
+} // namespace
+
+SemiFuture<Unit> wait(std::unique_ptr<fibers::Baton> baton) {
+  Promise<Unit> promise;
+  auto sf = promise.getSemiFuture();
+  new FutureWaiter(std::move(promise), std::move(baton));
+  return sf;
+}
+
+#endif
 
 } // namespace futures
 } // namespace folly

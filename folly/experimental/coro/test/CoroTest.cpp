@@ -22,6 +22,7 @@
 #include <folly/executors/ManualExecutor.h>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/Task.h>
+#include <folly/experimental/coro/TimedWait.h>
 #include <folly/experimental/coro/Utils.h>
 #include <folly/fibers/Semaphore.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
@@ -252,7 +253,7 @@ TEST(Coro, CurrentExecutor) {
   EXPECT_EQ(42, coro::blockingWait(std::move(task)));
 }
 
-coro::Task<void> taskTimedWait() {
+coro::Task<void> taskTimedWaitFuture() {
   auto ex = co_await coro::co_current_executor;
   auto fastFuture =
       futures::sleep(std::chrono::milliseconds{50}).via(ex).thenValue([](Unit) {
@@ -296,8 +297,58 @@ coro::Task<void> taskTimedWait() {
   co_return;
 }
 
-TEST(Coro, TimedWait) {
-  coro::blockingWait(taskTimedWait());
+TEST(Coro, TimedWaitFuture) {
+  coro::blockingWait(taskTimedWaitFuture());
+}
+
+coro::Task<void> taskTimedWaitTask() {
+  auto fastTask = []() -> coro::Task<int> {
+    co_await futures::sleep(std::chrono::milliseconds{50});
+    co_return 42;
+  }();
+  auto fastResult = co_await coro::timed_wait(
+      std::move(fastTask), std::chrono::milliseconds{100});
+  EXPECT_TRUE(fastResult);
+  EXPECT_EQ(42, *fastResult);
+
+  struct ExpectedException : public std::runtime_error {
+    ExpectedException() : std::runtime_error("ExpectedException") {}
+  };
+
+  auto throwingTask = []() -> coro::Task<void> {
+    co_await futures::sleep(std::chrono::milliseconds{50});
+    throw ExpectedException();
+  }();
+  EXPECT_THROW(
+      (void)co_await coro::timed_wait(
+          std::move(throwingTask), std::chrono::milliseconds{100}),
+      ExpectedException);
+
+  auto slowTask = []() -> coro::Task<int> {
+    co_await futures::sleep(std::chrono::milliseconds{200});
+    co_return 42;
+  }();
+  auto slowResult = co_await coro::timed_wait(
+      std::move(slowTask), std::chrono::milliseconds{100});
+  EXPECT_FALSE(slowResult);
+
+  co_return;
+}
+
+TEST(Coro, TimedWaitTask) {
+  coro::blockingWait(taskTimedWaitTask());
+}
+
+TEST(Coro, TimedWaitKeepAlive) {
+  auto start = std::chrono::steady_clock::now();
+  coro::blockingWait([]() -> coro::Task<void> {
+    co_await coro::timed_wait(
+        futures::sleep(std::chrono::milliseconds{100}),
+        std::chrono::seconds{60});
+    co_return;
+  }());
+  auto duration = std::chrono::steady_clock::now() - start;
+  EXPECT_LE(duration, std::chrono::seconds{30});
 }
 
 template <int value>
@@ -457,6 +508,35 @@ TEST(Coro, Semaphore) {
   for (auto& worker : workers) {
     EXPECT_EQ(0, worker.counter);
   }
+}
+
+TEST(Coro, FutureTry) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    {
+      auto result = co_await folly::coro::co_awaitTry(task42().semi());
+      EXPECT_TRUE(result.hasValue());
+      EXPECT_EQ(42, result.value());
+    }
+
+    {
+      auto result = co_await folly::coro::co_awaitTry(taskException().semi());
+      EXPECT_TRUE(result.hasException());
+    }
+
+    {
+      auto result = co_await folly::coro::co_awaitTry(
+          task42().semi().via(co_await folly::coro::co_current_executor));
+      EXPECT_TRUE(result.hasValue());
+      EXPECT_EQ(42, result.value());
+    }
+
+    {
+      auto result =
+          co_await folly::coro::co_awaitTry(taskException().semi().via(
+              co_await folly::coro::co_current_executor));
+      EXPECT_TRUE(result.hasException());
+    }
+  }());
 }
 
 #endif

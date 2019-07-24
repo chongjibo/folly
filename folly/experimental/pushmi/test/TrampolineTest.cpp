@@ -19,18 +19,19 @@
 #include <chrono>
 using namespace std::literals;
 
-#include <folly/experimental/pushmi/flow_single_sender.h>
+#include <folly/experimental/pushmi/sender/flow_single_sender.h>
 #include <folly/experimental/pushmi/o/empty.h>
 #include <folly/experimental/pushmi/o/extension_operators.h>
 #include <folly/experimental/pushmi/o/just.h>
 #include <folly/experimental/pushmi/o/on.h>
+#include <folly/experimental/pushmi/o/schedule.h>
 #include <folly/experimental/pushmi/o/submit.h>
 #include <folly/experimental/pushmi/o/tap.h>
 #include <folly/experimental/pushmi/o/transform.h>
 #include <folly/experimental/pushmi/o/via.h>
 
-#include <folly/experimental/pushmi/inline.h>
-#include <folly/experimental/pushmi/trampoline.h>
+#include <folly/experimental/pushmi/executor/inline.h>
+#include <folly/experimental/pushmi/executor/trampoline.h>
 
 using namespace folly::pushmi::aliases;
 
@@ -49,7 +50,7 @@ struct countdownsingle {
   template <class ExecutorRef>
   void operator()(ExecutorRef exec) {
     if (--*counter > 0) {
-      exec | op::submit(*this);
+      exec | op::schedule() | op::submit(*this);
     }
   }
 };
@@ -63,7 +64,7 @@ class TrampolineExecutor : public Test {
 
 TEST_F(TrampolineExecutor, TransformAndSubmit) {
   auto signals = 0;
-  tr_ | op::transform([](auto) { return 42; }) |
+  tr_ | op::schedule() | op::transform([](auto) { return 42; }) |
       op::submit(
           [&](auto) { signals += 100; },
           [&](auto) noexcept { signals += 1000; },
@@ -74,7 +75,7 @@ TEST_F(TrampolineExecutor, TransformAndSubmit) {
 }
 
 TEST_F(TrampolineExecutor, BlockingGet) {
-  auto v = tr_ | op::transform([](auto) { return 42; }) | op::get<int>;
+  auto v = tr_ | op::schedule() | op::transform([](auto) { return 42; }) | op::get<int>;
 
   EXPECT_THAT(v, Eq(42)) << "expected that the result would be different";
 }
@@ -85,9 +86,9 @@ TEST_F(TrampolineExecutor, VirtualDerecursion) {
   recurse = [&](::folly::pushmi::any_executor_ref<> tr) {
     if (--counter <= 0)
       return;
-    tr | op::submit(recurse);
+    tr | op::schedule() | op::submit(recurse);
   };
-  tr_ | op::submit([&](auto exec) { recurse(exec); });
+  tr_ | op::schedule() | op::submit([&](auto exec) { recurse(exec); });
 
   EXPECT_THAT(counter, Eq(0))
       << "expected that all nested submissions complete";
@@ -96,7 +97,7 @@ TEST_F(TrampolineExecutor, VirtualDerecursion) {
 TEST_F(TrampolineExecutor, StaticDerecursion) {
   int counter = 100'000;
   countdownsingle single{counter};
-  tr_ | op::submit(single);
+  tr_ | op::schedule() | op::submit(single);
 
   EXPECT_THAT(counter, Eq(0))
       << "expected that all nested submissions complete";
@@ -119,13 +120,6 @@ TEST_F(TrampolineExecutor, UsedWithOn) {
 
   EXPECT_THAT(values, ElementsAre(folly::to<std::string>(2.0)))
       << "expected that only the first item was pushed";
-
-  EXPECT_THAT(
-      (std::is_same<
-          mi::executor_t<decltype(sender)>,
-          mi::executor_t<decltype(inlineon)>>::value),
-      Eq(true))
-      << "expected that executor was not changed by on";
 }
 
 TEST_F(TrampolineExecutor, UsedWithVia) {
@@ -145,11 +139,4 @@ TEST_F(TrampolineExecutor, UsedWithVia) {
 
   EXPECT_THAT(values, ElementsAre(folly::to<std::string>(2.0)))
       << "expected that only the first item was pushed";
-
-  EXPECT_THAT(
-      (!std::is_same<
-          mi::executor_t<decltype(sender)>,
-          mi::executor_t<decltype(inlinevia)>>::value),
-      Eq(true))
-      << "expected that executor was changed by via";
 }

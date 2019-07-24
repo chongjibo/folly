@@ -14,6 +14,11 @@
  * limitations under the License.
  */
 #pragma once
+
+#include <algorithm>
+#include <mutex>
+#include <queue>
+
 #include <folly/DefaultKeepAliveExecutor.h>
 #include <folly/Memory.h>
 #include <folly/SharedMutex.h>
@@ -23,10 +28,6 @@
 #include <folly/io/async/Request.h>
 #include <folly/portability/GFlags.h>
 #include <folly/synchronization/Baton.h>
-
-#include <algorithm>
-#include <mutex>
-#include <queue>
 
 #include <glog/logging.h>
 
@@ -64,23 +65,23 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
 
   void add(Func func) override = 0;
   virtual void
-  add(Func func, std::chrono::milliseconds expiration, Func expireCallback) = 0;
+  add(Func func, std::chrono::milliseconds expiration, Func expireCallback);
 
   void setThreadFactory(std::shared_ptr<ThreadFactory> threadFactory) {
     CHECK(numThreads() == 0);
     threadFactory_ = std::move(threadFactory);
   }
 
-  std::shared_ptr<ThreadFactory> getThreadFactory() {
+  std::shared_ptr<ThreadFactory> getThreadFactory() const {
     return threadFactory_;
   }
 
-  size_t numThreads();
+  size_t numThreads() const;
   void setNumThreads(size_t numThreads);
 
   // Return actual number of active threads -- this could be different from
   // numThreads() due to ThreadPoolExecutor's dynamic behavior.
-  size_t numActiveThreads();
+  size_t numActiveThreads() const;
 
   /*
    * stop() is best effort - there is no guarantee that unexecuted tasks won't
@@ -109,9 +110,9 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
     std::chrono::nanoseconds maxIdleTime;
   };
 
-  PoolStats getPoolStats();
-  size_t getPendingTaskCount();
-  std::string getName();
+  PoolStats getPoolStats() const;
+  size_t getPendingTaskCount() const;
+  std::string getName() const;
 
   struct TaskStats {
     TaskStats() : expired(false), waitTime(0), runTime(0) {}
@@ -224,7 +225,7 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
   }
 
   // Prerequisite: threadListLock_ readlocked or writelocked
-  virtual size_t getPendingTaskCountImpl() = 0;
+  virtual size_t getPendingTaskCountImpl() const = 0;
 
   class ThreadList {
    public:

@@ -24,7 +24,8 @@
  */
 #pragma once
 
-#include <boost/function_types/is_member_pointer.hpp>
+#include <type_traits>
+
 #include <boost/function_types/parameter_types.hpp>
 #include <boost/mpl/equal.hpp>
 #include <boost/mpl/pop_front.hpp>
@@ -32,6 +33,7 @@
 #include <boost/mpl/vector.hpp>
 
 #include <folly/Conv.h>
+#include <folly/Traits.h>
 
 namespace folly {
 
@@ -48,9 +50,7 @@ class IdentifyCallable {
 
  private:
   template <typename Fn>
-  using IsMemFn =
-      typename boost::function_types::template is_member_pointer<decltype(
-          &Fn::operator())>;
+  using IsMemFn = std::is_member_pointer<decltype(&Fn::operator())>;
   template <typename Fn>
   constexpr static typename std::enable_if<IsMemFn<Fn>::value, Kind>::type test(
       IsMemFn<Fn>*) {
@@ -80,17 +80,13 @@ using ArgumentTypes =
     typename ArgumentTypesByKind<IdentifyCallable::getKind<Fn>(), Fn>::type;
 
 // At present, works for lambdas or plain old functions, but can be
-// extended.  The comparison deliberately strips cv-qualifieers and
+// extended.  The comparison deliberately strips cv-qualifiers and
 // reference, leaving that choice up to the caller.
 template <typename Fn, typename... Args>
 struct HasArgumentTypes
     : boost::mpl::template equal<
-          typename boost::mpl::template transform<
-              typename boost::mpl::template transform<
-                  ArgumentTypes<Fn>,
-                  typename std::template remove_reference<boost::mpl::_1>>::
-                  type,
-              typename std::template remove_cv<boost::mpl::_1>>::type,
+          typename boost::mpl::
+              transform<ArgumentTypes<Fn>, remove_cvref<boost::mpl::_1>>::type,
           boost::mpl::vector<Args...>>::type {};
 template <typename... Args>
 using EnableForArgTypes =

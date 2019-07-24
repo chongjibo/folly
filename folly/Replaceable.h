@@ -595,11 +595,8 @@ class alignas(T) Replaceable
 
   /**
    * `swap` just calls `swap(T&, T&)`.
-   *
-   * Should be `noexcept(std::is_nothrow_swappable<T>::value)` but we don't
-   * depend on C++17 features.
    */
-  void swap(Replaceable& other) {
+  void swap(Replaceable& other) noexcept(IsNothrowSwappable<Replaceable>{}) {
     using std::swap;
     swap(*(*this), *other);
   }
@@ -640,8 +637,7 @@ class alignas(T) Replaceable
   aligned_storage_for_t<T> storage_[1];
 };
 
-#if __cplusplus > 201402L
-// C++17 allows us to define a deduction guide:
+#if __cpp_deduction_guides >= 201703
 template <class T>
 Replaceable(T)->Replaceable<T>;
 #endif

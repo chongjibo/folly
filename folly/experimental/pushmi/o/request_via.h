@@ -18,7 +18,7 @@
 #include <folly/experimental/pushmi/o/extension_operators.h>
 #include <folly/experimental/pushmi/o/submit.h>
 #include <folly/experimental/pushmi/o/via.h>
-#include <folly/experimental/pushmi/receiver.h>
+#include <folly/experimental/pushmi/receiver/receiver.h>
 
 namespace folly {
 namespace pushmi {
@@ -62,14 +62,13 @@ PUSHMI_INLINE_VAR constexpr detail::request_via_fn request_via{};
 
 } // namespace operators
 
-PUSHMI_TEMPLATE(class To, class In)
-(requires Same<To, is_sender<>>&& Sender<In>)
+PUSHMI_TEMPLATE(class In)
+(requires Sender<In>)
 auto via_cast(In in) {
   return in;
 }
 
-PUSHMI_TEMPLATE(class To, class In)
-(requires Same<To, is_sender<>>)
+template<class In>
 auto via_cast(send_via<In> ss) {
   return ss.in;
 }

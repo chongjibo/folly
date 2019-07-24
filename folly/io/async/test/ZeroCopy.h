@@ -46,14 +46,14 @@ class ZeroCopyTestAsyncSocket {
   explicit ZeroCopyTestAsyncSocket(
       size_t* counter,
       folly::EventBase* evb,
-      int fd,
+      NetworkSocket fd,
       int numLoops,
       size_t bufferSize,
       bool zeroCopy)
       : counter_(counter),
         evb_(evb),
         numLoops_(numLoops),
-        sock_(new folly::AsyncSocket(evb, folly::NetworkSocket::fromFd(fd))),
+        sock_(new folly::AsyncSocket(evb, fd)),
         callback_(this),
         client_(false) {
     setBufferSize(bufferSize);
@@ -227,7 +227,7 @@ class ZeroCopyTestServer : public folly::AsyncServerSocket::AcceptCallback {
   }
 
   void connectionAccepted(
-      int fd,
+      folly::NetworkSocket fd,
       const folly::SocketAddress& /* unused */) noexcept override {
     auto client = std::make_shared<ZeroCopyTestAsyncSocket>(
         nullptr, evb_, fd, numLoops_, bufferSize_, zeroCopy_);

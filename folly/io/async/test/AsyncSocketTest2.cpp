@@ -19,7 +19,6 @@
 #include <folly/ExceptionWrapper.h>
 #include <folly/Random.h>
 #include <folly/SocketAddress.h>
-#include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/AsyncTimeout.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
@@ -542,7 +541,7 @@ TEST_P(AsyncSocketConnectTest, ConnectWriteAndRead) {
 
   // shut down the write half of acceptedSocket, so that the AsyncSocket
   // will stop reading and we can break out of the event loop.
-  shutdown(acceptedSocket->getSocketFD(), SHUT_WR);
+  netops::shutdown(acceptedSocket->getNetworkSocket(), SHUT_WR);
 
   // Loop
   evb.loop();
@@ -606,11 +605,11 @@ TEST(AsyncSocketTest, ConnectWriteAndShutdownWrite) {
 
   // Since the connection is still in progress, there should be no data to
   // read yet.  Verify that the accepted socket is not readable.
-  struct pollfd fds[1];
-  fds[0].fd = acceptedSocket->getSocketFD();
+  netops::PollDescriptor fds[1];
+  fds[0].fd = acceptedSocket->getNetworkSocket();
   fds[0].events = POLLIN;
   fds[0].revents = 0;
-  int rc = poll(fds, 1, 0);
+  int rc = netops::poll(fds, 1, 0);
   ASSERT_EQ(rc, 0);
 
   // Write data to the accepted socket
@@ -697,11 +696,11 @@ TEST(AsyncSocketTest, ConnectReadWriteAndShutdownWrite) {
 
   // Since the connection is still in progress, there should be no data to
   // read yet.  Verify that the accepted socket is not readable.
-  struct pollfd fds[1];
-  fds[0].fd = acceptedSocket->getSocketFD();
+  netops::PollDescriptor fds[1];
+  fds[0].fd = acceptedSocket->getNetworkSocket();
   fds[0].events = POLLIN;
   fds[0].revents = 0;
-  int rc = poll(fds, 1, 0);
+  int rc = netops::poll(fds, 1, 0);
   ASSERT_EQ(rc, 0);
 
   // Write data to the accepted socket
@@ -711,7 +710,7 @@ TEST(AsyncSocketTest, ConnectReadWriteAndShutdownWrite) {
   acceptedSocket->flush();
   // Shutdown writes to the accepted socket.  This will cause it to see EOF
   // and uninstall the read callback.
-  shutdown(acceptedSocket->getSocketFD(), SHUT_WR);
+  netops::shutdown(acceptedSocket->getNetworkSocket(), SHUT_WR);
 
   // Loop
   evb.loop();
@@ -790,11 +789,11 @@ TEST(AsyncSocketTest, ConnectReadWriteAndShutdownWriteNow) {
 
   // Since the connection is still in progress, there should be no data to
   // read yet.  Verify that the accepted socket is not readable.
-  struct pollfd fds[1];
-  fds[0].fd = acceptedSocket->getSocketFD();
+  netops::PollDescriptor fds[1];
+  fds[0].fd = acceptedSocket->getNetworkSocket();
   fds[0].events = POLLIN;
   fds[0].revents = 0;
-  int rc = poll(fds, 1, 0);
+  int rc = netops::poll(fds, 1, 0);
   ASSERT_EQ(rc, 0);
 
   // Write data to the accepted socket
@@ -804,7 +803,7 @@ TEST(AsyncSocketTest, ConnectReadWriteAndShutdownWriteNow) {
   acceptedSocket->flush();
   // Shutdown writes to the accepted socket.  This will cause it to see EOF
   // and uninstall the read callback.
-  shutdown(acceptedSocket->getSocketFD(), SHUT_WR);
+  netops::shutdown(acceptedSocket->getNetworkSocket(), SHUT_WR);
 
   // Loop
   evb.loop();
@@ -1695,9 +1694,13 @@ TEST(AsyncSocketTest, ServerAcceptOptions) {
       acceptCallback.getEvents()->at(2).type, TestAcceptCallback::TYPE_STOP);
   auto fd = acceptCallback.getEvents()->at(1).fd;
 
-  // The accepted connection should already be in non-blocking mode
+#ifndef _WIN32
+  // It is not possible to check if a socket is already in non-blocking mode on
+  // Windows. Yes really. The accepted connection should already be in
+  // non-blocking mode
   int flags = fcntl(fd.toFd(), F_GETFL, 0);
   ASSERT_EQ(flags & O_NONBLOCK, O_NONBLOCK);
+#endif
 
 #ifndef TCP_NOPUSH
   // The accepted connection should already have TCP_NODELAY set
@@ -2122,9 +2125,13 @@ TEST(AsyncSocketTest, UnixDomainSocketTest) {
       acceptCallback.getEvents()->at(2).type, TestAcceptCallback::TYPE_STOP);
   auto fd = acceptCallback.getEvents()->at(1).fd;
 
-  // The accepted connection should already be in non-blocking mode
+#ifndef _WIN32
+  // It is not possible to check if a socket is already in non-blocking mode on
+  // Windows. Yes really. The accepted connection should already be in
+  // non-blocking mode
   int flags = fcntl(fd.toFd(), F_GETFL, 0);
   ASSERT_EQ(flags & O_NONBLOCK, O_NONBLOCK);
+#endif
 }
 
 TEST(AsyncSocketTest, ConnectionEventCallbackDefault) {
@@ -3032,6 +3039,94 @@ enum SOF_TIMESTAMPING {
   SOF_TIMESTAMPING_OPT_TSONLY = (1 << 11),
 };
 
+struct AsyncSocketErrMessageCallbackTestParams {
+  folly::Optional<int> resetCallbackAfter;
+  folly::Optional<int> closeSocketAfter;
+  int gotTimestampExpected{0};
+  int gotByteSeqExpected{0};
+};
+
+class AsyncSocketErrMessageCallbackTest
+    : public ::testing::TestWithParam<AsyncSocketErrMessageCallbackTestParams> {
+ public:
+  static std::vector<AsyncSocketErrMessageCallbackTestParams>
+  getTestingValues() {
+    std::vector<AsyncSocketErrMessageCallbackTestParams> vals;
+    // each socket err message triggers two socket callbacks:
+    //   (1) timestamp callback
+    //   (2) byteseq callback
+
+    // reset callback cases
+    // resetting the callback should prevent any further callbacks
+    {
+      AsyncSocketErrMessageCallbackTestParams params;
+      params.resetCallbackAfter = 1;
+      params.gotTimestampExpected = 1;
+      params.gotByteSeqExpected = 0;
+      vals.push_back(params);
+    }
+    {
+      AsyncSocketErrMessageCallbackTestParams params;
+      params.resetCallbackAfter = 2;
+      params.gotTimestampExpected = 1;
+      params.gotByteSeqExpected = 1;
+      vals.push_back(params);
+    }
+    {
+      AsyncSocketErrMessageCallbackTestParams params;
+      params.resetCallbackAfter = 3;
+      params.gotTimestampExpected = 2;
+      params.gotByteSeqExpected = 1;
+      vals.push_back(params);
+    }
+    {
+      AsyncSocketErrMessageCallbackTestParams params;
+      params.resetCallbackAfter = 4;
+      params.gotTimestampExpected = 2;
+      params.gotByteSeqExpected = 2;
+      vals.push_back(params);
+    }
+
+    // close socket cases
+    // closing the socket will prevent callbacks after the current err message
+    // callbacks (both timestamp and byteseq) are completed
+    {
+      AsyncSocketErrMessageCallbackTestParams params;
+      params.closeSocketAfter = 1;
+      params.gotTimestampExpected = 1;
+      params.gotByteSeqExpected = 1;
+      vals.push_back(params);
+    }
+    {
+      AsyncSocketErrMessageCallbackTestParams params;
+      params.closeSocketAfter = 2;
+      params.gotTimestampExpected = 1;
+      params.gotByteSeqExpected = 1;
+      vals.push_back(params);
+    }
+    {
+      AsyncSocketErrMessageCallbackTestParams params;
+      params.closeSocketAfter = 3;
+      params.gotTimestampExpected = 2;
+      params.gotByteSeqExpected = 2;
+      vals.push_back(params);
+    }
+    {
+      AsyncSocketErrMessageCallbackTestParams params;
+      params.closeSocketAfter = 4;
+      params.gotTimestampExpected = 2;
+      params.gotByteSeqExpected = 2;
+      vals.push_back(params);
+    }
+    return vals;
+  }
+};
+
+INSTANTIATE_TEST_CASE_P(
+    ErrMessageTests,
+    AsyncSocketErrMessageCallbackTest,
+    ::testing::ValuesIn(AsyncSocketErrMessageCallbackTest::getTestingValues()));
+
 class TestErrMessageCallback : public folly::AsyncSocket::ErrMessageCallback {
  public:
   TestErrMessageCallback()
@@ -3041,11 +3136,13 @@ class TestErrMessageCallback : public folly::AsyncSocket::ErrMessageCallback {
     if (cmsg.cmsg_level == SOL_SOCKET && cmsg.cmsg_type == SCM_TIMESTAMPING) {
       gotTimestamp_++;
       checkResetCallback();
+      checkCloseSocket();
     } else if (
         (cmsg.cmsg_level == SOL_IP && cmsg.cmsg_type == IP_RECVERR) ||
         (cmsg.cmsg_level == SOL_IPV6 && cmsg.cmsg_type == IPV6_RECVERR)) {
       gotByteSeq_++;
       checkResetCallback();
+      checkCloseSocket();
     }
   }
 
@@ -3055,9 +3152,16 @@ class TestErrMessageCallback : public folly::AsyncSocket::ErrMessageCallback {
   }
 
   void checkResetCallback() noexcept {
-    if (socket_ != nullptr && resetAfter_ != -1 &&
-        gotTimestamp_ + gotByteSeq_ == resetAfter_) {
+    if (socket_ != nullptr && resetCallbackAfter_ != -1 &&
+        gotTimestamp_ + gotByteSeq_ == resetCallbackAfter_) {
       socket_->setErrMessageCB(nullptr);
+    }
+  }
+
+  void checkCloseSocket() noexcept {
+    if (socket_ != nullptr && closeSocketAfter_ != -1 &&
+        gotTimestamp_ + gotByteSeq_ == closeSocketAfter_) {
+      socket_->close();
     }
   }
 
@@ -3065,10 +3169,11 @@ class TestErrMessageCallback : public folly::AsyncSocket::ErrMessageCallback {
   folly::AsyncSocketException exception_;
   int gotTimestamp_{0};
   int gotByteSeq_{0};
-  int resetAfter_{-1};
+  int resetCallbackAfter_{-1};
+  int closeSocketAfter_{-1};
 };
 
-TEST(AsyncSocketTest, ErrMessageCallback) {
+TEST_P(AsyncSocketErrMessageCallbackTest, ErrMessageCallback) {
   TestServer server;
 
   // connect()
@@ -3077,7 +3182,7 @@ TEST(AsyncSocketTest, ErrMessageCallback) {
 
   ConnCallback ccb;
   socket->connect(&ccb, server.getAddress(), 30);
-  LOG(INFO) << "Client socket fd=" << socket->getNetworkSocket().toFd();
+  LOG(INFO) << "Client socket fd=" << socket->getNetworkSocket();
 
   // Let the socket
   evb.loop();
@@ -3097,8 +3202,15 @@ TEST(AsyncSocketTest, ErrMessageCallback) {
       socket->getErrMessageCallback(),
       static_cast<folly::AsyncSocket::ErrMessageCallback*>(&errMsgCB));
 
+  // set the number of error messages before socket is closed or callback reset
+  const auto testParams = GetParam();
   errMsgCB.socket_ = socket.get();
-  errMsgCB.resetAfter_ = 3;
+  if (testParams.resetCallbackAfter.hasValue()) {
+    errMsgCB.resetCallbackAfter_ = testParams.resetCallbackAfter.value();
+  }
+  if (testParams.closeSocketAfter.hasValue()) {
+    errMsgCB.closeSocketAfter_ = testParams.closeSocketAfter.value();
+  }
 
   // Enable timestamp notifications
   ASSERT_NE(socket->getNetworkSocket(), NetworkSocket());
@@ -3117,17 +3229,17 @@ TEST(AsyncSocketTest, ErrMessageCallback) {
 
   // Accept the connection.
   std::shared_ptr<BlockingSocket> acceptedSocket = server.accept();
-  LOG(INFO) << "Server socket fd=" << acceptedSocket->getSocketFD();
+  LOG(INFO) << "Server socket fd=" << acceptedSocket->getNetworkSocket();
 
   // Loop
   evb.loopOnce();
   ASSERT_EQ(wcb.state, STATE_SUCCEEDED);
 
   // Check that we can read the data that was written to the socket
-  std::vector<uint8_t> rbuf(1 + wbuf.size(), 0);
-  uint32_t bytesRead = acceptedSocket->read(rbuf.data(), rbuf.size());
-  ASSERT_TRUE(std::equal(wbuf.begin(), wbuf.end(), rbuf.begin()));
+  std::vector<uint8_t> rbuf(wbuf.size(), 0);
+  uint32_t bytesRead = acceptedSocket->readAll(rbuf.data(), rbuf.size());
   ASSERT_EQ(bytesRead, wbuf.size());
+  ASSERT_TRUE(std::equal(wbuf.begin(), wbuf.end(), rbuf.begin()));
 
   // Close both sockets
   acceptedSocket->close();
@@ -3139,10 +3251,8 @@ TEST(AsyncSocketTest, ErrMessageCallback) {
   // Check for the timestamp notifications.
   ASSERT_EQ(
       errMsgCB.exception_.getType(), folly::AsyncSocketException::UNKNOWN);
-  ASSERT_GT(errMsgCB.gotByteSeq_, 0);
-  ASSERT_GT(errMsgCB.gotTimestamp_, 0);
-  ASSERT_EQ(
-      errMsgCB.gotByteSeq_ + errMsgCB.gotTimestamp_, errMsgCB.resetAfter_);
+  ASSERT_EQ(errMsgCB.gotByteSeq_, testParams.gotByteSeqExpected);
+  ASSERT_EQ(errMsgCB.gotTimestamp_, testParams.gotTimestampExpected);
 }
 #endif // FOLLY_HAVE_MSG_ERRQUEUE
 
@@ -3559,6 +3669,30 @@ TEST(AsyncSocketTest, V6TosReflectTest) {
       netops::getsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &value, &valueLength);
   ASSERT_EQ(rc, 0);
   ASSERT_EQ(value, 0x2c);
+
+  // Additional Test for ConnectCallback without bindAddr
+  serverSocket->addAcceptCallback(&acceptCallback, &eventBase);
+  serverSocket->startAccepting();
+
+  auto newClientSock = AsyncSocket::newSocket(&eventBase);
+  TestConnectCallback callback;
+  // connect call will not set this SO_REUSEADDR if we do not
+  // pass the bindAddress in its call; so we can safely verify this.
+  newClientSock->connect(&callback, serverAddress, 30);
+
+  // Collect events
+  eventBase.loop();
+
+  auto acceptedFd = acceptCallback.getEvents()->at(1).fd;
+  ASSERT_NE(acceptedFd, NetworkSocket());
+  int reuseAddrVal;
+  socklen_t reuseAddrValLen = sizeof(reuseAddrVal);
+  // Get the socket created underneath connect call of AsyncSocket
+  auto usedSockFd = newClientSock->getNetworkSocket();
+  int getOptRet = netops::getsockopt(
+      usedSockFd, SOL_SOCKET, SO_REUSEADDR, &reuseAddrVal, &reuseAddrValLen);
+  ASSERT_EQ(getOptRet, 0);
+  ASSERT_EQ(reuseAddrVal, 1 /* configured through preConnect*/);
 }
 
 TEST(AsyncSocketTest, V4TosReflectTest) {
@@ -3618,5 +3752,56 @@ TEST(AsyncSocketTest, V4TosReflectTest) {
   int rc = netops::getsockopt(fd, IPPROTO_IP, IP_TOS, &value, &valueLength);
   ASSERT_EQ(rc, 0);
   ASSERT_EQ(value, 0x2c);
+}
+#endif
+
+#if __linux__
+TEST(AsyncSocketTest, getBufInUse) {
+  EventBase eventBase;
+  std::shared_ptr<AsyncServerSocket> server(
+      AsyncServerSocket::newSocket(&eventBase));
+  server->bind(0);
+  server->listen(5);
+
+  std::shared_ptr<AsyncSocket> client = AsyncSocket::newSocket(&eventBase);
+  client->connect(nullptr, server->getAddress());
+
+  NetworkSocket servfd = server->getNetworkSocket();
+  NetworkSocket accepted;
+  uint64_t maxTries = 5;
+
+  do {
+    std::this_thread::yield();
+    eventBase.loop();
+    accepted = netops::accept(servfd, nullptr, nullptr);
+  } while (accepted == NetworkSocket() && --maxTries);
+
+  // Exhaustion number of tries to accept client connection, good bye
+  ASSERT_TRUE(accepted != NetworkSocket());
+
+  auto clientAccepted = AsyncSocket::newSocket(nullptr, accepted);
+
+  // Use minimum receive buffer size
+  clientAccepted->setRecvBufSize(0);
+
+  // Use maximum send buffer size
+  client->setSendBufSize((unsigned)-1);
+
+  std::string testData;
+  for (int i = 0; i < 10000; ++i) {
+    testData += "0123456789";
+  }
+
+  client->write(nullptr, (const void*)testData.c_str(), testData.size());
+
+  std::this_thread::yield();
+  eventBase.loop();
+
+  size_t recvBufSize = clientAccepted->getRecvBufInUse();
+  size_t sendBufSize = client->getSendBufInUse();
+
+  EXPECT_EQ((recvBufSize + sendBufSize), testData.size());
+  EXPECT_GT(recvBufSize, 0);
+  EXPECT_GT(sendBufSize, 0);
 }
 #endif

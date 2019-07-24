@@ -2,6 +2,9 @@ include(CheckCXXSourceCompiles)
 include(CheckIncludeFileCXX)
 include(CheckFunctionExists)
 
+if(MSVC)
+  set(Boost_USE_STATIC_LIBS ON) #Force static lib in msvc
+endif(MSVC)
 find_package(Boost 1.51.0 MODULE
   COMPONENTS
     context
@@ -21,51 +24,21 @@ find_package(DoubleConversion MODULE REQUIRED)
 list(APPEND FOLLY_LINK_LIBRARIES ${DOUBLE_CONVERSION_LIBRARY})
 list(APPEND FOLLY_INCLUDE_DIRECTORIES ${DOUBLE_CONVERSION_INCLUDE_DIR})
 
-set(FOLLY_HAVE_LIBGFLAGS OFF)
-find_package(gflags CONFIG QUIET)
-if (gflags_FOUND)
-  message(STATUS "Found gflags from package config")
-  set(FOLLY_HAVE_LIBGFLAGS ON)
-  if (TARGET gflags-shared)
-    list(APPEND FOLLY_SHINY_DEPENDENCIES gflags-shared)
-  elseif (TARGET gflags)
-    list(APPEND FOLLY_SHINY_DEPENDENCIES gflags)
-  else()
-    message(FATAL_ERROR "Unable to determine the target name for the GFlags package.")
-  endif()
-  list(APPEND CMAKE_REQUIRED_LIBRARIES ${GFLAGS_LIBRARIES})
-  list(APPEND CMAKE_REQUIRED_INCLUDES ${GFLAGS_INCLUDE_DIR})
-else()
-  find_package(GFlags MODULE)
-  set(FOLLY_HAVE_LIBGFLAGS ${LIBGFLAGS_FOUND})
-  list(APPEND FOLLY_LINK_LIBRARIES ${LIBGFLAGS_LIBRARY})
-  list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBGFLAGS_INCLUDE_DIR})
-  list(APPEND CMAKE_REQUIRED_LIBRARIES ${LIBGFLAGS_LIBRARY})
-  list(APPEND CMAKE_REQUIRED_INCLUDES ${LIBGFLAGS_INCLUDE_DIR})
-endif()
+find_package(Gflags MODULE)
+set(FOLLY_HAVE_LIBGFLAGS ${LIBGFLAGS_FOUND})
+list(APPEND FOLLY_LINK_LIBRARIES ${LIBGFLAGS_LIBRARY})
+list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBGFLAGS_INCLUDE_DIR})
+list(APPEND CMAKE_REQUIRED_LIBRARIES ${LIBGFLAGS_LIBRARY})
+list(APPEND CMAKE_REQUIRED_INCLUDES ${LIBGFLAGS_INCLUDE_DIR})
 
-set(FOLLY_HAVE_LIBGLOG OFF)
-find_package(glog CONFIG QUIET)
-if (glog_FOUND)
-  message(STATUS "Found glog from package config")
-  set(FOLLY_HAVE_LIBGLOG ON)
-  list(APPEND FOLLY_SHINY_DEPENDENCIES glog::glog)
-else()
-  find_package(GLog MODULE)
-  set(FOLLY_HAVE_LIBGLOG ${LIBGLOG_FOUND})
-  list(APPEND FOLLY_LINK_LIBRARIES ${LIBGLOG_LIBRARY})
-  list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBGLOG_INCLUDE_DIR})
-endif()
+find_package(Glog MODULE)
+set(FOLLY_HAVE_LIBGLOG ${GLOG_FOUND})
+list(APPEND FOLLY_LINK_LIBRARIES ${GLOG_LIBRARY})
+list(APPEND FOLLY_INCLUDE_DIRECTORIES ${GLOG_INCLUDE_DIR})
 
-find_package(Libevent CONFIG QUIET)
-if(TARGET event)
-  message(STATUS "Found libevent from package config")
-  list(APPEND FOLLY_SHINY_DEPENDENCIES event)
-else()
-  find_package(LibEvent MODULE REQUIRED)
-  list(APPEND FOLLY_LINK_LIBRARIES ${LIBEVENT_LIB})
-  list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBEVENT_INCLUDE_DIR})
-endif()
+find_package(LibEvent MODULE REQUIRED)
+list(APPEND FOLLY_LINK_LIBRARIES ${LIBEVENT_LIB})
+list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBEVENT_INCLUDE_DIR})
 
 find_package(OpenSSL MODULE REQUIRED)
 list(APPEND FOLLY_LINK_LIBRARIES ${OPENSSL_LIBRARIES})
@@ -184,13 +157,13 @@ if(NOT FOLLY_CPP_ATOMIC_BUILTIN)
 endif()
 
 option(
-  FOLLY_ASAN_ENABLED
+  FOLLY_LIBRARY_SANITIZE_ADDRESS
   "Build folly with Address Sanitizer enabled."
   OFF
 )
-if (FOLLY_ASAN_ENABLED)
+if (FOLLY_LIBRARY_SANITIZE_ADDRESS)
   if ("${CMAKE_CXX_COMPILER_ID}" MATCHES GNU)
-    set(FOLLY_ASAN_ENABLED ON)
+    set(FOLLY_LIBRARY_SANITIZE_ADDRESS ON)
     set(FOLLY_ASAN_FLAGS -fsanitize=address,undefined)
     list(APPEND FOLLY_CXX_FLAGS ${FOLLY_ASAN_FLAGS})
     # All of the functions in folly/detail/Sse.cpp are intended to be compiled
@@ -202,7 +175,7 @@ if (FOLLY_ASAN_ENABLED)
       PROPERTIES COMPILE_FLAGS -fno-sanitize=address,undefined
     )
   elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES Clang)
-    set(FOLLY_ASAN_ENABLED ON)
+    set(FOLLY_LIBRARY_SANITIZE_ADDRESS ON)
     set(
       FOLLY_ASAN_FLAGS
       -fno-common

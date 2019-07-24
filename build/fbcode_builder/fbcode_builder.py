@@ -210,6 +210,7 @@ class FBCodeBuilder(object):
             'sudo',
             'unzip',
             'wget',
+            'python3-venv',
         ]
 
     #
@@ -246,6 +247,20 @@ class FBCodeBuilder(object):
 
         return self.step('Install packages for Debian-based OS', actions)
 
+    def create_python_venv(self):
+        action = []
+        if self.option("PYTHON_VENV", "OFF") == "ON":
+            action = self.run(ShellQuoted("python3 -m venv {p}").format(
+                p=path_join(self.option('prefix'), "venv")))
+        return(action)
+
+    def python_venv(self):
+        action = []
+        if self.option("PYTHON_VENV", "OFF") == "ON":
+            action = ShellQuoted("source {p}").format(
+                p=path_join(self.option('prefix'), "venv", "bin", "activate"))
+        return(action)
+
     def debian_ccache_setup_steps(self):
         return []  # It's ok to ship a renderer without ccache support.
 
@@ -268,7 +283,9 @@ class FBCodeBuilder(object):
         return self.step('Check out {0}, workdir {1}'.format(project, path), [
             self.workdir(base_dir),
             self.run(
-                ShellQuoted('git clone https://github.com/{p}').format(p=project)
+                ShellQuoted('git clone {opts} https://github.com/{p}').format(
+                    p=project,
+                    opts=ShellQuoted(self.option('{}:git_clone_opts'.format(project), '')))
             ) if not local_repo_dir else self.copy_local_repo(
                 local_repo_dir, os.path.basename(project)
             ),

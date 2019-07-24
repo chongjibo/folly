@@ -70,10 +70,13 @@ check_symbol_exists(pthread_atfork pthread.h FOLLY_HAVE_PTHREAD_ATFORK)
 # Unfortunately check_symbol_exists() does not work for memrchr():
 # it fails complaining that there are multiple overloaded versions of memrchr()
 check_function_exists(memrchr FOLLY_HAVE_MEMRCHR)
+check_symbol_exists(accept4 sys/socket.h FOLLY_HAVE_ACCEPT4)
 check_symbol_exists(preadv sys/uio.h FOLLY_HAVE_PREADV)
 check_symbol_exists(pwritev sys/uio.h FOLLY_HAVE_PWRITEV)
 check_symbol_exists(clock_gettime time.h FOLLY_HAVE_CLOCK_GETTIME)
 check_symbol_exists(pipe2 unistd.h FOLLY_HAVE_PIPE2)
+check_symbol_exists(sendmmsg sys/socket.h FOLLY_HAVE_SENDMMSG)
+check_symbol_exists(recvmmsg sys/socket.h FOLLY_HAVE_RECVMMSG)
 
 check_function_exists(malloc_usable_size FOLLY_HAVE_MALLOC_USABLE_SIZE)
 
@@ -187,18 +190,6 @@ check_cxx_source_compiles("
   #endif
   int main() { return 0; }"
   FOLLY_USE_LIBSTDCPP
-)
-
-check_cxx_source_runs("
-  #include <string.h>
-  #include <errno.h>
-  int main(int argc, char** argv) {
-    char buf[1024];
-    buf[0] = 0;
-    int ret = strerror_r(ENOMEM, buf, sizeof(buf));
-    return ret;
-  }"
-  FOLLY_HAVE_XSI_STRERROR_R
 )
 
 check_cxx_source_runs("

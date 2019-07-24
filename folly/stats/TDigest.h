@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cmath>
 #include <vector>
 
@@ -53,7 +54,7 @@ class TDigest {
    public:
     explicit Centroid(double mean = 0.0, double weight = 1.0)
         : mean_(mean), weight_(weight) {
-      DCHECK_GT(weight, 0);
+      assert(weight > 0);
     }
 
     inline double mean() const {
@@ -93,7 +94,11 @@ class TDigest {
    * Returns a new TDigest constructed with values merged from the current
    * digest and the given sortedValues.
    */
-  TDigest merge(presorted_t, Range<const double*> sortedValues) const;
+  TDigest merge(sorted_equivalent_t, Range<const double*> sortedValues) const;
+  /*
+   * Returns a new TDigest constructed with values merged from the current
+   * digest and the given unsortedValues.
+   */
   TDigest merge(Range<const double*> unsortedValues) const;
 
   /*

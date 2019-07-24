@@ -34,7 +34,6 @@ function(apply_folly_compile_options_to_target THETARGET)
       -std=${CXX_STD}
       -finput-charset=UTF-8
       -fsigned-char
-      -Werror
       -Wall
       -Wno-deprecated
       -Wno-deprecated-declarations
@@ -42,7 +41,6 @@ function(apply_folly_compile_options_to_target THETARGET)
       -Wno-unused
       -Wunused-label
       -Wunused-result
-      -Wnon-virtual-dtor
       ${FOLLY_CXX_FLAGS}
   )
 endfunction()

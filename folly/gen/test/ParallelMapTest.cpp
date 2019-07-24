@@ -21,6 +21,7 @@
 #include <folly/Memory.h>
 #include <folly/gen/Base.h>
 #include <folly/gen/ParallelMap.h>
+#include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
 
 using namespace folly;
@@ -152,6 +153,11 @@ TEST(Pmap, Rvalues) {
 
     EXPECT_EQ(pmapResult, mapResult);
   }
+}
+
+TEST(Pmap, Exception) {
+  std::vector<char const*> input{"a"};
+  EXPECT_THROW(from(input) | pmap(To<int>()) | count, std::runtime_error);
 }
 
 int main(int argc, char* argv[]) {

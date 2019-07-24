@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include <folly/experimental/pushmi/executor.h>
+#include <folly/experimental/pushmi/executor/executor.h>
 #include <folly/experimental/pushmi/o/extension_operators.h>
 #include <folly/experimental/pushmi/piping.h>
 
@@ -26,74 +26,198 @@ namespace detail {
 
 struct on_fn {
  private:
-  template <class In, class Out>
-  struct on_value_impl {
-    In in_;
+  template <class Exec, class Out>
+  struct down_shared : std::enable_shared_from_this<down_shared<Exec, Out>> {
+    Exec exec_;
     Out out_;
-    void operator()(any) {
-      submit(in_, std::move(out_));
+    std::atomic<bool> done_;
+    down_shared(Exec exec, Out out)
+        : exec_(std::move(exec)), out_(std::move(out)), done_(false) {}
+    Exec& exec() {
+      return exec_;
+    }
+    Out& out() {
+      return out_;
+    }
+    std::atomic<bool>& done() {
+      return done_;
     }
   };
-  template <class In, class ExecutorFactory>
-  struct out_impl {
-    ExecutorFactory ef_;
-    PUSHMI_TEMPLATE(class Out)
+
+  template <class DownShared, class Up>
+  struct up_shared : std::enable_shared_from_this<up_shared<DownShared, Up>> {
+    DownShared shared_;
+    Up up_;
+    up_shared(DownShared shared, Up up)
+        : shared_(std::move(shared)), up_(std::move(up)) {}
+    auto& exec() {
+      return shared_->exec();
+    }
+    auto& out() {
+      return shared_->out();
+    }
+    std::atomic<bool>& done() {
+      return shared_->done();
+    }
+  };
+
+  template <class Shared, class Dest, class CPO, class... AN>
+  struct continuation_impl {
+    using receiver_category = receiver_tag;
+    const CPO& fn_;
+    std::tuple<Dest, AN...> an_;
+    Shared shared_;
+    void value(any) {
+      ::folly::pushmi::apply(fn_, std::move(an_));
+    }
+    template <class E>
+    void error(E e) noexcept {
+      set_error(shared_->out(), e);
+    }
+    void done() {}
+  };
+  template <class Shared, class CPO, class... AN>
+  static void down(Shared& shared, const CPO& fn, AN&&... an) {
+    submit(
+        ::folly::pushmi::schedule(shared->exec_),
+        continuation_impl<
+            Shared,
+            decltype(shared->out_)&,
+            CPO,
+            std::decay_t<AN>...>{
+            fn,
+            std::tuple<decltype(shared->out_)&, std::decay_t<AN>...>{
+                shared->out_, (AN &&) an...},
+            shared});
+  }
+  template <class Shared, class CPO, class... AN>
+  static void up(Shared& shared, const CPO& fn, AN&&... an) {
+    if (shared->done().load()) {
+      return;
+    }
+    submit(
+        ::folly::pushmi::schedule(shared->exec()),
+        continuation_impl<
+            Shared,
+            decltype(shared->up_)&,
+            CPO,
+            std::decay_t<AN>...>{
+            fn,
+            std::tuple<decltype(shared->up_)&, std::decay_t<AN>...>{
+                shared->up_, (AN &&) an...},
+            shared});
+  }
+
+  template <class Shared>
+  struct up_impl {
+    Shared shared_;
+    using receiver_category = receiver_tag;
+    template <class... VN>
+    void value(VN&&... vn) {
+      // call up.set_value from executor context
+      up(shared_, set_value, (VN &&) vn...);
+    }
+    template <class E>
+    void error(E&& e) noexcept {
+      // call up.set_error from executor context
+      up(shared_, set_error, (E &&) e);
+    }
+    void done() {
+      // call up.set_done from executor context
+      up(shared_, set_done);
+    }
+  };
+
+  template <bool IsFlow, class Shared>
+  struct down_impl {
+    Shared shared_;
+    using receiver_category =
+        std::conditional_t<IsFlow, flow_receiver_tag, receiver_tag>;
+    template <class... VN>
+    void value(VN&&... vn) {
+      if (shared_->done().load()) {
+        return;
+      }
+      // call out.set_value from executor context
+      down(shared_, set_value, (VN &&) vn...);
+    }
+    template <class E>
+    void error(E&& e) noexcept {
+      if (shared_->done().exchange(true)) {
+        return;
+      }
+      // call out.set_error from executor context
+      down(shared_, set_error, (E &&) e);
+    }
+    void done() {
+      if (shared_->done().exchange(true)) {
+        return;
+      }
+      // call out.set_done from executor context
+      down(shared_, set_done);
+    }
+    PUSHMI_TEMPLATE(class Up)
+    (requires IsFlow&& Receiver<Up>) //
+        void starting(Up&& up) {
+      auto shared =
+          std::make_shared<up_shared<Shared, Up>>(shared_, (Up &&) up);
+      auto receiver = up_impl<decltype(shared)>{shared};
+      // call out.set_starting from executor context
+      down(shared_, set_starting, std::move(receiver));
+    }
+  };
+
+  template <class Factory, class In>
+  struct submit_impl {
+    Factory ef_;
+    PUSHMI_TEMPLATE(class SIn, class Out)
     (requires SenderTo<In, Out>) //
         void
-        operator()(In& in, Out out) const {
-      auto exec = ef_();
+        operator()(SIn&& in, Out out) {
+      auto exec = ::folly::pushmi::make_strand(ef_);
+      auto shared = std::make_shared<down_shared<decltype(exec), Out>>(
+          std::move(exec), (Out &&) out);
+      auto receiver = down_impl<FlowSender<In>, decltype(shared)>{shared};
+      // call in.submit from executor context
       submit(
-          exec,
-          ::folly::pushmi::make_receiver(
-              on_value_impl<In, Out>{in, std::move(out)}));
+          ::folly::pushmi::schedule(shared->exec()),
+          continuation_impl<
+              decltype(shared),
+              std::decay_t<In>,
+              decltype(submit),
+              decltype(receiver)>{
+              submit,
+              std::tuple<std::decay_t<In>, decltype(receiver)>{
+                  (In &&) in, std::move(receiver)},
+              shared});
     }
   };
-  template <class In, class TP, class Out>
-  struct time_on_value_impl {
-    In in_;
-    TP at_;
-    Out out_;
-    void operator()(any) {
-      submit(in_, at_, std::move(out_));
-    }
-  };
-  template <class In, class ExecutorFactory>
-  struct time_out_impl {
-    ExecutorFactory ef_;
-    PUSHMI_TEMPLATE(class TP, class Out)
-    (requires TimeSenderTo<In, Out>) //
-        void
-        operator()(In& in, TP at, Out out) const {
-      auto exec = ef_();
-      submit(
-          exec,
-          at,
-          ::folly::pushmi::make_receiver(
-              time_on_value_impl<In, TP, Out>{in, at, std::move(out)}));
-    }
-  };
-  template <class ExecutorFactory>
-  struct in_impl {
-    ExecutorFactory ef_;
+
+  template <class Factory>
+  struct adapt_impl {
+    Factory ef_;
     PUSHMI_TEMPLATE(class In)
     (requires Sender<In>) //
         auto
-        operator()(In in) const {
+        operator()(In&& in) & {
       return ::folly::pushmi::detail::sender_from(
-          std::move(in),
-          detail::submit_transform_out<In>(
-              out_impl<In, ExecutorFactory>{ef_},
-              time_out_impl<In, ExecutorFactory>{ef_}));
+          (In &&) in, submit_impl<Factory, In>{ef_});
+    }
+    PUSHMI_TEMPLATE(class In)
+    (requires Sender<In>) //
+        auto
+        operator()(In&& in) && {
+      return ::folly::pushmi::detail::sender_from(
+          (In &&) in, submit_impl<Factory, In>{std::move(ef_)});
     }
   };
 
  public:
-  PUSHMI_TEMPLATE(class ExecutorFactory)
-  (requires Invocable<ExecutorFactory&>&&
-       Executor<invoke_result_t<ExecutorFactory&>>) //
+  PUSHMI_TEMPLATE(class Factory)
+  (requires StrandFactory<Factory>) //
       auto
-      operator()(ExecutorFactory ef) const {
-    return in_impl<ExecutorFactory>{std::move(ef)};
+      operator()(Factory ef) const {
+    return adapt_impl<Factory>{std::move(ef)};
   }
 };
 

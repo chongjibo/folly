@@ -45,6 +45,10 @@ class BlockingSocket : public folly::AsyncSocket::ConnectCallback,
     sock_->enableTFO();
   }
 
+  void setEorTracking(bool track) {
+    sock_->setEorTracking(track);
+  }
+
   void setAddress(folly::SocketAddress address) {
     address_ = address;
   }
@@ -65,8 +69,11 @@ class BlockingSocket : public folly::AsyncSocket::ConnectCallback,
     sock_->closeWithReset();
   }
 
-  int32_t write(uint8_t const* buf, size_t len) {
-    sock_->write(this, buf, len);
+  int32_t write(
+      uint8_t const* buf,
+      size_t len,
+      folly::WriteFlags flags = folly::WriteFlags::NONE) {
+    sock_->write(this, buf, len, flags);
     eventBase_.loop();
     if (err_.hasValue()) {
       throw err_.value();
@@ -84,8 +91,8 @@ class BlockingSocket : public folly::AsyncSocket::ConnectCallback,
     return readHelper(buf, len, false);
   }
 
-  int getSocketFD() const {
-    return sock_->getNetworkSocket().toFd();
+  folly::NetworkSocket getNetworkSocket() const {
+    return sock_->getNetworkSocket();
   }
 
   folly::AsyncSocket* getSocket() {

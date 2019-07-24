@@ -158,13 +158,8 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
      *                    remain valid until connectionAccepted() returns.
      */
     virtual void connectionAccepted(
-        int fd,
-        const SocketAddress& clientAddr) noexcept = 0;
-    void connectionAccepted(
         NetworkSocket fd,
-        const SocketAddress& clientAddr) noexcept {
-      connectionAccepted(fd.toFd(), clientAddr);
-    }
+        const SocketAddress& clientAddr) noexcept = 0;
 
     /**
      * acceptError() is called if an error occurs while accepting.
@@ -296,12 +291,9 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    * listen on the file descriptor.  If so the caller should skip calling the
    * corresponding AsyncServerSocket::bind() and listen() methods.
    *
-   * On error a TTransportException will be thrown and the caller will retain
+   * On error a AsyncSocketException will be thrown and the caller will retain
    * ownership of the file descriptor.
    */
-  void useExistingSocket(int fd) {
-    useExistingSocket(NetworkSocket::fromFd(fd));
-  }
   void useExistingSocket(NetworkSocket fd);
   void useExistingSockets(const std::vector<NetworkSocket>& fds);
 
@@ -319,10 +311,6 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   /**
    * Backwards compatible getSocket, warns if > 1 socket
    */
-  int getSocket() const {
-    return getNetworkSocket().toFd();
-  }
-
   NetworkSocket getNetworkSocket() const {
     if (sockets_.size() > 1) {
       VLOG(2) << "Warning: getSocket can return multiple fds, "
@@ -345,7 +333,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    *
    * This must be called from the primary EventBase thread.
    *
-   * Throws TTransportException on error.
+   * Throws AsyncSocketException on error.
    */
   virtual void bind(const SocketAddress& address);
 
@@ -354,7 +342,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    *
    * This must be called from the primary EventBase thread.
    *
-   * Throws TTransportException on error.
+   * Throws AsyncSocketException on error.
    */
   virtual void bind(const std::vector<IPAddress>& ipAddresses, uint16_t port);
 
@@ -363,21 +351,21 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    *
    * This must be called from the primary EventBase thread.
    *
-   * Throws TTransportException on error.
+   * Throws AsyncSocketException on error.
    */
   virtual void bind(uint16_t port);
 
   /**
    * Get the local address to which the socket is bound.
    *
-   * Throws TTransportException on error.
+   * Throws AsyncSocketException on error.
    */
   void getAddress(SocketAddress* addressReturn) const override;
 
   /**
    * Get the local address to which the socket is bound.
    *
-   * Throws TTransportException on error.
+   * Throws AsyncSocketException on error.
    */
   SocketAddress getAddress() const {
     SocketAddress ret;
@@ -388,7 +376,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   /**
    * Get all the local addresses to which the socket is bound.
    *
-   * Throws TTransportException on error.
+   * Throws AsyncSocketException on error.
    */
   std::vector<SocketAddress> getAddresses() const;
 
@@ -410,7 +398,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    * bind() must be called before calling listen().
    * listen() must be called from the primary EventBase thread.
    *
-   * Throws TTransportException on error.
+   * Throws AsyncSocketException on error.
    */
   virtual void listen(int backlog);
 

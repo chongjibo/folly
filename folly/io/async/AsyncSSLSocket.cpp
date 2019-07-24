@@ -30,6 +30,7 @@
 #include <folly/SpinLock.h>
 #include <folly/io/Cursor.h>
 #include <folly/io/IOBuf.h>
+#include <folly/io/async/ssl/BasicTransportCertificate.h>
 #include <folly/lang/Bits.h>
 #include <folly/portability/OpenSSL.h>
 
@@ -66,28 +67,19 @@ static SpinLock dummyCtxLock;
 const size_t MAX_STACK_BUF_SIZE = 2048;
 
 // This converts "illegal" shutdowns into ZERO_RETURN
-inline bool zero_return(int error, int rc) {
-  return (error == SSL_ERROR_ZERO_RETURN || (rc == 0 && errno == 0));
+inline bool zero_return(int error, int rc, int errno_copy) {
+  if (error == SSL_ERROR_ZERO_RETURN || (rc == 0 && errno_copy == 0)) {
+    return true;
+  }
+#ifdef _WIN32
+  // on windows underlying TCP socket may error with this code
+  // if the sending/receiving client crashes or is killed
+  if (error == SSL_ERROR_SYSCALL && errno_copy == WSAECONNRESET) {
+    return true;
+  }
+#endif
+  return false;
 }
-
-class AsyncSSLCertificate : public folly::AsyncTransportCertificate {
- public:
-  // assumed to be non null
-  explicit AsyncSSLCertificate(folly::ssl::X509UniquePtr x509)
-      : x509_(std::move(x509)) {}
-
-  folly::ssl::X509UniquePtr getX509() const override {
-    X509_up_ref(x509_.get());
-    return folly::ssl::X509UniquePtr(x509_.get());
-  }
-
-  std::string getIdentity() const override {
-    return OpenSSLUtils::getCommonName(x509_.get());
-  }
-
- private:
-  folly::ssl::X509UniquePtr x509_;
-};
 
 class AsyncSSLSocketConnector : public AsyncSocket::ConnectCallback,
                                 public AsyncSSLSocket::HandshakeCB {
@@ -109,6 +101,13 @@ class AsyncSSLSocketConnector : public AsyncSocket::ConnectCallback,
         callback_(callback),
         timeout_(timeout),
         startTime_(std::chrono::steady_clock::now()) {}
+
+  void preConnect(folly::NetworkSocket fd) override {
+    VLOG(7) << "client preConnect hook is invoked";
+    if (callback_) {
+      callback_->preConnect(fd);
+    }
+  }
 
   void connectSuccess() noexcept override {
     VLOG(7) << "client socket connected";
@@ -404,6 +403,7 @@ void AsyncSSLSocket::setEorTracking(bool track) {
   if (isEorTrackingEnabled() != track) {
     AsyncSocket::setEorTracking(track);
     appEorByteNo_ = 0;
+    appEorByteWriteFlags_ = {};
     minEorRawByteNo_ = 0;
   }
 }
@@ -573,7 +573,7 @@ void AsyncSSLSocket::switchServerSSLContext(
     // We log it here and allow the switch.
     // It should not affect our re-negotiation support (which
     // is not supported now).
-    VLOG(6) << "fd=" << getNetworkSocket().toFd()
+    VLOG(6) << "fd=" << getNetworkSocket()
             << " renegotation detected when switching SSL_CTX";
   }
 
@@ -940,7 +940,9 @@ const AsyncTransportCertificate* AsyncSSLSocket::getPeerCertificate() const {
     if (peerX509) {
       // already up ref'd
       folly::ssl::X509UniquePtr peer(peerX509);
-      peerCertData_ = std::make_unique<AsyncSSLCertificate>(std::move(peer));
+      auto cn = OpenSSLUtils::getCommonName(peerX509);
+      peerCertData_ = std::make_unique<BasicTransportCertificate>(
+          std::move(cn), std::move(peer));
     }
   }
   return peerCertData_.get();
@@ -956,15 +958,12 @@ const AsyncTransportCertificate* AsyncSSLSocket::getSelfCertificate() const {
       // need to upref
       X509_up_ref(selfX509);
       folly::ssl::X509UniquePtr peer(selfX509);
-      selfCertData_ = std::make_unique<AsyncSSLCertificate>(std::move(peer));
+      auto cn = OpenSSLUtils::getCommonName(selfX509);
+      selfCertData_ = std::make_unique<BasicTransportCertificate>(
+          std::move(cn), std::move(peer));
     }
   }
   return selfCertData_.get();
-}
-
-// TODO: deprecate/remove in favor of getSelfCertificate.
-const X509* AsyncSSLSocket::getSelfCert() const {
-  return (ssl_ != nullptr) ? SSL_get_certificate(ssl_.get()) : nullptr;
 }
 
 bool AsyncSSLSocket::willBlock(
@@ -1015,8 +1014,15 @@ bool AsyncSSLSocket::willBlock(
         return false;
       }
 
+      // On POSIX systems, OSSL_ASYNC_FD is type int, but on win32
+      // it has type HANDLE.
+      // Our NetworkSocket::native_handle_type is type SOCKET on
+      // win32, which means that we need to explicitly construct
+      // a native handle type to pass to the constructor.
+      auto native_handle = NetworkSocket::native_handle_type(ofd);
+
       auto asyncPipeReader =
-          AsyncPipeReader::newReader(eventBase_, NetworkSocket(ofd).toFd());
+          AsyncPipeReader::newReader(eventBase_, NetworkSocket(native_handle));
       auto asyncPipeReaderPtr = asyncPipeReader.get();
       if (!asyncOperationFinishCallback_) {
         asyncOperationFinishCallback_.reset(
@@ -1339,7 +1345,14 @@ AsyncSSLSocket::performRead(void** buf, size_t* buflen, size_t* offset) {
     return AsyncSocket::performRead(buf, buflen, offset);
   }
 
-  int bytes = SSL_read(ssl_.get(), *buf, int(*buflen));
+  int numToRead = 0;
+  if (*buflen > std::numeric_limits<int>::max()) {
+    numToRead = std::numeric_limits<int>::max();
+    VLOG(4) << "Clamping SSL_read to " << numToRead;
+  } else {
+    numToRead = int(*buflen);
+  }
+  int bytes = SSL_read(ssl_.get(), *buf, numToRead);
 
   if (server_ && renegotiateAttempted_) {
     LOG(ERROR) << "AsyncSSLSocket(fd=" << fd_ << ", state=" << int(state_)
@@ -1369,7 +1382,7 @@ AsyncSSLSocket::performRead(void** buf, size_t* buflen, size_t* offset) {
           READ_ERROR,
           std::make_unique<SSLException>(SSLError::INVALID_RENEGOTIATION));
     } else {
-      if (zero_return(error, bytes)) {
+      if (zero_return(error, bytes, errno)) {
         return ReadResult(bytes);
       }
       auto errError = ERR_get_error();
@@ -1429,7 +1442,7 @@ AsyncSocket::WriteResult AsyncSSLSocket::interpretSSLError(int rc, int error) {
         WRITE_ERROR,
         std::make_unique<SSLException>(SSLError::INVALID_RENEGOTIATION));
   } else {
-    if (zero_return(error, rc)) {
+    if (zero_return(error, rc, errno)) {
       return WriteResult(0);
     }
     auto errError = ERR_get_error();
@@ -1548,13 +1561,18 @@ AsyncSocket::WriteResult AsyncSSLSocket::performWrite(
       }
     }
 
+    // cork the current write if the original flags included CORK or if there
+    // are remaining iovec to write
     corkCurrentWrite_ =
         isSet(flags, WriteFlags::CORK) || (i + buffersStolen + 1 < count);
-    bytes = eorAwareSSLWrite(
-        ssl_,
-        sslWriteBuf,
-        int(len),
-        (isSet(flags, WriteFlags::EOR) && i + buffersStolen + 1 == count));
+
+    // track the EoR if:
+    //  (1) there are write flags that require EoR tracking (EOR / TIMESTAMP_TX)
+    //  (2) if the buffer includes the EOR byte
+    appEorByteWriteFlags_ = flags & kEorRelevantWriteFlags;
+    bool trackEor = appEorByteWriteFlags_ != folly::WriteFlags::NONE &&
+        (i + buffersStolen + 1 == count);
+    bytes = eorAwareSSLWrite(ssl_, sslWriteBuf, int(len), trackEor);
 
     if (bytes <= 0) {
       int error = SSL_get_error(ssl_.get(), int(bytes));
@@ -1621,6 +1639,7 @@ int AsyncSSLSocket::eorAwareSSLWrite(
       }
       if (appBytesWritten_ == appEorByteNo_) {
         appEorByteNo_ = 0;
+        appEorByteWriteFlags_ = {};
       } else {
         CHECK(appBytesWritten_ < appEorByteNo_);
       }
@@ -1670,7 +1689,7 @@ int AsyncSSLSocket::bioWrite(BIO* b, const char* in, int inl) {
   WriteFlags flags = WriteFlags::NONE;
   if (tsslSock->isEorTrackingEnabled() && tsslSock->minEorRawByteNo_ &&
       tsslSock->minEorRawByteNo_ <= BIO_number_written(b) + inl) {
-    flags |= WriteFlags::EOR;
+    flags |= tsslSock->appEorByteWriteFlags_;
   }
 
   if (tsslSock->corkCurrentWrite_) {

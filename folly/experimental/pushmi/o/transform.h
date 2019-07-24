@@ -15,131 +15,76 @@
  */
 #pragma once
 
-#include <folly/experimental/pushmi/flow_receiver.h>
+#include <folly/experimental/pushmi/receiver/flow_receiver.h>
 #include <folly/experimental/pushmi/o/extension_operators.h>
 #include <folly/experimental/pushmi/o/submit.h>
-#include <folly/experimental/pushmi/receiver.h>
+#include <folly/experimental/pushmi/receiver/receiver.h>
 
 namespace folly {
 namespace pushmi {
 
 namespace detail {
 
-template <class F, class Tag, bool IsFlow = false>
+template <class F, class SenderCategory>
 struct transform_on;
 
 template <class F>
-struct transform_on<F, is_single<>> {
+struct value_fn {
   F f_;
-  transform_on() = default;
-  constexpr explicit transform_on(F f) : f_(std::move(f)) {}
-  struct value_fn {
-    F f_;
-    value_fn() = default;
-    constexpr explicit value_fn(F f) : f_(std::move(f)) {}
-    template <class Out, class V0, class... VN>
-    auto operator()(Out& out, V0&& v0, VN&&... vn) {
-      using Result = ::folly::pushmi::invoke_result_t<F, V0, VN...>;
-      static_assert(
-          ::folly::pushmi::SemiMovable<Result>,
-          "none of the functions supplied to transform can convert this value");
-      static_assert(
-          ::folly::pushmi::ReceiveValue<Out, Result>,
-          "Result of value transform cannot be delivered to Out");
-      set_value(out, f_((V0 &&) v0, (VN &&) vn...));
-    }
-  };
-  template <class Out>
-  auto operator()(Out out) const {
-    return ::folly::pushmi::make_receiver(std::move(out), value_fn{f_});
-  }
-};
-
-template <class F>
-struct transform_on<F, is_single<>, true> {
-  F f_;
-  transform_on() = default;
-  constexpr explicit transform_on(F f) : f_(std::move(f)) {}
-  template <class Out>
-  auto operator()(Out out) const {
-    return make_flow_single(std::move(out), on_value(*this));
-  }
-  template <class Out, class V0, class... VN>
-  auto operator()(Out& out, V0&& v0, VN&&... vn) {
-    using Result = ::folly::pushmi::invoke_result_t<F, V0, VN...>;
+  value_fn() = default;
+  constexpr explicit value_fn(F f) : f_(std::move(f)) {}
+  template<class Out, class... VN>
+  auto operator()(Out& out, VN&&... vn) {
+    using Result = ::folly::pushmi::invoke_result_t<F&, VN...>;
     static_assert(
         ::folly::pushmi::SemiMovable<Result>,
         "none of the functions supplied to transform can convert this value");
     static_assert(
-        ::folly::pushmi::Flow<Out> &&
-            ::folly::pushmi::ReceiveValue<Out, Result>,
+        ::folly::pushmi::ReceiveValue<Out&, Result>,
         "Result of value transform cannot be delivered to Out");
-    set_value(out, f_((V0 &&) v0, (VN &&) vn...));
-  }
-};
-
-template <class F>
-struct transform_on<F, is_many<>> {
-  F f_;
-  transform_on() = default;
-  constexpr explicit transform_on(F f) : f_(std::move(f)) {}
-  template <class Out>
-  auto operator()(Out out) const {
-    return ::folly::pushmi::make_receiver(std::move(out), on_value(*this));
-  }
-  template <class Out, class V0, class... VN>
-  auto operator()(Out& out, V0&& v0, VN&&... vn) {
-    using Result = ::folly::pushmi::invoke_result_t<F, V0, VN...>;
-    static_assert(
-        ::folly::pushmi::SemiMovable<Result>,
-        "none of the functions supplied to transform can convert this value");
-    static_assert(
-        ::folly::pushmi::ReceiveValue<Out, Result>,
-        "Result of value transform cannot be delivered to Out");
-    set_value(out, f_((V0 &&) v0, (VN &&) vn...));
-  }
-};
-
-template <class F>
-struct transform_on<F, is_many<>, true> {
-  F f_;
-  transform_on() = default;
-  constexpr explicit transform_on(F f) : f_(std::move(f)) {}
-  template <class Out>
-  auto operator()(Out out) const {
-    return make_flow_receiver(std::move(out), on_value(*this));
-  }
-  template <class Out, class V0, class... VN>
-  auto operator()(Out& out, V0&& v0, VN&&... vn) {
-    using Result = ::folly::pushmi::invoke_result_t<F, V0, VN...>;
-    static_assert(
-        ::folly::pushmi::SemiMovable<Result>,
-        "none of the functions supplied to transform can convert this value");
-    static_assert(
-        ::folly::pushmi::Flow<Out> &&
-            ::folly::pushmi::ReceiveValue<Out, Result>,
-        "Result of value transform cannot be delivered to Out");
-    set_value(out, f_((V0 &&) v0, (VN &&) vn...));
+    set_value(out, ::folly::pushmi::invoke(f_, (VN &&) vn...));
   }
 };
 
 struct transform_fn {
  private:
+  template <class F, class In>
+  struct submit_impl {
+    F f_;
+    using maker_t = receiver_from_fn<std::decay_t<In>>;
+    PUSHMI_TEMPLATE(class SIn, class Out)
+    (requires Receiver<Out> && Constructible<F, const F&> && SenderTo<In, invoke_result_t<maker_t, Out, value_fn<F>>>) //
+    void operator()(SIn&& in, Out&& out) & {
+      // copy 'f_' to allow multiple calls to connect to multiple 'in'
+      ::folly::pushmi::submit(
+          (In &&) in,
+          maker_t{}((Out &&) out, value_fn<F>{f_}));
+    }
+    PUSHMI_TEMPLATE(class SIn, class Out)
+    (requires Receiver<Out> && MoveConstructible<F> && SenderTo<In, invoke_result_t<maker_t, Out, value_fn<F>>>) //
+    void operator()(SIn&& in, Out&& out) && {
+      ::folly::pushmi::submit(
+          (In &&) in,
+          maker_t{}((Out &&) out, value_fn<F>{std::move(f_)}));
+    }
+  };
+
   template <class F>
-  struct impl {
+  struct adapt_impl {
     F f_;
     PUSHMI_TEMPLATE(class In)
-    (requires Sender<In>)
-    auto operator()(In in) const {
-      using Cardinality = property_set_index_t<properties_t<In>, is_single<>>;
+    (requires Sender<In>) //
+    auto operator()(In&& in) & {
+      // copy 'f_' to allow multiple calls to connect to multiple 'in'
       return ::folly::pushmi::detail::sender_from(
-          std::move(in),
-          ::folly::pushmi::detail::submit_transform_out<In>(
-              // copy 'f_' to allow multiple calls to connect to multiple 'in'
-              transform_on<
-                  F,
-                  Cardinality,
-                  property_query_v<properties_t<In>, is_flow<>>>{f_}));
+          (In &&) in, submit_impl<F, In>{f_});
+    }
+    PUSHMI_TEMPLATE(class In)
+    (requires Sender<In>) //
+        auto
+        operator()(In&& in) && {
+      return ::folly::pushmi::detail::sender_from(
+          (In &&) in, submit_impl<F, In>{std::move(f_)});
     }
   };
 
@@ -148,7 +93,7 @@ struct transform_fn {
   auto operator()(FN... fn) const {
     auto f = ::folly::pushmi::overload(std::move(fn)...);
     using F = decltype(f);
-    return impl<F>{std::move(f)};
+    return adapt_impl<F>{std::move(f)};
   }
 };
 

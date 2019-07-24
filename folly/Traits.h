@@ -25,17 +25,6 @@
 
 #include <folly/Portability.h>
 
-// libc++ doesn't provide this header, nor does msvc
-#if __has_include(<bits/c++config.h>)
-// This file appears in two locations: inside fbcode and in the
-// libstdc++ source code (when embedding fbstring as std::string).
-// To aid in this schizophrenic use, two macros are defined in
-// c++config.h:
-//   _LIBSTDCXX_FBSTRING - Set inside libstdc++.  This is useful to
-//      gate use inside fbcode v. libstdc++
-#include <bits/c++config.h>
-#endif
-
 #define FOLLY_CREATE_HAS_MEMBER_TYPE_TRAITS(classname, type_name)              \
   template <typename TTheClass_>                                               \
   struct classname##__folly_traits_impl__ {                                    \
@@ -319,9 +308,6 @@ using aligned_storage_for_t =
 #if defined(__clang__) && !defined(_LIBCPP_VERSION)
 template <class T>
 struct is_trivially_copyable : bool_constant<__is_trivially_copyable(T)> {};
-#elif defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5
-template <class T>
-struct is_trivially_copyable : std::is_trivial<T> {};
 #else
 template <class T>
 using is_trivially_copyable = std::is_trivially_copyable<T>;
@@ -468,6 +454,31 @@ struct IsZeroInitializable
           traits_detail::has_true_IsZeroInitializable<T>,
           bool_constant<!std::is_class<T>::value>>::type {};
 
+namespace detail {
+template <bool>
+struct conditional_;
+template <>
+struct conditional_<false> {
+  template <typename, typename T>
+  using apply = T;
+};
+template <>
+struct conditional_<true> {
+  template <typename T, typename>
+  using apply = T;
+};
+} // namespace detail
+
+//  conditional_t
+//
+//  Like std::conditional_t but with only two total class template instances,
+//  rather than as many class template instances as there are uses.
+//
+//  As one effect, the result can be used in deducible contexts, allowing
+//  deduction of conditional_t<V, T, F> to work when T or F is a template param.
+template <bool V, typename T, typename F>
+using conditional_t = typename detail::conditional_<V>::template apply<T, F>;
+
 template <typename...>
 struct Conjunction : std::true_type {};
 template <typename T>
@@ -504,6 +515,21 @@ template <class... Ts>
 struct StrictDisjunction
     : Negation<
           std::is_same<Bools<Ts::value...>, Bools<(Ts::value && false)...>>> {};
+
+namespace detail {
+template <typename, typename>
+struct is_transparent_ : std::false_type {};
+template <typename T>
+struct is_transparent_<void_t<typename T::is_transparent>, T> : std::true_type {
+};
+} // namespace detail
+
+//  is_transparent
+//
+//  To test whether a less, equal-to, or hash type follows the is-transparent
+//  protocol used by containers with optional heterogeneous access.
+template <typename T>
+struct is_transparent : detail::is_transparent_<void, T> {};
 
 } // namespace folly
 
@@ -589,15 +615,6 @@ FOLLY_NAMESPACE_STD_BEGIN
 
 template <class T, class U>
 struct pair;
-#ifndef _GLIBCXX_USE_FB
-FOLLY_GLIBCXX_NAMESPACE_CXX11_BEGIN
-template <class T, class R, class A>
-class basic_string;
-FOLLY_GLIBCXX_NAMESPACE_CXX11_END
-#else
-template <class T, class R, class A, class S>
-class basic_string;
-#endif
 template <class T, class A>
 class vector;
 template <class T, class A>
@@ -640,9 +657,7 @@ namespace detail {
 // in order to not prevent all calling code from using it.
 FOLLY_PUSH_WARNING
 FOLLY_GNU_DISABLE_WARNING("-Wsign-compare")
-#if __GNUC_PREREQ(5, 0)
-FOLLY_GNU_DISABLE_WARNING("-Wbool-compare")
-#endif
+FOLLY_GCC_DISABLE_WARNING("-Wbool-compare")
 FOLLY_MSVC_DISABLE_WARNING(4388) // sign-compare
 FOLLY_MSVC_DISABLE_WARNING(4804) // bool-compare
 
@@ -710,10 +725,6 @@ bool greater_than(LHS const lhs) {
 
 // Assume nothing when compiling with MSVC.
 #ifndef _MSC_VER
-// gcc-5.0 changed string's implementation in libstdc++ to be non-relocatable
-#if !_GLIBCXX_USE_CXX11_ABI
-FOLLY_ASSUME_FBVECTOR_COMPATIBLE_3(std::basic_string)
-#endif
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_2(std::vector)
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_2(std::deque)
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_2(std::unique_ptr)

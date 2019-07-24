@@ -81,11 +81,11 @@ struct string_table_c_unescape_make_item {
 struct string_table_hex_make_item {
   constexpr unsigned char operator()(std::size_t index) const {
     // clang-format off
-    return
+    return static_cast<unsigned char>(
         index >= '0' && index <= '9' ? index - '0' :
         index >= 'a' && index <= 'f' ? index - 'a' + 10 :
         index >= 'A' && index <= 'F' ? index - 'A' + 10 :
-        16;
+        16);
     // clang-format on
   }
 };
@@ -460,6 +460,45 @@ std::string hexDump(const void* ptr, size_t size) {
   return os.str();
 }
 
+// There are two variants of `strerror_r` function, one returns
+// `int`, and another returns `char*`. Selecting proper version using
+// preprocessor macros portably is extremely hard.
+//
+// For example, on Android function signature depends on `__USE_GNU` and
+// `__ANDROID_API__` macros (https://git.io/fjBBE).
+//
+// So we are using C++ overloading trick: we pass a pointer of
+// `strerror_r` to `invoke_strerror_r` function, and C++ compiler
+// selects proper function.
+
+FOLLY_MAYBE_UNUSED
+static fbstring invoke_strerror_r(
+    int (*strerror_r)(int, char*, size_t),
+    int err,
+    char* buf,
+    size_t buflen) {
+  // Using XSI-compatible strerror_r
+  int r = strerror_r(err, buf, buflen);
+
+  // OSX/FreeBSD use EINVAL and Linux uses -1 so just check for non-zero
+  if (r != 0) {
+    return to<fbstring>(
+        "Unknown error ", err, " (strerror_r failed with error ", errno, ")");
+  } else {
+    return buf;
+  }
+}
+
+FOLLY_MAYBE_UNUSED
+static fbstring invoke_strerror_r(
+    char* (*strerror_r)(int, char*, size_t),
+    int err,
+    char* buf,
+    size_t buflen) {
+  // Using GNU strerror_r
+  return strerror_r(err, buf, buflen);
+}
+
 fbstring errnoStr(int err) {
   int savedErrno = errno;
 
@@ -484,21 +523,9 @@ fbstring errnoStr(int err) {
   } else {
     result.assign(buf);
   }
-#elif FOLLY_HAVE_XSI_STRERROR_R || defined(__APPLE__)
-
-  // Using XSI-compatible strerror_r
-  int r = strerror_r(err, buf, sizeof(buf));
-
-  // OSX/FreeBSD use EINVAL and Linux uses -1 so just check for non-zero
-  if (r != 0) {
-    result = to<fbstring>(
-        "Unknown error ", err, " (strerror_r failed with error ", errno, ")");
-  } else {
-    result.assign(buf);
-  }
 #else
-  // Using GNU strerror_r
-  result.assign(strerror_r(err, buf, sizeof(buf)));
+  // Using any strerror_r
+  result.assign(invoke_strerror_r(strerror_r, err, buf, sizeof(buf)));
 #endif
 
   return result;

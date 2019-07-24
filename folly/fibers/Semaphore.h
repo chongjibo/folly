@@ -17,6 +17,7 @@
 
 #include <folly/Synchronized.h>
 #include <folly/fibers/Baton.h>
+#include <folly/futures/Future.h>
 #if FOLLY_HAS_COROUTINES
 #include <folly/experimental/coro/Task.h>
 #endif
@@ -48,12 +49,29 @@ class Semaphore {
    */
   void wait();
 
+  /**
+   * Try to wait on the semaphore.
+   * Return true on success.
+   * On failure, the passed baton is enqueued, it will be posted once the
+   * semaphore has capacity. Caller is responsible to wait then signal.
+   */
+  bool try_wait(Baton& waitBaton);
+
 #if FOLLY_HAS_COROUTINES
 
   /*
    * Wait for capacity in the semaphore.
    */
   coro::Task<void> co_wait();
+
+#endif
+
+#if FOLLY_FUTURE_USING_FIBER
+
+  /*
+   * Wait for capacity in the semaphore.
+   */
+  SemiFuture<Unit> future_wait();
 
 #endif
 

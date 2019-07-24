@@ -16,9 +16,11 @@
 
 #include <chrono>
 
+#include <folly/ScopeGuard.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/executors/InlineExecutor.h>
 #include <folly/executors/SerialExecutor.h>
+#include <folly/io/async/Request.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 
@@ -31,7 +33,24 @@ void burnMs(uint64_t ms) {
 }
 } // namespace
 
-void SimpleTest(std::shared_ptr<folly::Executor> const& parent) {
+void simpleTest(std::shared_ptr<folly::Executor> const& parent) {
+  class SerialExecutorContextData : public folly::RequestData {
+   public:
+    static std::string kCtxKey() {
+      return typeid(SerialExecutorContextData).name();
+    }
+    explicit SerialExecutorContextData(int id) : id_(id) {}
+    bool hasCallback() override {
+      return false;
+    }
+    int getId() const {
+      return id_;
+    }
+
+   private:
+    const int id_;
+  };
+
   auto executor =
       SerialExecutor::create(folly::getKeepAliveToken(parent.get()));
 
@@ -39,7 +58,21 @@ void SimpleTest(std::shared_ptr<folly::Executor> const& parent) {
   std::vector<int> expected;
 
   for (int i = 0; i < 20; ++i) {
-    executor->add([i, &values] {
+    auto ctx = std::make_shared<folly::RequestContext>();
+    ctx->setContextData(
+        SerialExecutorContextData::kCtxKey(),
+        std::make_unique<SerialExecutorContextData>(i));
+    folly::RequestContextScopeGuard ctxGuard(ctx);
+    auto checkReqCtx = [i] {
+      EXPECT_EQ(
+          i,
+          dynamic_cast<SerialExecutorContextData*>(
+              folly::RequestContext::get()->getContextData(
+                  SerialExecutorContextData::kCtxKey()))
+              ->getId());
+    };
+    executor->add([i, checkReqCtx, g = folly::makeGuard(checkReqCtx), &values] {
+      checkReqCtx();
       // make this extra vulnerable to concurrent execution
       values.push_back(0);
       burnMs(10);
@@ -57,10 +90,10 @@ void SimpleTest(std::shared_ptr<folly::Executor> const& parent) {
 }
 
 TEST(SerialExecutor, Simple) {
-  SimpleTest(std::make_shared<folly::CPUThreadPoolExecutor>(4));
+  simpleTest(std::make_shared<folly::CPUThreadPoolExecutor>(4));
 }
 TEST(SerialExecutor, SimpleInline) {
-  SimpleTest(std::make_shared<folly::InlineExecutor>());
+  simpleTest(std::make_shared<folly::InlineExecutor>());
 }
 
 // The Afterlife test only works with an asynchronous executor (not the

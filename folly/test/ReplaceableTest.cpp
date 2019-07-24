@@ -44,7 +44,9 @@ struct HasRef final {
     ++i1;
   }
 };
-
+void swap(HasRef& lhs, HasRef& rhs) noexcept(false) {
+  std::swap(lhs.i1, rhs.i1);
+}
 struct OddA;
 struct OddB {
   OddB() = delete;
@@ -69,6 +71,11 @@ struct OddA {
 };
 struct Indestructible {
   ~Indestructible() = delete;
+};
+
+struct HasInt {
+  explicit HasInt(int v) : value{v} {}
+  int value{};
 };
 } // namespace
 
@@ -289,3 +296,49 @@ TEST(ReplaceableTest, Conversions) {
   Replaceable<OddA> rOddA{std::move(rOddB)};
   Replaceable<OddB> rOddB2{rOddA};
 }
+
+TEST(ReplaceableTest, swapMemberFunctionIsNoexcept) {
+  int v1{1};
+  int v2{2};
+  auto r1 = Replaceable<HasInt>{v1};
+  auto r2 = Replaceable<HasInt>{v2};
+  EXPECT_TRUE(noexcept(r1.swap(r2)));
+  r1.swap(r2);
+  EXPECT_EQ(v2, r1->value);
+  EXPECT_EQ(v1, r2->value);
+}
+
+TEST(ReplaceableTest, swapMemberFunctionIsNotNoexcept) {
+  int v1{1};
+  int v2{2};
+  auto r1 = Replaceable<HasRef>{v1};
+  auto r2 = Replaceable<HasRef>{v2};
+  EXPECT_FALSE(noexcept(r1.swap(r2)));
+  r1.swap(r2);
+  EXPECT_EQ(v1, r1->i1);
+  EXPECT_EQ(v2, r2->i1);
+}
+
+namespace adl_test {
+struct UserDefinedSwap {
+  bool calledSwap{};
+};
+void swap(UserDefinedSwap& lhs, UserDefinedSwap&) noexcept(false) {
+  lhs.calledSwap = true;
+}
+} // namespace adl_test
+
+TEST(ReplaceableTest, swapMemberFunctionDelegatesToUserSwap) {
+  auto r1 = Replaceable<adl_test::UserDefinedSwap>{};
+  auto r2 = Replaceable<adl_test::UserDefinedSwap>{};
+  r1.swap(r2);
+  EXPECT_TRUE(r1->calledSwap);
+}
+
+#if __cpp_deduction_guides >= 201703
+TEST(ReplaceableTest, DeductionGuide) {
+  Basic b{};
+  Replaceable r{b};
+  EXPECT_TRUE((std::is_same_v<Replaceable<Basic>, decltype(r)>));
+}
+#endif

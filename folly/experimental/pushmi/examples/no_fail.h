@@ -16,7 +16,7 @@
 #pragma once
 
 #include <folly/experimental/pushmi/o/submit.h>
-#include <folly/experimental/pushmi/single_sender.h>
+#include <folly/experimental/pushmi/sender/single_sender.h>
 
 namespace folly {
 namespace pushmi {
@@ -32,18 +32,23 @@ struct no_fail_fn {
   };
   template <class In>
   struct out_impl {
-    PUSHMI_TEMPLATE(class Out)
-    (requires Receiver<Out>)auto operator()(Out out) const {
-      return ::folly::pushmi::detail::receiver_from_fn<In>()(
-          std::move(out), ::folly::pushmi::on_error(on_error_impl{}));
+    PUSHMI_TEMPLATE(class SIn, class Out)
+    (requires Receiver<Out>) //
+    void operator()(SIn&& in, Out out) const {
+      submit(
+        (In&&)in,
+        receiver_from_fn<In>()(
+          std::move(out),
+          ::folly::pushmi::on_error(on_error_impl{})));
     }
   };
   struct in_impl {
     PUSHMI_TEMPLATE(class In)
-    (requires Sender<In>)auto operator()(In in) const {
+    (requires Sender<In>) //
+    auto operator()(In in) const {
       return ::folly::pushmi::detail::sender_from(
           std::move(in),
-          ::folly::pushmi::detail::submit_transform_out<In>(out_impl<In>{}));
+          out_impl<In>{});
     }
   };
 

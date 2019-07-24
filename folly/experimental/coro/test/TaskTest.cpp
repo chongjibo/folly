@@ -26,6 +26,7 @@
 #include <folly/experimental/coro/SharedMutex.h>
 #include <folly/experimental/coro/Task.h>
 #include <folly/experimental/coro/detail/InlineTask.h>
+#include <folly/futures/Future.h>
 #include <folly/portability/GTest.h>
 
 #include <type_traits>
@@ -343,6 +344,39 @@ TEST(Task, FutureTailCall) {
             co_return co_await folly::makeSemiFuture().deferValue(
                 [](auto) { return folly::makeSemiFuture(42); });
           })));
+}
+
+// NOTE: This function is unused.
+// We just want to make sure this compiles without errors or warnings.
+folly::coro::Task<void>
+checkAwaitingFutureOfUnitDoesntWarnAboutDiscardedResult() {
+  co_await folly::makeSemiFuture();
+
+  using namespace std::literals::chrono_literals;
+  co_await folly::futures::sleep(1ms);
+}
+
+folly::coro::Task<int&> returnIntRef(int& value) {
+  co_return value;
+}
+
+TEST(Task, TaskOfLvalueReference) {
+  int value = 123;
+  auto&& result = folly::coro::blockingWait(returnIntRef(value));
+  static_assert(std::is_same_v<decltype(result), int&>);
+  CHECK_EQ(&value, &result);
+}
+
+TEST(Task, TaskOfLvalueReferenceAsTry) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    int value = 123;
+    auto&& result = co_await co_awaitTry(returnIntRef(value));
+    CHECK(result.hasValue());
+    CHECK_EQ(&value, &result.value().get());
+
+    int& valueRef = co_await returnIntRef(value);
+    CHECK_EQ(&value, &valueRef);
+  }());
 }
 
 #endif

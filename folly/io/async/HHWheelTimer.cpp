@@ -27,7 +27,6 @@
 
 
 namespace folly {
-
 /**
  * We want to select the default interval carefully.
  * An interval of 10ms will give us 10ms * WHEEL_SIZE^WHEEL_BUCKETS
@@ -40,8 +39,16 @@ namespace folly {
  * start showing up in cpu perf.  Also, it might not be possible to set
  * tick interval less than 10ms on older kernels.
  */
+
+/*
+ * For high res timers:
+ * An interval of 200usec will give us 200usec * WHEEL_SIZE^WHEEL_BUCKETS
+ * for the largest timeout possible, or about 9 days.
+ */
+
 template <class Duration>
-int HHWheelTimerBase<Duration>::DEFAULT_TICK_INTERVAL = 10;
+int HHWheelTimerBase<Duration>::DEFAULT_TICK_INTERVAL =
+    detail::HHWheelTimerDurationConst<Duration>::DEFAULT_TICK_INTERVAL;
 
 template <class Duration>
 HHWheelTimerBase<Duration>::Callback::Callback() {}
@@ -375,6 +382,16 @@ int64_t HHWheelTimerBase<Duration>::calcNextTick(
   return (curTime - startTime_) / interval_;
 }
 
+// std::chrono::microseconds
+template <>
+void HHWheelTimerBase<std::chrono::microseconds>::scheduleTimeoutInternal(
+    std::chrono::microseconds timeout) {
+  this->AsyncTimeout::scheduleTimeoutHighRes(timeout);
+}
+
+// std::chrono::milliseconds
 template class HHWheelTimerBase<std::chrono::milliseconds>;
 
+// std::chrono::microseconds
+template class HHWheelTimerBase<std::chrono::microseconds>;
 } // namespace folly

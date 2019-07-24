@@ -24,6 +24,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <climits>
 #include <cstddef>
@@ -649,13 +650,13 @@ template <class Tgt, class Src>
 typename std::enable_if<
     std::is_enum<Src>::value && IsSomeString<Tgt>::value>::type
 toAppend(Src value, Tgt* result) {
-  toAppend(to_underlying_type(value), result);
+  toAppend(to_underlying(value), result);
 }
 
 template <class Src>
 typename std::enable_if<std::is_enum<Src>::value, size_t>::type
 estimateSpaceNeeded(Src value) {
-  return estimateSpaceNeeded(to_underlying_type(value));
+  return estimateSpaceNeeded(to_underlying(value));
 }
 
 /*******************************************************************************
@@ -699,7 +700,7 @@ toAppend(
       conv.ToFixed(value, int(numDigits), &builder);
       break;
     default:
-      CHECK(mode == DoubleToStringConverter::PRECISION);
+      assert(mode == DoubleToStringConverter::PRECISION);
       conv.ToPrecision(value, int(numDigits), &builder);
       break;
   }
@@ -1546,7 +1547,7 @@ typename std::enable_if<
         !std::is_convertible<Tgt, StringPiece>::value,
     Expected<Tgt, ConversionCode>>::type
 tryTo(const Src& value) {
-  return tryTo<Tgt>(to_underlying_type(value));
+  return tryTo<Tgt>(to_underlying(value));
 }
 
 template <class Tgt, class Src>
@@ -1565,7 +1566,7 @@ typename std::enable_if<
         !std::is_convertible<Tgt, StringPiece>::value,
     Tgt>::type
 to(const Src& value) {
-  return to<Tgt>(to_underlying_type(value));
+  return to<Tgt>(to_underlying(value));
 }
 
 template <class Tgt, class Src>

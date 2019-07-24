@@ -119,7 +119,6 @@ struct hash<::folly::dynamic> {
         apply(std::string);           \
         break;                        \
       default:                        \
-        CHECK(0);                     \
         abort();                      \
     }                                 \
   } while (0)
@@ -990,6 +989,11 @@ inline void dynamic::push_back(dynamic&& v) {
 inline void dynamic::pop_back() {
   auto& arr = get<Array>();
   arr.pop_back();
+}
+
+inline const dynamic& dynamic::back() const {
+  auto& arr = get<Array>();
+  return arr.back();
 }
 
 //////////////////////////////////////////////////////////////////////

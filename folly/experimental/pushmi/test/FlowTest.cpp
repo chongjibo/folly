@@ -19,13 +19,14 @@
 #include <chrono>
 using namespace std::literals;
 
-#include <folly/experimental/pushmi/flow_single_sender.h>
+#include <folly/experimental/pushmi/sender/flow_single_sender.h>
 #include <folly/experimental/pushmi/o/submit.h>
+#include <folly/experimental/pushmi/o/schedule.h>
 
 #include <folly/experimental/pushmi/entangle.h>
-#include <folly/experimental/pushmi/new_thread.h>
-#include <folly/experimental/pushmi/time_source.h>
-#include <folly/experimental/pushmi/trampoline.h>
+#include <folly/experimental/pushmi/executor/new_thread.h>
+#include <folly/experimental/pushmi/executor/time_source.h>
+#include <folly/experimental/pushmi/executor/trampoline.h>
 #include <folly/functional/Invoke.h>
 
 using namespace folly::pushmi::aliases;
@@ -35,7 +36,7 @@ using namespace folly::pushmi::aliases;
 
 using namespace testing;
 
-#if __cpp_deduction_guides >= 201703
+#if __cpp_deduction_guides >= 201703 && PUSHMI_NOT_ON_WINDOWS
 #define MAKE(x) x MAKE_
 #define MAKE_(...) \
   { __VA_ARGS__ }
@@ -132,7 +133,8 @@ TEST_F(ImmediateFlowSingleSender, LateCancellation) {
 using NT = decltype(mi::new_thread());
 
 inline auto make_time(mi::time_source<>& t, NT& ex) {
-  return t.make(mi::systemNowF{}, [ex]() { return ex; })();
+  auto strands = t.make(mi::systemNowF{}, ex);
+  return mi::make_strand(strands);
 }
 
 class ConcurrentFlowSingleSender : public Test {
@@ -185,6 +187,7 @@ class ConcurrentFlowSingleSender : public Test {
 
       // make all the signals come from the same thread
       tnt_ |
+          op::schedule() |
           op::submit([&,
                       stoppee = std::move(tokens.first),
                       up_not_a_shadow_howtoeven = std::move(up),
@@ -194,8 +197,8 @@ class ConcurrentFlowSingleSender : public Test {
 
             // submit work to happen later
             tnt |
-                op::submit_at(
-                    at_,
+              op::schedule_at(at_) |
+                op::submit(
                     [stoppee = std::move(stoppee),
                      out = std::move(out)](auto) mutable {
                       // check boolean to select signal
@@ -225,7 +228,7 @@ class ConcurrentFlowSingleSender : public Test {
             // stop producer before it is scheduled to run
             mi::on_starting([&, at](auto up) {
               signals_ += 10;
-              tcncl_ | op::submit_at(at, [up = std::move(up)](auto) mutable {
+              tcncl_ | op::schedule_at(at) | op::submit([up = std::move(up)](auto) mutable {
                 ::mi::set_done(up);
               });
             }));

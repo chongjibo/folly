@@ -94,12 +94,7 @@
 
 #include <signal.h>
 #include <sys/types.h>
-
-#if __APPLE__
 #include <sys/wait.h>
-#else
-#include <wait.h>
-#endif
 
 #include <exception>
 #include <string>
@@ -388,7 +383,13 @@ class Subprocess {
 
 #if __linux__
     /**
-     * Child will receive a signal when the parent exits.
+     * Child will receive a signal when the parent *thread* exits.
+     *
+     * This is especially important when this option is used but the calling
+     * thread does not block for the duration of the subprocess. If the original
+     * thread that created the subprocess ends then the subprocess will
+     * terminate. For example, thread pool executors which can reap unused
+     * threads may trigger this behavior.
      */
     Options& parentDeathSignal(int sig) {
       parentDeathSignal_ = sig;

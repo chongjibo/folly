@@ -22,6 +22,7 @@
 
 #include <folly/Benchmark.h>
 #include <folly/Memory.h>
+#include <folly/SingletonThreadLocal.h>
 #include <folly/portability/GFlags.h>
 
 FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
@@ -139,11 +140,26 @@ BENCHMARK(FollySingletonTryGetFast4Threads, n) {
   run4Threads([=]() { follySingletonTryGetFast(n); });
 }
 
+void follySingletonThreadLocal(size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    folly::SingletonThreadLocal<BenchmarkSingleton, GetTag>::get().val++;
+  }
+}
+
+BENCHMARK(FollySingletonThreadLocal, n) {
+  follySingletonThreadLocal(n);
+}
+
+BENCHMARK(FollySingletonThreadLocal4Threads, n) {
+  run4Threads([=]() { follySingletonThreadLocal(n); });
+}
+
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   gflags::SetCommandLineOptionWithMode(
       "bm_min_usec", "100000", gflags::SET_FLAG_IF_DEFAULT);
 
+  folly::SingletonVault::singleton<BenchmarkTag>()->registrationComplete();
   folly::runBenchmarks();
 
   return 0;

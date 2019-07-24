@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/json.h>
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include <type_traits>
 
 #include <boost/algorithm/string.hpp>
+#include <glog/logging.h>
 
 #include <folly/Conv.h>
 #include <folly/Portability.h>
@@ -216,6 +218,10 @@ struct Input {
     return range_.begin();
   }
 
+  unsigned getLineNum() const {
+    return lineNum_;
+  }
+
   // Parse ahead for as long as the supplied predicate is satisfied,
   // returning a range of what was skipped.
   template <class Predicate>
@@ -360,11 +366,36 @@ class RecursionGuard {
   Input& in_;
 };
 
-dynamic parseValue(Input& in);
+dynamic parseValue(Input& in, json::metadata_map* map);
 std::string parseString(Input& in);
 dynamic parseNumber(Input& in);
 
-dynamic parseObject(Input& in) {
+template <class K>
+void parseObjectKeyValue(
+    Input& in,
+    dynamic& ret,
+    K&& key,
+    json::metadata_map* map) {
+  auto keyLineNumber = in.getLineNum();
+  in.skipWhitespace();
+  in.expect(':');
+  in.skipWhitespace();
+  K tmp;
+  if (map) {
+    tmp = K(key);
+  }
+  auto valueLineNumber = in.getLineNum();
+  ret.insert(std::forward<K>(key), parseValue(in, map));
+  if (map) {
+    auto val = ret.get_ptr(tmp);
+    // We just inserted it, so it should be there!
+    DCHECK(val != nullptr);
+    map->emplace(
+        val, json::parse_metadata{{{keyLineNumber}}, {{valueLineNumber}}});
+  }
+}
+
+dynamic parseObject(Input& in, json::metadata_map* map) {
   DCHECK_EQ(*in, '{');
   ++in;
 
@@ -382,18 +413,12 @@ dynamic parseObject(Input& in) {
     }
     if (*in == '\"') { // string
       auto key = parseString(in);
-      in.skipWhitespace();
-      in.expect(':');
-      in.skipWhitespace();
-      ret.insert(std::move(key), parseValue(in));
+      parseObjectKeyValue(in, ret, std::move(key), map);
     } else if (!in.getOpts().allow_non_string_keys) {
       in.error("expected string for object key name");
     } else {
-      auto key = parseValue(in);
-      in.skipWhitespace();
-      in.expect(':');
-      in.skipWhitespace();
-      ret.insert(std::move(key), parseValue(in));
+      auto key = parseValue(in, map);
+      parseObjectKeyValue(in, ret, std::move(key), map);
     }
 
     in.skipWhitespace();
@@ -408,7 +433,7 @@ dynamic parseObject(Input& in) {
   return ret;
 }
 
-dynamic parseArray(Input& in) {
+dynamic parseArray(Input& in, json::metadata_map* map) {
   DCHECK_EQ(*in, '[');
   ++in;
 
@@ -420,17 +445,26 @@ dynamic parseArray(Input& in) {
     return ret;
   }
 
+  std::vector<uint32_t> lineNumbers;
   for (;;) {
     if (in.getOpts().allow_trailing_comma && *in == ']') {
       break;
     }
-    ret.push_back(parseValue(in));
+    ret.push_back(parseValue(in, map));
+    if (map) {
+      lineNumbers.push_back(in.getLineNum());
+    }
     in.skipWhitespace();
     if (*in != ',') {
       break;
     }
     ++in;
     in.skipWhitespace();
+  }
+  if (map) {
+    for (size_t i = 0; i < ret.size(); i++) {
+      map->emplace(&ret[i], json::parse_metadata{{{0}}, {{lineNumbers[i]}}});
+    }
   }
   in.expect(']');
 
@@ -599,14 +633,14 @@ std::string parseString(Input& in) {
   return ret;
 }
 
-dynamic parseValue(Input& in) {
+dynamic parseValue(Input& in, json::metadata_map* map) {
   RecursionGuard guard(in);
 
   in.skipWhitespace();
   // clang-format off
   return
-      *in == '[' ? parseArray(in) :
-      *in == '{' ? parseObject(in) :
+      *in == '[' ? parseArray(in, map) :
+      *in == '{' ? parseObject(in, map) :
       *in == '\"' ? parseString(in) :
       (*in == '-' || (*in >= '0' && *in <= '9')) ? parseNumber(in) :
       in.consume("true") ? true :
@@ -684,7 +718,7 @@ size_t firstEscapableInWord(T s, const serialization_opts& opts) {
           (i == 0 ? uint64_t(-1) << 32 : ~0UL);
       while (bitmap) {
         auto bit = folly::findFirstSet(bitmap);
-        needsEscape |= isChar(offset + bit - 1);
+        needsEscape |= isChar(static_cast<uint8_t>(offset + bit - 1));
         bitmap &= bitmap - 1;
       }
     }
@@ -765,7 +799,7 @@ void escapeStringImpl(
         // checking that utf8 encodings are valid
         char32_t v = utf8ToCodePoint(q, e, opts.skip_invalid_utf8);
         if (opts.skip_invalid_utf8 && v == U'\ufffd') {
-          out.append(u8"\ufffd");
+          out.append(reinterpret_cast<const char*>(u8"\ufffd"));
           p = q;
           continue;
         }
@@ -915,6 +949,29 @@ std::string stripComments(StringPiece jsonC) {
 
 //////////////////////////////////////////////////////////////////////
 
+dynamic parseJsonWithMetadata(StringPiece range, json::metadata_map* map) {
+  return parseJsonWithMetadata(range, json::serialization_opts(), map);
+}
+
+dynamic parseJsonWithMetadata(
+    StringPiece range,
+    json::serialization_opts const& opts,
+    json::metadata_map* map) {
+  json::Input in(range, &opts);
+
+  uint32_t n = in.getLineNum();
+  auto ret = parseValue(in, map);
+  if (map) {
+    map->emplace(&ret, json::parse_metadata{{{0}}, {{n}}});
+  }
+
+  in.skipWhitespace();
+  if (in.size() && *in != '\0') {
+    in.error("parsing didn't consume all input");
+  }
+  return ret;
+}
+
 dynamic parseJson(StringPiece range) {
   return parseJson(range, json::serialization_opts());
 }
@@ -922,7 +979,7 @@ dynamic parseJson(StringPiece range) {
 dynamic parseJson(StringPiece range, json::serialization_opts const& opts) {
   json::Input in(range, &opts);
 
-  auto ret = parseValue(in);
+  auto ret = parseValue(in, nullptr);
   in.skipWhitespace();
   if (in.size() && *in != '\0') {
     in.error("parsing didn't consume all input");

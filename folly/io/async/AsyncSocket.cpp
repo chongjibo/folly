@@ -32,7 +32,13 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/types.h>
+#include <sstream>
 #include <thread>
+
+#if __linux__
+#include <linux/sockios.h>
+#include <sys/ioctl.h>
+#endif
 
 #if FOLLY_HAVE_VLA
 #define FOLLY_HAVE_VLA_01 1
@@ -555,6 +561,11 @@ void AsyncSocket::connect(
             withAddr("failed to set socket option"),
             errnoCopy);
       }
+    }
+
+    // Call preConnect hook if any.
+    if (connectCallback_) {
+      connectCallback_->preConnect(fd_);
     }
 
     // Perform the connect()
@@ -1705,6 +1716,54 @@ int AsyncSocket::setRecvBufSize(size_t bufsize) {
   return 0;
 }
 
+#if __linux__
+size_t AsyncSocket::getSendBufInUse() const {
+  if (fd_ == NetworkSocket()) {
+    std::stringstream issueString;
+    issueString << "AsyncSocket::getSendBufInUse() called on non-open socket "
+                << this << "(state=" << state_ << ")";
+    VLOG(4) << issueString.str();
+    throw std::logic_error(issueString.str());
+  }
+
+  size_t returnValue = 0;
+  if (-1 == ::ioctl(fd_.toFd(), SIOCOUTQ, &returnValue)) {
+    int errnoCopy = errno;
+    std::stringstream issueString;
+    issueString << "Failed to get the tx used bytes on Socket: " << this
+                << "(fd=" << fd_ << ", state=" << state_
+                << "): " << errnoStr(errnoCopy);
+    VLOG(2) << issueString.str();
+    throw std::logic_error(issueString.str());
+  }
+
+  return returnValue;
+}
+
+size_t AsyncSocket::getRecvBufInUse() const {
+  if (fd_ == NetworkSocket()) {
+    std::stringstream issueString;
+    issueString << "AsyncSocket::getRecvBufInUse() called on non-open socket "
+                << this << "(state=" << state_ << ")";
+    VLOG(4) << issueString.str();
+    throw std::logic_error(issueString.str());
+  }
+
+  size_t returnValue = 0;
+  if (-1 == ::ioctl(fd_.toFd(), SIOCINQ, &returnValue)) {
+    std::stringstream issueString;
+    int errnoCopy = errno;
+    issueString << "Failed to get the rx used bytes on Socket: " << this
+                << "(fd=" << fd_ << ", state=" << state_
+                << "): " << errnoStr(errnoCopy);
+    VLOG(2) << issueString.str();
+    throw std::logic_error(issueString.str());
+  }
+
+  return returnValue;
+}
+#endif
+
 int AsyncSocket::setTCPProfile(int profd) {
   if (fd_ == NetworkSocket()) {
     VLOG(4) << "AsyncSocket::setTCPProfile() called on non-open socket " << this
@@ -1844,7 +1903,8 @@ size_t AsyncSocket::handleErrMessages() noexcept {
 
   int ret;
   size_t num = 0;
-  while (true) {
+  // the socket may be closed by errMessage callback, so check on each iteration
+  while (fd_ != NetworkSocket()) {
     ret = netops::recvmsg(fd_, &msg, MSG_ERRQUEUE);
     VLOG(5) << "AsyncSocket::handleErrMessages(): recvmsg returned " << ret;
 
@@ -1852,7 +1912,7 @@ size_t AsyncSocket::handleErrMessages() noexcept {
       if (errno != EAGAIN) {
         auto errnoCopy = errno;
         LOG(ERROR) << "::recvmsg exited with code " << ret
-                   << ", errno: " << errnoCopy;
+                   << ", errno: " << errnoCopy << ", fd: " << fd_;
         AsyncSocketException ex(
             AsyncSocketException::INTERNAL_ERROR,
             withAddr("recvmsg() failed"),
@@ -1876,6 +1936,7 @@ size_t AsyncSocket::handleErrMessages() noexcept {
       }
     }
   }
+  return num;
 #else
   return 0;
 #endif // FOLLY_HAVE_MSG_ERRQUEUE
@@ -2841,8 +2902,14 @@ std::string AsyncSocket::withAddr(const std::string& s) {
   // e.g. if constructed from fd
   folly::SocketAddress peer, local;
   try {
-    getPeerAddress(&peer);
     getLocalAddress(&local);
+  } catch (const std::exception&) {
+    // ignore
+  } catch (...) {
+    // ignore
+  }
+  try {
+    getPeerAddress(&peer);
   } catch (const std::exception&) {
     // ignore
   } catch (...) {

@@ -26,6 +26,10 @@
 #include <stdexcept>
 #include <type_traits>
 
+#if FOLLY_HAS_STRING_VIEW
+#include <string_view>
+#endif
+
 // This file appears in two locations: inside fbcode and in the
 // libstdc++ source code (when embedding fbstring as std::string).
 // To aid in this schizophrenic use, _LIBSTDCXX_FBSTRING is defined in
@@ -41,13 +45,9 @@
 
 #else // !_LIBSTDCXX_FBSTRING
 
+#include <folly/CPortability.h>
 #include <folly/CppAttributes.h>
 #include <folly/Portability.h>
-
-// libc++ doesn't provide this header, nor does msvc
-#if __has_include(<bits/c++config.h>)
-#include <bits/c++config.h>
-#endif
 
 #include <algorithm>
 #include <cassert>
@@ -57,6 +57,7 @@
 
 #include <folly/Traits.h>
 #include <folly/hash/Hash.h>
+#include <folly/lang/Assume.h>
 #include <folly/lang/Exception.h>
 #include <folly/memory/Malloc.h>
 
@@ -98,23 +99,13 @@ FOLLY_GNU_DISABLE_WARNING("-Wshadow")
 
 FOLLY_FBSTRING_BEGIN_NAMESPACE
 
-#if defined(__clang__)
-#if __has_feature(address_sanitizer)
-#define FBSTRING_SANITIZE_ADDRESS
-#endif
-#elif defined(__GNUC__) &&                                             \
-    (((__GNUC__ == 4) && (__GNUC_MINOR__ >= 8)) || (__GNUC__ >= 5)) && \
-    __SANITIZE_ADDRESS__
-#define FBSTRING_SANITIZE_ADDRESS
-#endif
-
 // When compiling with ASan, always heap-allocate the string even if
 // it would fit in-situ, so that ASan can detect access to the string
 // buffer after it has been invalidated (destroyed, resized, etc.).
 // Note that this flag doesn't remove support for in-situ strings, as
 // that would break ABI-compatibility and wouldn't allow linking code
 // compiled with this flag with code compiled without.
-#ifdef FBSTRING_SANITIZE_ADDRESS
+#ifdef FOLLY_SANITIZE_ADDRESS
 #define FBSTRING_DISABLE_SSO true
 #else
 #define FBSTRING_DISABLE_SSO false
@@ -185,27 +176,6 @@ inline void podMove(const Pod* b, const Pod* e, Pod* d) {
   FBSTRING_ASSERT(e >= b);
   memmove(d, b, (e - b) * sizeof(*b));
 }
-
-// always inline
-#if defined(__GNUC__) // Clang also defines __GNUC__
-#define FBSTRING_ALWAYS_INLINE inline __attribute__((__always_inline__))
-#elif defined(_MSC_VER)
-#define FBSTRING_ALWAYS_INLINE __forceinline
-#else
-#define FBSTRING_ALWAYS_INLINE inline
-#endif
-
-[[noreturn]] FBSTRING_ALWAYS_INLINE void assume_unreachable() {
-#if defined(__GNUC__) // Clang also defines __GNUC__
-  __builtin_unreachable();
-#elif defined(_MSC_VER)
-  __assume(0);
-#else
-  // Well, it's better than nothing.
-  std::abort();
-#endif
-}
-
 } // namespace fbstring_detail
 
 /**
@@ -231,6 +201,7 @@ class fbstring_core_model {
  public:
   fbstring_core_model();
   fbstring_core_model(const fbstring_core_model &);
+  fbstring_core_model& operator=(const fbstring_core_model &) = delete;
   ~fbstring_core_model();
   // Returns a pointer to string's buffer (currently only contiguous
   // strings are supported). The pointer is guaranteed to be valid
@@ -277,9 +248,6 @@ class fbstring_core_model {
   // the string without reallocation. For reference-counted strings,
   // it should fork the data even if minCapacity < size().
   void reserve(size_t minCapacity);
- private:
-  // Do not implement
-  fbstring_core_model& operator=(const fbstring_core_model &);
 };
 */
 
@@ -321,18 +289,6 @@ class fbstring_core_model {
  */
 template <class Char>
 class fbstring_core {
- protected:
-// It's MSVC, so we just have to guess ... and allow an override
-#ifdef _MSC_VER
-#ifdef FOLLY_ENDIAN_BE
-  static constexpr auto kIsLittleEndian = false;
-#else
-  static constexpr auto kIsLittleEndian = true;
-#endif
-#else
-  static constexpr auto kIsLittleEndian =
-      __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__;
-#endif
  public:
   fbstring_core() noexcept {
     reset();
@@ -351,11 +307,13 @@ class fbstring_core {
         copyLarge(rhs);
         break;
       default:
-        fbstring_detail::assume_unreachable();
+        folly::assume_unreachable();
     }
     FBSTRING_ASSERT(size() == rhs.size());
     FBSTRING_ASSERT(memcmp(data(), rhs.data(), size() * sizeof(Char)) == 0);
   }
+
+  fbstring_core& operator=(const fbstring_core& rhs) = delete;
 
   fbstring_core(fbstring_core&& goner) noexcept {
     // Take goner's guts
@@ -429,6 +387,10 @@ class fbstring_core {
     return c_str();
   }
 
+  Char* data() {
+    return c_str();
+  }
+
   Char* mutableData() {
     switch (category()) {
       case Category::isSmall:
@@ -438,7 +400,7 @@ class fbstring_core {
       case Category::isLarge:
         return mutableDataLarge();
     }
-    fbstring_detail::assume_unreachable();
+    folly::assume_unreachable();
   }
 
   const Char* c_str() const {
@@ -472,7 +434,7 @@ class fbstring_core {
         reserveLarge(minCapacity);
         break;
       default:
-        fbstring_detail::assume_unreachable();
+        folly::assume_unreachable();
     }
     FBSTRING_ASSERT(capacity() >= minCapacity);
   }
@@ -525,8 +487,12 @@ class fbstring_core {
   }
 
  private:
-  // Disabled
-  fbstring_core& operator=(const fbstring_core& rhs);
+  Char* c_str() {
+    Char* ptr = ml_.data_;
+    // With this syntax, GCC and Clang generate a CMOV instead of a branch.
+    ptr = (category() == Category::isSmall) ? small_ : ptr;
+    return ptr;
+  }
 
   void reset() {
     setSmallSize(0);
@@ -763,7 +729,7 @@ inline void fbstring_core<Char>::initSmall(
 // The word-wise path reads bytes which are outside the range of
 // the string, and makes ASan unhappy, so we disable it when
 // compiling with ASan.
-#ifndef FBSTRING_SANITIZE_ADDRESS
+#ifndef FOLLY_SANITIZE_ADDRESS
   if ((reinterpret_cast<size_t>(data) & (sizeof(size_t) - 1)) == 0) {
     const size_t byteSize = size * sizeof(Char);
     constexpr size_t wordWidth = sizeof(size_t);
@@ -1259,6 +1225,12 @@ class basic_fbstring {
     return assign(il.begin(), il.end());
   }
 
+#if FOLLY_HAS_STRING_VIEW
+  operator std::basic_string_view<value_type, traits_type>() const noexcept {
+    return {data(), size()};
+  }
+#endif
+
   // C++11 21.4.3 iterators:
   iterator begin() {
     return store_.mutableData();
@@ -1713,6 +1685,10 @@ class basic_fbstring {
 
   const value_type* data() const {
     return c_str();
+  }
+
+  value_type* data() {
+    return store_.data();
   }
 
   allocator_type get_allocator() const {
@@ -2443,7 +2419,7 @@ inline basic_fbstring<E, T, A, S> operator+(
   basic_fbstring<E, T, A, S> result;
   result.reserve(lhs.size() + rhs.size());
   result.append(lhs).append(rhs);
-  return std::move(result);
+  return result;
 }
 
 // C++11 21.4.8.1/2
@@ -2729,7 +2705,7 @@ operator>>(
       _istream_type;
   typename _istream_type::sentry sentry(is);
   size_t extracted = 0;
-  auto err = _istream_type::goodbit;
+  typename _istream_type::iostate err = _istream_type::goodbit;
   if (sentry) {
     auto n = is.width();
     if (n <= 0) {
@@ -2941,7 +2917,6 @@ FOLLY_FBSTRING_HASH
 FOLLY_POP_WARNING
 
 #undef FBSTRING_DISABLE_SSO
-#undef FBSTRING_SANITIZE_ADDRESS
 #undef throw
 #undef FBSTRING_LIKELY
 #undef FBSTRING_UNLIKELY

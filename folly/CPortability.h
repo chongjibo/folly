@@ -68,8 +68,8 @@
  * itself was compiled without ASAN but a downstream project that uses folly is
  * compiling with ASAN enabled.
  *
- * Use FOLLY_ASAN_ENABLED (defined in folly-config.h) to check if folly itself
- * was compiled with ASAN enabled.
+ * Use FOLLY_LIBRARY_SANITIZE_ADDRESS (defined in folly-config.h) to check if
+ * folly itself was compiled with ASAN enabled.
  */
 #if FOLLY_HAS_FEATURE(address_sanitizer) || __SANITIZE_ADDRESS__
 #define FOLLY_SANITIZE_ADDRESS 1
@@ -135,11 +135,7 @@
  * Macro for marking functions as having public visibility.
  */
 #if defined(__GNUC__)
-#if __GNUC_PREREQ(4, 9)
-#define FOLLY_EXPORT [[gnu::visibility("default")]]
-#else
 #define FOLLY_EXPORT __attribute__((__visibility__("default")))
-#endif
 #else
 #define FOLLY_EXPORT
 #endif
@@ -147,7 +143,7 @@
 // noinline
 #ifdef _MSC_VER
 #define FOLLY_NOINLINE __declspec(noinline)
-#elif defined(__clang__) || defined(__GNUC__)
+#elif defined(__GNUC__)
 #define FOLLY_NOINLINE __attribute__((__noinline__))
 #else
 #define FOLLY_NOINLINE
@@ -156,7 +152,7 @@
 // always inline
 #ifdef _MSC_VER
 #define FOLLY_ALWAYS_INLINE __forceinline
-#elif defined(__clang__) || defined(__GNUC__)
+#elif defined(__GNUC__)
 #define FOLLY_ALWAYS_INLINE inline __attribute__((__always_inline__))
 #else
 #define FOLLY_ALWAYS_INLINE inline
@@ -165,7 +161,7 @@
 // attribute hidden
 #if _MSC_VER
 #define FOLLY_ATTR_VISIBILITY_HIDDEN
-#elif defined(__clang__) || defined(__GNUC__)
+#elif defined(__GNUC__)
 #define FOLLY_ATTR_VISIBILITY_HIDDEN __attribute__((__visibility__("hidden")))
 #else
 #define FOLLY_ATTR_VISIBILITY_HIDDEN

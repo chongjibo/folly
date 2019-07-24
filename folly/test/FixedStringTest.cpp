@@ -350,8 +350,8 @@ TEST(FixedStringAssignTest, RuntimeAppendString) {
 constexpr folly::FixedString<20> constexpr_append_literal_test() {
   folly::FixedString<20> a{"hello"};
   a.append(1u, ' ');
-  a.append("X world!" + 2u, 5u);
-  a.append("X world!" + 7u);
+  a.append("world foo bar baz", 5u);
+  a.append("!");
   return a;
 }
 
@@ -362,8 +362,9 @@ TEST(FixedStringAssignTest, ConstexprAppendLiteral) {
 TEST(FixedStringAssignTest, RuntimeAppendLiteral) {
   folly::FixedString<20> a{"hello"};
   a.append(1u, ' ');
-  a.append("X world!" + 2u, 5u);
-  a.append("X world!" + 7u);
+  constexpr char s[] = "X world!";
+  a.append(&s[2u], 5u);
+  a.append(&s[7u]);
   EXPECT_STREQ("hello world!", a.c_str());
 }
 
@@ -646,30 +647,6 @@ TEST(FixedStringReverseIteratorTest, ConstexprReverseIteration) {
   static_assert('a' == *(alpha.rbegin() + 25), "");
   static_assert('c' == *(alpha.rbegin() + 25 - 2), "");
   static_assert((alpha.rend() - 2) == (alpha.rbegin() + 24), "");
-}
-
-namespace GCC61971 {
-// FixedString runs afoul of GCC #61971 (spurious -Warray-bounds)
-// in optimized builds. The following test case triggers it for gcc-4.x.
-// Test that FixedString suppresses the warning correctly.
-// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61971
-constexpr auto xyz = folly::makeFixedString("xyz");
-constexpr auto dot = folly::makeFixedString(".");
-
-template <typename T1>
-constexpr auto concatStuff(const T1& component) noexcept {
-  return xyz + dot + component;
-}
-constexpr auto co = folly::makeFixedString("co");
-
-struct S {
-  std::string s{concatStuff(co)};
-};
-} // namespace GCC61971
-
-TEST(FixedStringGCC61971, GCC61971) {
-  GCC61971::S s;
-  (void)s;
 }
 
 #include <folly/Range.h>

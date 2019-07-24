@@ -20,6 +20,7 @@
 
 #include <folly/SocketAddress.h>
 
+#include <cassert>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -536,10 +537,11 @@ bool SocketAddress::operator==(const SocketAddress& other) const {
     case AF_INET:
     case AF_INET6:
       return (other.storage_.addr == storage_.addr) && (other.port_ == port_);
+    case AF_UNSPEC:
+      return other.storage_.addr.empty();
     default:
-      throw std::invalid_argument(
-          "SocketAddress: unsupported address family "
-          "for comparison");
+      throw_exception<std::invalid_argument>(
+          "SocketAddress: unsupported address family for comparison");
   }
 }
 
@@ -585,13 +587,15 @@ size_t SocketAddress::hash() const {
       break;
     }
     case AF_UNIX:
-      DCHECK(external_);
+      assert(external_);
       break;
     case AF_UNSPEC:
+      assert(storage_.addr.empty());
+      boost::hash_combine(seed, storage_.addr.hash());
+      break;
     default:
-      throw std::invalid_argument(
-          "SocketAddress: unsupported address family "
-          "for hashing");
+      throw_exception<std::invalid_argument>(
+          "SocketAddress: unsupported address family for comparison");
   }
 
   return seed;

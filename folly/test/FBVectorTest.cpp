@@ -22,6 +22,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <numeric>
 
 #include <folly/FBString.h>
 #include <folly/Random.h>
@@ -124,8 +125,10 @@ TEST(fbvector, emplace) {
   fbvector<std::string> s(12, "asd");
   EXPECT_EQ(s.size(), 12);
   EXPECT_EQ(s.front(), "asd");
-  s.emplace_back("funk");
+  const auto& emplaced = s.emplace_back("funk");
+  EXPECT_EQ(emplaced, "funk");
   EXPECT_EQ(s.back(), "funk");
+  EXPECT_EQ(std::addressof(emplaced), std::addressof(s.back()));
 }
 
 TEST(fbvector, initializer_lists) {
@@ -255,4 +258,36 @@ TEST(FBVector, zero_len) {
   std::initializer_list<int> il = {};
   fb6 = il;
   fbvector<int> fb7(fb6.begin(), fb6.end());
+}
+
+#if __cpp_deduction_guides >= 201703
+TEST(FBVector, deduction_guides) {
+  fbvector<int> v(3);
+
+  fbvector x(v.begin(), v.end());
+  EXPECT_TRUE((std::is_same_v<fbvector<int>, decltype(x)>));
+
+  fbvector y{v.begin(), v.end()};
+  EXPECT_TRUE((std::is_same_v<fbvector<fbvector<int>::iterator>, decltype(y)>));
+}
+#endif
+
+TEST(FBVector, erase) {
+  fbvector<int> v(3);
+  std::iota(v.begin(), v.end(), 1);
+  v.push_back(2);
+  erase(v, 2);
+  ASSERT_EQ(2u, v.size());
+  EXPECT_EQ(1u, v[0]);
+  EXPECT_EQ(3u, v[1]);
+}
+
+TEST(FBVector, erase_if) {
+  fbvector<int> v(6);
+  std::iota(v.begin(), v.end(), 1);
+  erase_if(v, [](const auto& x) { return x % 2 == 0; });
+  ASSERT_EQ(3u, v.size());
+  EXPECT_EQ(1u, v[0]);
+  EXPECT_EQ(3u, v[1]);
+  EXPECT_EQ(5u, v[2]);
 }

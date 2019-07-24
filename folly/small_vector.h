@@ -98,22 +98,28 @@ namespace detail {
 
 /*
  * Move objects in memory to the right into some uninitialized
- * memory, where the region overlaps.  This doesn't just use
- * std::move_backward because move_backward only works if all the
- * memory is initialized to type T already.
+ * memory, where the region overlaps. Then call create(size_t) for each
+ * "hole" passing it the offset of the hole from first.
+ *
+ * This doesn't just use std::move_backward because move_backward only works
+ * if all the memory is initialized to type T already.
+ *
+ * The create function should return a reference type, to avoid
+ * extra copies and moves for non-trivial types.
  */
-template <class T>
-typename std::enable_if<
-    std::is_default_constructible<T>::value &&
-    !folly::is_trivially_copyable<T>::value>::type
-moveObjectsRight(T* first, T* lastConstructed, T* realLast) {
+template <class T, class Create>
+typename std::enable_if<!folly::is_trivially_copyable<T>::value>::type
+moveObjectsRightAndCreate(
+    T* const first,
+    T* const lastConstructed,
+    T* const realLast,
+    Create&& create) {
   if (lastConstructed == realLast) {
     return;
   }
 
-  T* end = first - 1; // Past the end going backwards.
-  T* out = realLast - 1;
-  T* in = lastConstructed - 1;
+  T* out = realLast;
+  T* in = lastConstructed;
   {
     auto rollback = makeGuard([&] {
       // We want to make sure the same stuff is uninitialized memory
@@ -126,28 +132,50 @@ moveObjectsRight(T* first, T* lastConstructed, T* realLast) {
         it->~T();
       }
     });
-    for (; in != end && out >= lastConstructed; --in, --out) {
-      new (out) T(std::move(*in));
+    // Decrement the pointers only when it is known that the resulting pointer
+    // is within the boundaries of the object. Decrementing past the beginning
+    // of the object is UB. Note that this is asymmetric wrt forward iteration,
+    // as past-the-end pointers are explicitly allowed.
+    for (; in != first && out > lastConstructed;) {
+      // Out must be decremented before an exception can be thrown so that
+      // the rollback guard knows where to start.
+      --out;
+      new (out) T(std::move(*(--in)));
     }
-    for (; in != end; --in, --out) {
-      *out = std::move(*in);
+    for (; in != first;) {
+      --out;
+      *out = std::move(*(--in));
     }
-    for (; out >= lastConstructed; --out) {
-      new (out) T();
+    for (; out > lastConstructed;) {
+      --out;
+      new (out) T(create(out - first));
+    }
+    for (; out != first;) {
+      --out;
+      *out = create(out - first);
     }
     rollback.dismiss();
   }
 }
 
 // Specialization for trivially copyable types.  The call to
-// std::move_backward here will just turn into a memmove.  (TODO:
-// change to std::is_trivially_copyable when that works.)
-template <class T>
-typename std::enable_if<
-    !std::is_default_constructible<T>::value ||
-    folly::is_trivially_copyable<T>::value>::type
-moveObjectsRight(T* first, T* lastConstructed, T* realLast) {
+// std::move_backward here will just turn into a memmove.
+// This must only be used with trivially copyable types because some of the
+// memory may be uninitialized, and std::move_backward() won't work when it
+// can't memmove().
+template <class T, class Create>
+typename std::enable_if<folly::is_trivially_copyable<T>::value>::type
+moveObjectsRightAndCreate(
+    T* const first,
+    T* const lastConstructed,
+    T* const realLast,
+    Create&& create) {
   std::move_backward(first, lastConstructed, realLast);
+  T* const end = first - 1;
+  T* out = first + (realLast - lastConstructed) - 1;
+  for (; out != end; --out) {
+    *out = create(out - first);
+  }
 }
 
 /*
@@ -431,6 +459,7 @@ class small_vector : public detail::small_vector_base<
  public:
   typedef std::size_t size_type;
   typedef Value value_type;
+  typedef std::allocator<Value> allocator_type;
   typedef value_type& reference;
   typedef value_type const& const_reference;
   typedef value_type* iterator;
@@ -532,6 +561,10 @@ class small_vector : public detail::small_vector_base<
   static constexpr size_type max_size() {
     return !BaseType::kShouldUseHeap ? static_cast<size_type>(MaxInline)
                                      : BaseType::policyMaxSize();
+  }
+
+  allocator_type get_allocator() {
+    return {};
   }
 
   size_type size() const {
@@ -751,7 +784,7 @@ class small_vector : public detail::small_vector_base<
   }
 
   template <class... Args>
-  void emplace_back(Args&&... args) {
+  reference emplace_back(Args&&... args) {
     if (capacity() == size()) {
       // Any of args may be references into the vector.
       // When we are reallocating, we have to be careful to construct the new
@@ -764,10 +797,11 @@ class small_vector : public detail::small_vector_base<
       new (end()) value_type(std::forward<Args>(args)...);
     }
     this->setSize(size() + 1);
+    return back();
   }
 
   void push_back(value_type&& t) {
-    return emplace_back(std::move(t));
+    emplace_back(std::move(t));
   }
 
   void push_back(value_type const& t) {
@@ -795,10 +829,16 @@ class small_vector : public detail::small_vector_base<
           offset);
       this->setSize(this->size() + 1);
     } else {
-      detail::moveObjectsRight(
-          data() + offset, data() + size(), data() + size() + 1);
+      detail::moveObjectsRightAndCreate(
+          data() + offset,
+          data() + size(),
+          data() + size() + 1,
+          [&](size_t i) -> value_type&& {
+            assert(i == 0);
+            (void)i;
+            return std::move(t);
+          });
       this->setSize(size() + 1);
-      data()[offset] = std::move(t);
     }
     return begin() + offset;
   }
@@ -812,10 +852,16 @@ class small_vector : public detail::small_vector_base<
   iterator insert(const_iterator pos, size_type n, value_type const& val) {
     auto offset = pos - begin();
     makeSize(size() + n);
-    detail::moveObjectsRight(
-        data() + offset, data() + size(), data() + size() + n);
+    detail::moveObjectsRightAndCreate(
+        data() + offset,
+        data() + size(),
+        data() + size() + n,
+        [&](size_t i) -> value_type const& {
+          assert(i < n);
+          (void)i;
+          return val;
+        });
     this->setSize(size() + n);
-    std::generate_n(begin() + offset, n, [&] { return val; });
     return begin() + offset;
   }
 
@@ -919,7 +965,8 @@ class small_vector : public detail::small_vector_base<
   // iterator insert functions from integral types (see insert().)
   template <class It>
   iterator insertImpl(iterator pos, It first, It last, std::false_type) {
-    typedef typename std::iterator_traits<It>::iterator_category categ;
+    using categ = typename std::iterator_traits<It>::iterator_category;
+    using it_ref = typename std::iterator_traits<It>::reference;
     if (std::is_same<categ, std::input_iterator_tag>::value) {
       auto offset = pos - begin();
       while (first != last) {
@@ -929,13 +976,20 @@ class small_vector : public detail::small_vector_base<
       return begin() + offset;
     }
 
-    auto distance = std::distance(first, last);
-    auto offset = pos - begin();
+    auto const distance = std::distance(first, last);
+    auto const offset = pos - begin();
+    assert(distance >= 0);
+    assert(offset >= 0);
     makeSize(size() + distance);
-    detail::moveObjectsRight(
-        data() + offset, data() + size(), data() + size() + distance);
+    detail::moveObjectsRightAndCreate(
+        data() + offset,
+        data() + size(),
+        data() + size() + distance,
+        [&](size_t i) -> it_ref {
+          assert(i < size_t(distance));
+          return *(first + i);
+        });
     this->setSize(size() + distance);
-    std::copy_n(first, distance, begin() + offset);
     return begin() + offset;
   }
 
@@ -1216,6 +1270,22 @@ void swap(
     small_vector<T, MaxInline, A, B, C>& a,
     small_vector<T, MaxInline, A, B, C>& b) {
   a.swap(b);
+}
+
+template <class T, std::size_t MaxInline, class A, class B, class C, class U>
+void erase(small_vector<T, MaxInline, A, B, C>& v, U value) {
+  v.erase(std::remove(v.begin(), v.end(), value), v.end());
+}
+
+template <
+    class T,
+    std::size_t MaxInline,
+    class A,
+    class B,
+    class C,
+    class Predicate>
+void erase_if(small_vector<T, MaxInline, A, B, C>& v, Predicate predicate) {
+  v.erase(std::remove_if(v.begin(), v.end(), predicate), v.end());
 }
 
 //////////////////////////////////////////////////////////////////////

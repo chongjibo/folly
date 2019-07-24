@@ -15,8 +15,9 @@
  */
 #pragma once
 
-#include <folly/Traits.h>
 #include <folly/experimental/pushmi/traits.h>
+#include <folly/Traits.h>
+
 #include <folly/experimental/pushmi/forwards.h>
 
 namespace folly {
@@ -24,20 +25,35 @@ namespace pushmi {
 
 // property_set implements a map of category-type to property-type.
 // for each category only one property in that category is allowed in the set.
+//
 
 // customization point for a property with a category
 
+template <class T, class Void=void>
+struct member_property_category {};
+
 template <class T>
-using __property_category_t = typename T::property_category;
+struct member_property_category<
+    T,
+    void_t<typename T::property_category>> {
+  using property_category = typename T::property_category;
+};
+
+template <class T>
+using __property_category_t = typename member_property_category<T>::property_category;
 
 // allow specializations to use enable_if to constrain
-template <class T, class>
-struct property_traits {};
+template <class T, class Void>
+struct property_traits : std::conditional_t<
+  std::is_same<T, std::decay_t<T>>::value,
+  member_property_category<T>,
+  property_traits<std::decay_t<T>, Void>>
+{};
 template <class T>
 struct property_traits<
     T,
-    void_t<__property_category_t<std::decay_t<T>>>> {
-  using property_category = __property_category_t<std::decay_t<T>>;
+    void_t<__property_category_t<T>>> {
+  using property_category = __property_category_t<T>;
 };
 
 template <class T>
@@ -88,36 +104,52 @@ concept PropertySet,
 
 // customization point for a type with properties
 
-template <class T>
-using __properties_t = typename T::properties;
-
-// allow specializations to use enable_if to constrain
-template <class T, class>
-struct property_set_traits {};
-template <class T>
-struct property_set_traits<
-    T,
-    void_t<__properties_t<std::decay_t<T>>>> {
-  using properties = __properties_t<std::decay_t<T>>;
+template <class T, class = void>
+struct member_properties {
+    using properties = property_set<>;
 };
 
 template <class T>
-using properties_t = std::enable_if_t<
+struct member_properties<T, void_t<typename T::properties>> {
+  using properties = typename T::properties;
+};
+
+template <class T>
+using __properties_t = typename member_properties<T>::properties;
+
+// allow specializations to use enable_if to constrain
+template <class T, class Void>
+struct property_set_traits : std::conditional_t<
+  std::is_same<T, std::decay_t<T>>::value,
+  member_properties<T>,
+  property_set_traits<std::decay_t<T>>>
+{};
+
+template <class T, class Target, class Void>
+struct property_set_traits_disable : std::false_type {};
+
+template <class T, class Target>
+PUSHMI_INLINE_VAR constexpr bool property_set_traits_disable_v =
+  property_set_traits_disable<T, Target>::value;
+
+template <class T>
+using properties_t =
+  std::enable_if_t<
     PropertySet<__properties_t<property_set_traits<T>>>,
     __properties_t<property_set_traits<T>>>;
 
 PUSHMI_CONCEPT_DEF(
-    template(class T)
-concept Properties,
+  template(class T)
+  concept Properties,
     PropertySet<__properties_t<property_set_traits<T>>>
 );
 
 // find property in the specified set that matches the category of the property
 // specified.
 namespace detail {
-template <class PIn, class POut>
+template <class PCategory, class POut>
 POut __property_set_index_fn(
-    property_set_element<POut, property_category_t<PIn>>);
+    property_set_element<POut, PCategory>*);
 
 template <class PIn, class POut, class... Ps>
 property_set<std::conditional_t<PUSHMI_PP_IS_SAME(Ps, POut), PIn, Ps>...>
@@ -134,6 +166,8 @@ using property_set_insert_one_t =
 
 template <class PS0, class>
 struct property_set_insert {
+    // fix MSVC issue
+    ~property_set_insert();
   using type = PS0;
 };
 
@@ -141,13 +175,17 @@ template <class PS0, class P, class... P1>
 struct property_set_insert<PS0, property_set<P, P1...>>
     : property_set_insert<
           property_set_insert_one_t<PS0, P>,
-          property_set<P1...>> {};
+          property_set<P1...>> {
+    // fix MSVC issue
+    ~property_set_insert();
+};
+
 } // namespace detail
 
 template <class PS, class P>
 using property_set_index_t = std::enable_if_t<
     PropertySet<PS> && Property<P>,
-    decltype(detail::__property_set_index_fn<P>(PS{}))>;
+    decltype(detail::__property_set_index_fn<property_category_t<P>>(std::declval<PS*>()))>;
 
 template <class PS0, class PS1>
 using property_set_insert_t = typename std::enable_if_t<
@@ -164,8 +202,8 @@ template <class PIn>
 std::false_type property_query_fn(void*);
 
 template <class PS, class... ExpectedN>
-struct property_query_impl : bool_<and_v<decltype(property_query_fn<ExpectedN>(
-                                 (properties_t<PS>*)nullptr))::value...>> {};
+struct property_query_impl : bool_<and_v<bool_v<decltype(property_query_fn<ExpectedN>(
+                                 (properties_t<PS>*)nullptr))>...>> {};
 } // namespace detail
 
 template <class PS, class... ExpectedN>
@@ -187,13 +225,13 @@ template <class C>
 std::false_type category_query_fn(void*);
 
 template <class PS, class... ExpectedN>
-struct category_query_impl : bool_<and_v<decltype(category_query_fn<ExpectedN>(
-                                 (properties_t<PS>*)nullptr))::value...>> {};
+struct category_query_impl : bool_<and_v<bool_v<decltype(category_query_fn<ExpectedN>(
+                                 (properties_t<PS>*)nullptr))>...>> {};
 } // namespace detail
 
 template <class PS, class... ExpectedN>
 struct category_query : std::conditional_t<
-                            Properties<PS> && not Or<Property<ExpectedN>...>,
+                            Properties<PS> && !Or<Property<ExpectedN>...>,
                             detail::category_query_impl<PS, ExpectedN...>,
                             std::false_type> {};
 

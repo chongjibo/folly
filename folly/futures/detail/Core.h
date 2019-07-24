@@ -28,6 +28,7 @@
 #include <folly/ScopeGuard.h>
 #include <folly/Try.h>
 #include <folly/Utility.h>
+#include <folly/futures/detail/Types.h>
 #include <folly/lang/Assume.h>
 #include <folly/lang/Exception.h>
 #include <folly/synchronization/MicroSpinLock.h>
@@ -44,9 +45,10 @@ enum class State : uint8_t {
   Start = 1 << 0,
   OnlyResult = 1 << 1,
   OnlyCallback = 1 << 2,
-  Proxy = 1 << 3,
-  Done = 1 << 4,
-  Empty = 1 << 5,
+  OnlyCallbackAllowInline = 1 << 3,
+  Proxy = 1 << 4,
+  Done = 1 << 5,
+  Empty = 1 << 6,
 };
 constexpr State operator&(State a, State b) {
   return State(uint8_t(a) & uint8_t(b));
@@ -69,6 +71,20 @@ struct SpinLock : private MicroSpinLock {
   using MicroSpinLock::unlock;
 };
 static_assert(sizeof(SpinLock) == 1, "missized");
+
+template <typename T>
+bool compare_exchange_strong_release_acquire(
+    std::atomic<T>& self,
+    T& expected,
+    T desired) {
+  if (kIsSanitizeThread) {
+    // Workaround for https://github.com/google/sanitizers/issues/970
+    return self.compare_exchange_strong(
+        expected, desired, std::memory_order_acq_rel);
+  }
+  return self.compare_exchange_strong(
+      expected, desired, std::memory_order_release, std::memory_order_acquire);
+}
 
 /// The shared state object for Future and Promise.
 ///
@@ -124,6 +140,7 @@ static_assert(sizeof(SpinLock) == 1, "missized");
 ///   |      \           (setCallback())           (setResult())       |
 ///   |       \             \                       /                  |
 ///   |        \              ---> OnlyCallback ---                    |
+///   |        \            or OnlyCallbackAllowInline                 |
 ///   |         \                                   \                  |
 ///   |     (setProxy())                           (setProxy())        |
 ///   |           \                                   \                |
@@ -151,6 +168,13 @@ static_assert(sizeof(SpinLock) == 1, "missized");
 ///   point forward only the producer thread can safely access that callback
 ///   (see `setResult()` and `doCallback()` where the producer thread can both
 ///   read and modify the callback).
+/// - OnlyCallbackAllowInline: as for OnlyCallback but the core is allowed to
+///   run the callback inline with the setResult call, and therefore in the
+///   execution context and on the executor that executed the callback on the
+///   previous core, rather than adding the callback to the current Core's
+///   executor. This will only happen if the executor on which the previous
+///   callback is executing, and on which it is calling setResult, is the same
+///   as the executor the current core would add the callback to.
 /// - Proxy: producer thread has set a proxy core which the callback should be
 ///   proxied to.
 /// - Done: callback can be safely accessed only within `doCallback()`, which
@@ -199,7 +223,7 @@ class Core final {
 
  public:
   using Result = Try<T>;
-  using Callback = folly::Function<void(Result&&)>;
+  using Callback = folly::Function<void(Executor::KeepAlive<>&&, Result&&)>;
 
   /// State will be Start
   static Core* make() {
@@ -229,7 +253,8 @@ class Core final {
 
   /// May call from any thread
   bool hasCallback() const noexcept {
-    constexpr auto allowed = State::OnlyCallback | State::Done;
+    constexpr auto allowed =
+        State::OnlyCallback | State::OnlyCallbackAllowInline | State::Done;
     auto const state = state_.load(std::memory_order_acquire);
     return State() != (state & allowed);
   }
@@ -267,7 +292,8 @@ class Core final {
   ///
   /// State dependent preconditions:
   ///
-  /// - Start or OnlyCallback: Never safe - do not call. (Access in those states
+  /// - Start, OnlyCallback or OnlyCallbackAllowInline: Never safe - do not
+  /// call. (Access in those states
   ///   would be undefined behavior since the producer thread can, in those
   ///   states, asynchronously set the referenced Try object.)
   /// - OnlyResult: Always safe. (Though the consumer thread should not use the
@@ -303,18 +329,23 @@ class Core final {
   /// and might also synchronously execute that callback (e.g., if there is no
   /// executor or if the executor is inline).
   template <typename F>
-  void setCallback(F&& func, std::shared_ptr<folly::RequestContext> context) {
+  void setCallback(
+      F&& func,
+      std::shared_ptr<folly::RequestContext>&& context,
+      futures::detail::InlineContinuation allowInline) {
     DCHECK(!hasCallback());
 
-    // construct callback_ first; if that fails, context_ will not leak
     ::new (&callback_) Callback(std::forward<F>(func));
     ::new (&context_) Context(std::move(context));
 
     auto state = state_.load(std::memory_order_acquire);
+    State nextState = allowInline == futures::detail::InlineContinuation::permit
+        ? State::OnlyCallbackAllowInline
+        : State::OnlyCallback;
 
     if (state == State::Start) {
-      if (state_.compare_exchange_strong(
-              state, State::OnlyCallback, std::memory_order_release)) {
+      if (detail::compare_exchange_strong_release_acquire(
+              state_, state, nextState)) {
         return;
       }
       assume(state == State::OnlyResult || state == State::Proxy);
@@ -322,12 +353,12 @@ class Core final {
 
     if (state == State::OnlyResult) {
       state_.store(State::Done, std::memory_order_relaxed);
-      doCallback();
+      doCallback(Executor::KeepAlive<>{}, state);
       return;
     }
 
     if (state == State::Proxy) {
-      return proxyCallback();
+      return proxyCallback(state);
     }
 
     terminate_with<std::logic_error>("setCallback unexpected state");
@@ -347,15 +378,18 @@ class Core final {
     auto state = state_.load(std::memory_order_acquire);
     switch (state) {
       case State::Start:
-        if (state_.compare_exchange_strong(
-                state, State::Proxy, std::memory_order_release)) {
+        if (detail::compare_exchange_strong_release_acquire(
+                state_, state, State::Proxy)) {
           break;
         }
-        assume(state == State::OnlyCallback);
+        assume(
+            state == State::OnlyCallback ||
+            state == State::OnlyCallbackAllowInline);
         FOLLY_FALLTHROUGH;
 
       case State::OnlyCallback:
-        proxyCallback();
+      case State::OnlyCallbackAllowInline:
+        proxyCallback(state);
         break;
 
       default:
@@ -374,32 +408,43 @@ class Core final {
   /// and might also synchronously execute that callback (e.g., if there is no
   /// executor or if the executor is inline).
   void setResult(Try<T>&& t) {
+    setResult(Executor::KeepAlive<>{}, std::move(t));
+  }
+
+  /// Call only from producer thread.
+  /// Call only once - else undefined behavior.
+  ///
+  /// See FSM graph for allowed transitions.
+  ///
+  /// If it transitions to Done, synchronously initiates a call to the callback,
+  /// and might also synchronously execute that callback (e.g., if there is no
+  /// executor, if the executor is inline or if completingKA represents the
+  /// same executor as does executor_).
+  void setResult(Executor::KeepAlive<>&& completingKA, Try<T>&& t) {
     DCHECK(!hasResult());
 
     ::new (&result_) Result(std::move(t));
 
     auto state = state_.load(std::memory_order_acquire);
-    while (true) {
-      switch (state) {
-        case State::Start:
-          if (state_.compare_exchange_strong(
-                  state, State::OnlyResult, std::memory_order_release)) {
-            return;
-          }
-          assume(state == State::OnlyCallback);
-          FOLLY_FALLTHROUGH;
+    switch (state) {
+      case State::Start:
+        if (detail::compare_exchange_strong_release_acquire(
+                state_, state, State::OnlyResult)) {
+          return;
+        }
+        assume(
+            state == State::OnlyCallback ||
+            state == State::OnlyCallbackAllowInline);
+        FOLLY_FALLTHROUGH;
 
-        case State::OnlyCallback:
-          if (state_.compare_exchange_strong(
-                  state, State::Done, std::memory_order_release)) {
-            doCallback();
-            return;
-          }
-          FOLLY_FALLTHROUGH;
+      case State::OnlyCallback:
+      case State::OnlyCallbackAllowInline:
+        state_.store(State::Done, std::memory_order_relaxed);
+        doCallback(std::move(completingKA), state);
+        return;
 
-        default:
-          terminate_with<std::logic_error>("setResult unexpected state");
-      }
+      default:
+        terminate_with<std::logic_error>("setResult unexpected state");
     }
   }
 
@@ -422,7 +467,9 @@ class Core final {
   /// after the callback has already been invoked, but not concurrently with
   /// anything which might trigger invocation of the callback.
   void setExecutor(Executor::KeepAlive<> x) {
-    DCHECK(state_ != State::OnlyCallback);
+    DCHECK(
+        state_ != State::OnlyCallback &&
+        state_ != State::OnlyCallbackAllowInline);
     executor_ = std::move(x);
   }
 
@@ -556,12 +603,16 @@ class Core final {
   };
 
   // May be called at most once.
-  void doCallback() {
+  void doCallback(Executor::KeepAlive<>&& completingKA, State priorState) {
     DCHECK(state_ == State::Done);
 
-    if (executor_) {
-      auto x = std::exchange(executor_, Executor::KeepAlive<>());
-
+    auto executor = std::exchange(executor_, Executor::KeepAlive<>());
+    bool allowInline =
+        (executor.get() == completingKA.get() &&
+         priorState == State::OnlyCallbackAllowInline);
+    // If we have no executor or if we are allowing inline executor on a
+    // matching executor, run inline.
+    if (executor && !allowInline) {
       exception_wrapper ew;
       // We need to reset `callback_` after it was executed (which can happen
       // through the executor or, if `Executor::add` throws, below). The
@@ -577,13 +628,13 @@ class Core final {
       CoreAndCallbackReference guard_local_scope(this);
       CoreAndCallbackReference guard_lambda(this);
       try {
-        auto xPtr = x.get();
+        auto xPtr = executor.get();
         xPtr->add([core_ref = std::move(guard_lambda),
-                   keepAlive = std::move(x)]() mutable {
+                   executor = std::move(executor)]() mutable {
           auto cr = std::move(core_ref);
           Core* const core = cr.getCore();
-          RequestContextScopeGuard rctx(core->context_);
-          core->callback_(std::move(core->result_));
+          RequestContextScopeGuard rctx(std::move(core->context_));
+          core->callback_(std::move(executor), std::move(core->result_));
         });
       } catch (const std::exception& e) {
         ew = exception_wrapper(std::current_exception(), e);
@@ -591,9 +642,9 @@ class Core final {
         ew = exception_wrapper(std::current_exception());
       }
       if (ew) {
-        RequestContextScopeGuard rctx(context_);
+        RequestContextScopeGuard rctx(std::move(context_));
         result_ = Try<T>(std::move(ew));
-        callback_(std::move(result_));
+        callback_(Executor::KeepAlive<>{}, std::move(result_));
       }
     } else {
       attached_.fetch_add(1, std::memory_order_relaxed);
@@ -602,15 +653,21 @@ class Core final {
         callback_.~Callback();
         detachOne();
       };
-      RequestContextScopeGuard rctx(context_);
-      callback_(std::move(result_));
+      RequestContextScopeGuard rctx(std::move(context_));
+      callback_(std::move(executor), std::move(result_));
     }
   }
 
-  void proxyCallback() {
+  void proxyCallback(State priorState) {
+    // If the state of the core being proxied had a callback that allows inline
+    // execution, maintain this information in the proxy
+    futures::detail::InlineContinuation allowInline =
+        (priorState == State::OnlyCallbackAllowInline
+             ? futures::detail::InlineContinuation::permit
+             : futures::detail::InlineContinuation::forbid);
     state_.store(State::Empty, std::memory_order_relaxed);
     proxy_->setExecutor(std::move(executor_));
-    proxy_->setCallback(std::move(callback_), std::move(context_));
+    proxy_->setCallback(std::move(callback_), std::move(context_), allowInline);
     proxy_->detachFuture();
     context_.~Context();
     callback_.~Callback();

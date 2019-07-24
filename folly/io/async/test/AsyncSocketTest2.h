@@ -23,6 +23,7 @@
 #include <folly/synchronization/RWSpinLock.h>
 
 #include <folly/io/async/AsyncServerSocket.h>
+#include <folly/io/async/AsyncSocket.h>
 
 namespace folly {
 namespace test {
@@ -182,12 +183,12 @@ class TestAcceptCallback : public AsyncServerSocket::AcceptCallback {
   }
 
   void connectionAccepted(
-      int fd,
+      NetworkSocket fd,
       const folly::SocketAddress& clientAddr) noexcept override {
-    events_.emplace_back(NetworkSocket::fromFd(fd), clientAddr);
+    events_.emplace_back(fd, clientAddr);
 
     if (connectionAcceptedFn_) {
-      connectionAcceptedFn_(NetworkSocket::fromFd(fd), clientAddr);
+      connectionAcceptedFn_(fd, clientAddr);
     }
   }
   void acceptError(const std::exception& ex) noexcept override {
@@ -221,5 +222,16 @@ class TestAcceptCallback : public AsyncServerSocket::AcceptCallback {
 
   std::deque<EventInfo> events_;
 };
+
+class TestConnectCallback : public AsyncSocket::ConnectCallback {
+ public:
+  void preConnect(NetworkSocket fd) override {
+    int one = 1;
+    netops::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  }
+  void connectSuccess() noexcept override {}
+  void connectErr(const AsyncSocketException& /*ex*/) noexcept override {}
+};
+
 } // namespace test
 } // namespace folly

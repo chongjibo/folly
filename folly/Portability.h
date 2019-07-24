@@ -16,6 +16,16 @@
 
 #pragma once
 
+// MSCV 2017 __cplusplus definition by default does not track the C++ version.
+// https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cplusplus/
+#if !defined(_MSC_VER) || _MSC_VER >= 2000
+static_assert(__cplusplus >= 201402L, "__cplusplus >= 201402L");
+#endif
+
+#if defined(__GNUC__) && !defined(__clang__)
+static_assert(__GNUC__ >= 5, "__GNUC__ >= 5");
+#endif
+
 #include <cstddef>
 
 #include <folly/CPortability.h>
@@ -58,7 +68,7 @@ constexpr bool kHasUnalignedAccess = false;
 #if !defined FOLLY_NODISCARD
 #if defined(_MSC_VER) && (_MSC_VER >= 1700)
 #define FOLLY_NODISCARD _Check_return_
-#elif defined(__clang__) || defined(__GNUC__)
+#elif defined(__GNUC__)
 #define FOLLY_NODISCARD __attribute__((__warn_unused_result__))
 #else
 #define FOLLY_NODISCARD
@@ -107,12 +117,18 @@ constexpr bool kIsArchPPC64 = FOLLY_PPC64 == 1;
 namespace folly {
 
 /**
- * folly::kIsSanitizeAddress reports if folly was compiled with ASAN
+ * folly::kIsLibrarySanitizeAddress reports if folly was compiled with ASAN
  * enabled.  Note that for compilation units outside of folly that include
- * folly/Portability.h, the value of kIsSanitizeAddress may be different
+ * folly/Portability.h, the value of kIsLibrarySanitizeAddress may be different
  * from whether or not the current compilation unit is being compiled with ASAN.
  */
-#if FOLLY_ASAN_ENABLED
+#if FOLLY_LIBRARY_SANITIZE_ADDRESS
+constexpr bool kIsLibrarySanitizeAddress = true;
+#else
+constexpr bool kIsLibrarySanitizeAddress = false;
+#endif
+
+#if FOLLY_SANITIZE_ADDRESS
 constexpr bool kIsSanitizeAddress = true;
 #else
 constexpr bool kIsSanitizeAddress = false;
@@ -136,7 +152,7 @@ constexpr bool kIsSanitize = false;
 #define FOLLY_PACK_ATTR /**/
 #define FOLLY_PACK_PUSH __pragma(pack(push, 1))
 #define FOLLY_PACK_POP __pragma(pack(pop))
-#elif defined(__clang__) || defined(__GNUC__)
+#elif defined(__GNUC__)
 #define FOLLY_PACK_ATTR __attribute__((__packed__))
 #define FOLLY_PACK_PUSH /**/
 #define FOLLY_PACK_POP /**/
@@ -192,11 +208,6 @@ constexpr bool kIsSanitize = false;
 #define FOLLY_GCC_DISABLE_NEW_SHADOW_WARNINGS /* empty */
 #endif
 
-// Globally disable -Wshadow for gcc < 5.
-#if __GNUC__ == 4 && !__clang__
-FOLLY_GCC_DISABLE_NEW_SHADOW_WARNINGS
-#endif
-
 /* Platform specific TLS support
  * gcc implements __thread
  * msvc implements __declspec(thread)
@@ -205,7 +216,7 @@ FOLLY_GCC_DISABLE_NEW_SHADOW_WARNINGS
  */
 #if defined(_MSC_VER)
 #define FOLLY_TLS __declspec(thread)
-#elif defined(__GNUC__) || defined(__clang__)
+#elif defined(__GNUC__)
 #define FOLLY_TLS __thread
 #else
 #error cannot define platform specific thread local storage
@@ -252,7 +263,13 @@ FOLLY_GCC_DISABLE_NEW_SHADOW_WARNINGS
 
 // We have compiler support for the newest of the new, but
 // MSVC doesn't tell us that.
+//
+// Clang pretends to be MSVC on Windows, but it refuses to compile
+// SSE4.2 intrinsics unless -march argument is specified.
+// So cannot unconditionally define __SSE4_2__ in clang.
+#ifndef __clang__
 #define __SSE4_2__ 1
+#endif
 
 #endif
 
@@ -407,6 +424,12 @@ constexpr auto kIsGlibcxx = true;
 constexpr auto kIsGlibcxx = false;
 #endif
 
+#if __GLIBCXX__ && _GLIBCXX_RELEASE // major version, 7+
+constexpr auto kGlibcxxVer = _GLIBCXX_RELEASE;
+#else
+constexpr auto kGlibcxxVer = 0;
+#endif
+
 #if _LIBCPP_VERSION
 constexpr auto kIsLibcpp = true;
 #else
@@ -423,6 +446,12 @@ constexpr auto kIsLibstdcpp = false;
 constexpr auto kMscVer = _MSC_VER;
 #else
 constexpr auto kMscVer = 0;
+#endif
+
+#if __clang__
+constexpr auto kIsClang = true;
+#else
+constexpr auto kIsClang = false;
 #endif
 
 #if FOLLY_MICROSOFT_ABI_VER
@@ -457,36 +486,18 @@ constexpr auto kCpplibVer = 0;
 #define FOLLY_STORAGE_CONSTEXPR constexpr
 #endif
 
-// Helpers for portably defining customisation-point objects (CPOs).
-//
-// The customisation-point object must be placed in a nested namespace to
-// avoid potential conflicts with customisations defined as friend-functions
-// of types defined in the same namespace as the CPO.
-//
-// In C++17 and later we can define the object using 'inline constexpr' to
-// avoid ODR issues. However, prior to that we need to use the StaticConst<T>
-// helper to ensure that there is only a single instance of the CPO created
-// and then we need to put a named reference to this object in an anonymous
-// namespace to avoid duplicate symbol definitions.
-#if __cpp_inline_variables >= 201606L
-#define FOLLY_DEFINE_CPO(Type, Name) \
-  namespace __hidden {               \
-  inline constexpr Type Name{};      \
-  }                                  \
-  using namespace __hidden;
-#else
-#include <folly/detail/StaticConst.h>
-#define FOLLY_DEFINE_CPO(Type, Name)                                \
-  namespace {                                                       \
-  constexpr auto& Name = ::folly::detail::StaticConst<Type>::value; \
-  }
-#endif
-
+#if __cplusplus >= 201703L
+// folly::coro requires C++17 support
 #if __cpp_coroutines >= 201703L && __has_include(<experimental/coroutine>)
 #define FOLLY_HAS_COROUTINES 1
+// This is mainly to workaround bugs triggered by LTO, when stack allocated
+// variables in await_suspend end up on a coroutine frame.
+#define FOLLY_CORO_AWAIT_SUSPEND_NONTRIVIAL_ATTRIBUTES FOLLY_NOINLINE
 #elif _MSC_VER && _RESUMABLE_FUNCTIONS_SUPPORTED
-#define FOLLY_HAS_COROUTINES 1
+// NOTE: MSVC 2017 does not currently support the full Coroutines TS since it
+// does not yet support symmetric-transfer.
 #endif
+#endif // __cplusplus >= 201703L
 
 // MSVC 2017.5 && C++17
 #if __cpp_noexcept_function_type >= 201510 || \

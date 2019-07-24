@@ -17,6 +17,7 @@
 
 #include <folly/experimental/pushmi/o/extension_operators.h>
 #include <folly/experimental/pushmi/o/submit.h>
+#include <folly/Function.h>
 
 namespace folly {
 namespace pushmi {
@@ -24,67 +25,81 @@ namespace detail {
 
 struct for_each_fn {
  private:
-  template <class... PN>
-  struct subset {
-    using properties = property_set<PN...>;
+  template<class Up>
+  struct request_fn {
+    Up up_;
+    explicit request_fn(Up up) : up_(std::move(up)) {}
+    request_fn(request_fn&& o) : up_(std::move(o.up_)) {}
+    void operator()(std::ptrdiff_t requested) {
+      ::folly::pushmi::set_value(up_, requested);
+    }
   };
-  template <class In, class Out>
-  struct Pull : Out {
-    explicit Pull(Out out) : Out(std::move(out)) {}
-    using properties =
-        property_set_insert_t<properties_t<Out>, property_set<is_flow<>>>;
-    std::function<void(std::ptrdiff_t)> pull;
+  template <class Out>
+  struct Pull {
+    Out out_;
+    explicit Pull(Out out) : out_(std::move(out)) {}
+    using receiver_category = flow_receiver_tag;
+    folly::Function<void(std::ptrdiff_t)> pull;
     template <class... VN>
     void value(VN&&... vn) {
-      ::folly::pushmi::set_value(static_cast<Out&>(*this), (VN &&) vn...);
+      ::folly::pushmi::set_value(out_, (VN &&) vn...);
       pull(1);
     }
     template <class E>
-    void error(E&& e) {
+    void error(E&& e) noexcept {
       // break circular reference
       pull = nullptr;
-      ::folly::pushmi::set_error(static_cast<Out&>(*this), (E &&) e);
+      ::folly::pushmi::set_error(out_, (E &&) e);
     }
     void done() {
       // break circular reference
       pull = nullptr;
-      ::folly::pushmi::set_done(static_cast<Out&>(*this));
+      ::folly::pushmi::set_done(out_);
     }
     PUSHMI_TEMPLATE(class Up)
-    (requires Receiver<Up> && ReceiveValue<Up, std::ptrdiff_t>)
+    (requires ReceiveValue<Up, std::ptrdiff_t>)
     void starting(Up up) {
-      pull = [up = std::move(up)](std::ptrdiff_t requested) mutable {
-        ::folly::pushmi::set_value(up, requested);
-      };
+      pull = request_fn<Up>{std::move(up)};
       pull(1);
     }
     PUSHMI_TEMPLATE(class Up)
-    (requires ReceiveValue<Up>)
+    (requires ReceiveValue<Up> && not ReceiveValue<Up, std::ptrdiff_t>)
     void starting(Up) {}
   };
   template <class... AN>
-  struct fn {
+  struct adapt_impl {
     std::tuple<AN...> args_;
     PUSHMI_TEMPLATE(class In)
-    (requires Sender<In>&& Flow<In>&& Many<In>)
-    In operator()(In in) {
-      auto out{::folly::pushmi::detail::receiver_from_fn<subset<
-          is_sender<>,
-          property_set_index_t<properties_t<In>, is_single<>>>>()(
-          std::move(args_))};
+    (requires FlowSender<In> && Constructible<std::tuple<AN...>, const std::tuple<AN...>&>)
+    void operator()(In&& in) & {
+      // Strip flow:
+      using C =
+        std::conditional_t<SingleSender<In>, single_sender_tag, sender_tag>;
+      //  copy args to allow adapt to be called multiple times
+      auto out{receiver_from_fn<C>()(args_)};
       using Out = decltype(out);
       ::folly::pushmi::submit(
-          in,
-          ::folly::pushmi::detail::receiver_from_fn<In>()(
-              Pull<In, Out>{std::move(out)}));
-      return in;
+          (In &&) in,
+          receiver_from_fn<In>()(Pull<Out>{std::move(out)}));
+    }
+    PUSHMI_TEMPLATE(class In)
+    (requires FlowSender<In> && Constructible<std::tuple<AN...>, std::tuple<AN...>&&>)
+    void operator()(In&& in) && {
+      // Strip flow:
+      using C =
+        std::conditional_t<SingleSender<In>, single_sender_tag, sender_tag>;
+      auto out{receiver_from_fn<C>()(std::move(args_))};
+      using Out = decltype(out);
+      ::folly::pushmi::submit(
+          (In &&) in,
+          receiver_from_fn<In>()(Pull<Out>{std::move(out)}));
     }
   };
 
  public:
   template <class... AN>
   auto operator()(AN&&... an) const {
-    return for_each_fn::fn<AN...>{std::tuple<AN...>{(AN &&) an...}};
+    return for_each_fn::adapt_impl<AN...>{std::tuple<AN...>{(AN &&) an...}};
   }
 };
 

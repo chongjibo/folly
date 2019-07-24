@@ -21,13 +21,14 @@
 namespace folly {
 namespace coro {
 
-/// A baton is a synchronisation primitive for coroutines that allows one
-/// coroutine to co_await the baton and suspend until the baton is posted
-/// by some other thread via a call to .post().
+/// A baton is a synchronisation primitive for coroutines that allows a
+/// coroutine to co_await the baton and suspend until the baton is posted by
+/// some thread via a call to .post().
 ///
-/// The Baton supports being awaited by a single coroutine at a time. If the
-/// baton is not ready at the time it is awaited then the awaiting coroutine
-/// suspends and is later resumed when some thread calls .post().
+/// The Baton supports being awaited by multiple coroutines at a time. If the
+/// baton is not ready at the time it is awaited then an awaiting coroutine
+/// suspends. All suspended coroutines waiting for the baton to be posted will
+/// be resumed when some thread next calls .post().
 ///
 /// Example usage:
 ///
@@ -71,27 +72,17 @@ class Baton {
   /// suspending. Otherwise, if the Baton is not yet signalled then the
   /// awaiting coroutine will suspend execution and will be resumed when some
   /// thread later calls post().
-  ///
-  /// You may optionally specify an executor on which to resume executing the
-  /// awaiting coroutine if the baton was not already in the signalled state
-  /// by chaining a .via(executor) call. If you do not specify an executor then
-  /// the behaviour is as if an inline executor was specified.
-  /// i.e. the coroutine will be resumed inside the call to .post() on the
-  /// thread that next calls .post().
   [[nodiscard]] WaitOperation operator co_await() const noexcept;
 
   /// Set the Baton to the signalled state if it is not already signalled.
   ///
   /// This will resume any coroutines that are currently suspended waiting
-  /// for the Baton inside 'co_await baton.waitAsync()'.
+  /// for the Baton inside 'co_await baton'.
   void post() noexcept;
 
-  /// Reset the baton back to the non-signalled state.
+  /// Atomically reset the baton back to the non-signalled state.
   ///
-  /// This method is not safe to be called concurrently with any other
-  /// method on the Baton. The caller must ensure that there are no coroutines
-  /// currently waiting on the Baton and that there are no threads currently
-  /// calling .post() when .reset() is called.
+  /// This is a no-op if the baton was already in the non-signalled state.
   void reset() noexcept;
 
   class WaitOperation {
@@ -142,7 +133,10 @@ inline Baton::WaitOperation Baton::operator co_await() const noexcept {
 }
 
 inline void Baton::reset() noexcept {
-  state_.store(nullptr, std::memory_order_relaxed);
+  // Transition from 'signalled' (ie. 'this') to not-signalled (ie. nullptr).
+  void* oldState = this;
+  (void)state_.compare_exchange_strong(
+      oldState, nullptr, std::memory_order_acq_rel, std::memory_order_relaxed);
 }
 
 } // namespace coro

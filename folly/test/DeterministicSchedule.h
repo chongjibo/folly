@@ -29,10 +29,11 @@
 #include <vector>
 
 #include <folly/ScopeGuard.h>
+#include <folly/SingletonThreadLocal.h>
 #include <folly/concurrency/CacheLocality.h>
 #include <folly/detail/Futex.h>
-#include <folly/portability/Semaphore.h>
 #include <folly/synchronization/detail/AtomicUtils.h>
+#include <folly/synchronization/test/Semaphore.h>
 
 namespace folly {
 namespace test {
@@ -135,7 +136,7 @@ class ThreadSyncVar {
  * constructor, DeterministicSchedule::join(thr) instead of thr.join(),
  * and access semaphores via the helper functions in DeterministicSchedule.
  * Locks are not yet supported, although they would be easy to add with
- * the same strategy as the mapping of sem_wait.
+ * the same strategy as the mapping of Sem::wait.
  *
  * The actual schedule is defined by a function from n -> [0,n). At
  * each step, the function will be given the number of active threads
@@ -145,6 +146,8 @@ class ThreadSyncVar {
  */
 class DeterministicSchedule {
  public:
+  using Sem = Semaphore;
+
   /**
    * Arranges for the current thread (and all threads created by
    * DeterministicSchedule::thread on a thread participating in this
@@ -197,7 +200,8 @@ class DeterministicSchedule {
   static inline std::thread thread(Func&& func, Args&&... args) {
     // TODO: maybe future versions of gcc will allow forwarding to thread
     atomic_thread_fence(std::memory_order_seq_cst);
-    auto sched = tls_sched;
+    auto& tls = TLState::get();
+    auto sched = tls.sched;
     auto sem = sched ? sched->beforeThreadCreate() : nullptr;
     auto child = std::thread(
         [=](Args... a) {
@@ -236,15 +240,15 @@ class DeterministicSchedule {
    */
   static void joinAll(std::vector<std::thread>& children);
 
-  /** Calls sem_post(sem) as part of a deterministic schedule. */
-  static void post(sem_t* sem);
+  /** Calls sem->post() as part of a deterministic schedule. */
+  static void post(Sem* sem);
 
-  /** Calls sem_trywait(sem) as part of a deterministic schedule, returning
+  /** Calls sem->try_wait() as part of a deterministic schedule, returning
    *  true on success and false on transient failure. */
-  static bool tryWait(sem_t* sem);
+  static bool tryWait(Sem* sem);
 
-  /** Calls sem_wait(sem) as part of a deterministic schedule. */
-  static void wait(sem_t* sem);
+  /** Calls sem->wait() as part of a deterministic schedule. */
+  static void wait(Sem* sem);
 
   /** Used scheduler_ to get a random number b/w [0, n). If tls_sched is
    *  not set-up it falls back to std::rand() */
@@ -270,25 +274,28 @@ class DeterministicSchedule {
   static void clearAuxChk();
 
   /** Remove the current thread's semaphore from sems_ */
-  static sem_t* descheduleCurrentThread();
+  static Sem* descheduleCurrentThread();
 
   /** Returns true if the current thread has already completed
    * the thread function, for example if the thread is executing
    * thread local destructors. */
   static bool isCurrentThreadExiting() {
-    return tls_exiting;
+    auto& tls = TLState::get();
+    return tls.exiting;
   }
 
   /** Add sem back into sems_ */
-  static void reschedule(sem_t* sem);
+  static void reschedule(Sem* sem);
 
   static bool isActive() {
-    return tls_sched != nullptr;
+    auto& tls = TLState::get();
+    return tls.sched != nullptr;
   }
 
   static DSchedThreadId getThreadId() {
-    assert(tls_sched != nullptr);
-    return tls_threadId;
+    auto& tls = TLState::get();
+    assert(tls.sched != nullptr);
+    return tls.threadId;
   }
 
   static ThreadInfo& getCurrentThreadInfo();
@@ -296,18 +303,32 @@ class DeterministicSchedule {
   static void atomic_thread_fence(std::memory_order mo);
 
  private:
-  static FOLLY_TLS sem_t* tls_sem;
-  static FOLLY_TLS DeterministicSchedule* tls_sched;
-  static FOLLY_TLS bool tls_exiting;
-  static FOLLY_TLS DSchedThreadId tls_threadId;
-  static thread_local AuxAct tls_aux_act;
+  struct PerThreadState {
+    // delete the constructors and assignment operators for sanity
+    //
+    // but... we can't delete the move constructor and assignment operators
+    // because those are required before C++17 in the implementation of
+    // SingletonThreadLocal
+    PerThreadState(const PerThreadState&) = delete;
+    PerThreadState& operator=(const PerThreadState&) = delete;
+    PerThreadState(PerThreadState&&) = default;
+    PerThreadState& operator=(PerThreadState&&) = default;
+    PerThreadState() = default;
+
+    Sem* sem{nullptr};
+    DeterministicSchedule* sched{nullptr};
+    bool exiting{false};
+    DSchedThreadId threadId{};
+    AuxAct aux_act{};
+  };
+  using TLState = SingletonThreadLocal<PerThreadState>;
   static AuxChk aux_chk;
 
   std::function<size_t(size_t)> scheduler_;
-  std::vector<sem_t*> sems_;
+  std::vector<Sem*> sems_;
   std::unordered_set<std::thread::id> active_;
-  std::unordered_map<std::thread::id, sem_t*> joins_;
-  std::unordered_map<std::thread::id, sem_t*> exitingSems_;
+  std::unordered_map<std::thread::id, Sem*> joins_;
+  std::unordered_map<std::thread::id, Sem*> exitingSems_;
 
   std::vector<ThreadInfo> threadInfoMap_;
   ThreadTimestamps seqCstFenceOrder_;
@@ -321,8 +342,8 @@ class DeterministicSchedule {
    * functions for some shared accesses. */
   uint64_t step_;
 
-  sem_t* beforeThreadCreate();
-  void afterThreadCreate(sem_t*);
+  Sem* beforeThreadCreate();
+  void afterThreadCreate(Sem*);
   void beforeThreadExit();
   void waitForBeforeThreadExit(std::thread& child);
   /** Calls user-defined auxiliary function (if any) */
@@ -725,8 +746,10 @@ void atomic_notify_all(const DeterministicAtomic<Integer>*) {}
  * cooperates with DeterministicSchedule.
  */
 struct DeterministicMutex {
+  using Sem = DeterministicSchedule::Sem;
+
   std::mutex m;
-  std::queue<sem_t*> waiters_;
+  std::queue<Sem*> waiters_;
   ThreadSyncVar syncVar_;
 
   DeterministicMutex() = default;
@@ -738,7 +761,7 @@ struct DeterministicMutex {
     FOLLY_TEST_DSCHED_VLOG(this << ".lock()");
     DeterministicSchedule::beforeSharedAccess();
     while (!m.try_lock()) {
-      sem_t* sem = DeterministicSchedule::descheduleCurrentThread();
+      Sem* sem = DeterministicSchedule::descheduleCurrentThread();
       if (sem) {
         waiters_.push(sem);
       }
@@ -771,7 +794,7 @@ struct DeterministicMutex {
       syncVar_.release();
     }
     if (!waiters_.empty()) {
-      sem_t* sem = waiters_.front();
+      Sem* sem = waiters_.front();
       DeterministicSchedule::reschedule(sem);
       waiters_.pop();
     }

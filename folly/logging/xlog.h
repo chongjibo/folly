@@ -21,6 +21,7 @@
 #include <folly/logging/LogStream.h>
 #include <folly/logging/Logger.h>
 #include <folly/logging/LoggerDB.h>
+#include <folly/logging/ObjectToString.h>
 #include <folly/logging/RateLimiter.h>
 #include <cstdlib>
 
@@ -114,19 +115,80 @@
 
 /**
  * Similar to XLOG(...) except only log a message every @param n
- * invocations.
+ * invocations, approximately.
  *
- * The internal counter is process-global and threadsafe.
+ * The internal counter is process-global and threadsafe but, to
+ * to avoid the performance degradation of atomic-rmw operations,
+ * increments are non-atomic. Some increments may be missed under
+ * contention, leading to possible over-logging or under-logging
+ * effects.
  */
-#define XLOG_EVERY_N(level, n, ...)                                            \
+#define XLOG_EVERY_N(level, n, ...)                                        \
+  XLOG_IF(                                                                 \
+      level,                                                               \
+      []() FOLLY_EXPORT -> bool {                                          \
+        static std::atomic<size_t> folly_detail_xlog_count{0};             \
+        auto const folly_detail_xlog_count_value =                         \
+            folly_detail_xlog_count.load(std::memory_order_relaxed);       \
+        folly_detail_xlog_count.store(                                     \
+            folly_detail_xlog_count_value + 1, std::memory_order_relaxed); \
+        return FOLLY_UNLIKELY((folly_detail_xlog_count_value % (n)) == 0); \
+      }(),                                                                 \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOG(...) except only log a message every @param n
+ * invocations, exactly.
+ *
+ * The internal counter is process-global and threadsafe and
+ * increments are atomic. The over-logging and under-logging
+ * schenarios of XLOG_EVERY_N(...) are avoided, traded off for
+ * the performance degradation of atomic-rmw operations.
+ */
+#define XLOG_EVERY_N_EXACT(level, n, ...)                                      \
   XLOG_IF(                                                                     \
       level,                                                                   \
-      [] {                                                                     \
+      []() FOLLY_EXPORT -> bool {                                              \
         static std::atomic<size_t> folly_detail_xlog_count{0};                 \
         return FOLLY_UNLIKELY(                                                 \
             (folly_detail_xlog_count.fetch_add(1, std::memory_order_relaxed) % \
              (n)) == 0);                                                       \
       }(),                                                                     \
+      ##__VA_ARGS__)
+
+namespace folly {
+namespace detail {
+
+size_t& xlogEveryNThreadEntry(void const* const key);
+
+} // namespace detail
+} // namespace folly
+
+/**
+ * Similar to XLOG(...) except only log a message every @param n
+ * invocations per thread.
+ *
+ * The internal counter is thread-local, avoiding the contention
+ * which the XLOG_EVERY_N variations which use a global counter
+ * may suffer. If a given XLOG_EVERY_N or variation expansion is
+ * encountered concurrently by multiple threads in a hot code
+ * path and the global counter in the expansion is observed to
+ * be contended, then switching to XLOG_EVERY_N_THREAD can help.
+ *
+ * Every thread that invokes this expansion has a counter for
+ * this expansion. The internal counters are all stored in a
+ * single thread-local map to control TLS overhead, at the cost
+ * of a small runtime performance hit.
+ */
+#define XLOG_EVERY_N_THREAD(level, n, ...)                                  \
+  XLOG_IF(                                                                  \
+      level,                                                                \
+      []() FOLLY_EXPORT -> bool {                                           \
+        static char folly_detail_xlog_key;                                  \
+        auto& folly_detail_xlog_count =                                     \
+            ::folly::detail::xlogEveryNThreadEntry(&folly_detail_xlog_key); \
+        return FOLLY_UNLIKELY((folly_detail_xlog_count++ % (n)) == 0);      \
+      }(),                                                                  \
       ##__VA_ARGS__)
 
 /**
@@ -344,7 +406,13 @@ std::unique_ptr<std::string> XCheckOpImpl(
     return nullptr;
   }
   return std::make_unique<std::string>(folly::to<std::string>(
-      "Check failed: ", checkStr, " (", arg1, " vs. ", arg2, ")"));
+      "Check failed: ",
+      checkStr,
+      " (",
+      ::folly::logging::objectToString(arg1),
+      " vs. ",
+      folly::logging::objectToString(arg2),
+      ")"));
 }
 } // namespace detail
 } // namespace folly

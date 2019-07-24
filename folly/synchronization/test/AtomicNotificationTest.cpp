@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 #include <folly/synchronization/AtomicNotification.h>
+
+#include <folly/Optional.h>
 #include <folly/portability/GTest.h>
 
 #include <thread>
@@ -40,6 +42,29 @@ void run_atomic_wait_basic() {
   atomic_notify_one(&atomic);
 
   one.join();
+}
+
+template <typename Integer>
+void run_atomic_notify_all() {
+  auto&& atomic = std::atomic<Integer>{0};
+
+  auto&& func = [&]() {
+    while (true) {
+      atomic_wait(&atomic, Integer{0});
+      if (atomic.load() == 1) {
+        break;
+      }
+    }
+  };
+
+  auto&& t0 = std::thread{func};
+  auto&& t1 = std::thread{func};
+
+  atomic.store(1);
+  atomic_notify_all(&atomic);
+
+  t0.join();
+  t1.join();
 }
 
 template <typename Integer>
@@ -165,6 +190,16 @@ TEST(AtomicWait, BasicNonStandardWidths) {
   run_atomic_wait_basic<std::uint8_t>();
   run_atomic_wait_basic<std::uint16_t>();
   run_atomic_wait_basic<std::uint64_t>();
+}
+
+TEST(AtomicWait, AtomicNotifyAll) {
+  run_atomic_notify_all<std::uint32_t>();
+}
+
+TEST(AtomicWait, AtomicNotifyAllNonStandardWidths) {
+  run_atomic_notify_all<std::uint8_t>();
+  run_atomic_notify_all<std::uint16_t>();
+  run_atomic_notify_all<std::uint64_t>();
 }
 
 TEST(AtomicWait, AtomicWaitUntilTimeout) {

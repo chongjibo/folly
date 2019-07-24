@@ -31,6 +31,21 @@
 
 namespace folly {
 
+namespace detail {
+template <class Duration>
+struct HHWheelTimerDurationConst;
+
+template <>
+struct HHWheelTimerDurationConst<std::chrono::milliseconds> {
+  static constexpr int DEFAULT_TICK_INTERVAL = 10;
+};
+
+template <>
+struct HHWheelTimerDurationConst<std::chrono::microseconds> {
+  static constexpr int DEFAULT_TICK_INTERVAL = 200;
+};
+} // namespace detail
+
 /**
  * Hashed Hierarchical Wheel Timer
  *
@@ -111,7 +126,7 @@ class HHWheelTimerBase : private folly::AsyncTimeout,
      * timeout is not scheduled or expired. Otherwise, return expiration
      * time minus current time.
      */
-    Duration getTimeRemaining() {
+    Duration getTimeRemaining() const {
       return getTimeRemaining(std::chrono::steady_clock::now());
     }
 
@@ -343,7 +358,16 @@ class HHWheelTimerBase : private folly::AsyncTimeout,
   }
 };
 
+// std::chrono::milliseconds
 using HHWheelTimer = HHWheelTimerBase<std::chrono::milliseconds>;
 extern template class HHWheelTimerBase<std::chrono::milliseconds>;
+
+// std::chrono::microseconds
+template <>
+void HHWheelTimerBase<std::chrono::microseconds>::scheduleTimeoutInternal(
+    std::chrono::microseconds timeout);
+
+using HHWheelTimerHighRes = HHWheelTimerBase<std::chrono::microseconds>;
+extern template class HHWheelTimerBase<std::chrono::microseconds>;
 
 } // namespace folly

@@ -22,6 +22,7 @@
 #include <folly/io/async/EventHandler.h>
 #include <folly/io/async/test/SocketPair.h>
 #include <folly/io/async/test/Util.h>
+#include <folly/portability/Stdlib.h>
 #include <folly/portability/Unistd.h>
 
 #include <folly/futures/Promise.h>
@@ -52,6 +53,24 @@ using namespace folly;
 ///////////////////////////////////////////////////////////////////////////
 // Tests for read and write events
 ///////////////////////////////////////////////////////////////////////////
+
+namespace {
+
+class EventBaseTest : public ::testing::Test {
+ public:
+  EventBaseTest() {
+    // libevent 2.x uses a coarse monotonic timer by default on Linux.
+    // This timer is imprecise enough to cause several of our tests to fail.
+    //
+    // Set an environment variable that causes libevent to use a non-coarse
+    // timer. This can be controlled programmatically by using the
+    // EVENT_BASE_FLAG_PRECISE_TIMER flag with event_base_new_with_config().
+    // However, this would require more compile-time #ifdefs to tell if we are
+    // using libevent 2.1+ or not.  Simply using the environment variable is
+    // the easiest option for now.
+    setenv("EVENT_PRECISE_TIMER", "1", 1);
+  }
+};
 
 enum { BUF_SIZE = 4096 };
 
@@ -144,7 +163,7 @@ void scheduleEvents(EventBase* eventBase, int fd, ScheduledEvent* events) {
 class TestHandler : public EventHandler {
  public:
   TestHandler(EventBase* eventBase, int fd)
-      : EventHandler(eventBase, fd), fd_(fd) {}
+      : EventHandler(eventBase, NetworkSocket::fromFd(fd)), fd_(fd) {}
 
   void handlerReady(uint16_t events) noexcept override {
     ssize_t bytesRead = 0;
@@ -182,10 +201,12 @@ class TestHandler : public EventHandler {
   int fd_;
 };
 
+} // namespace
+
 /**
  * Test a READ event
  */
-TEST(EventBaseTest, ReadEvent) {
+TEST_F(EventBaseTest, ReadEvent) {
   EventBase eb;
   SocketPair sp;
 
@@ -199,10 +220,10 @@ TEST(EventBaseTest, ReadEvent) {
       {160, EventHandler::WRITE, 99, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -229,7 +250,7 @@ TEST(EventBaseTest, ReadEvent) {
 /**
  * Test (READ | PERSIST)
  */
-TEST(EventBaseTest, ReadPersist) {
+TEST_F(EventBaseTest, ReadPersist) {
   EventBase eb;
   SocketPair sp;
 
@@ -245,13 +266,13 @@ TEST(EventBaseTest, ReadPersist) {
       {100, EventHandler::WRITE, 100, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Schedule a timeout to unregister the handler after the third write
   eb.tryRunAfterDelay(std::bind(&TestHandler::unregisterHandler, &handler), 85);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -275,7 +296,7 @@ TEST(EventBaseTest, ReadPersist) {
 /**
  * Test registering for READ when the socket is immediately readable
  */
-TEST(EventBaseTest, ReadImmediate) {
+TEST_F(EventBaseTest, ReadImmediate) {
   EventBase eb;
   SocketPair sp;
 
@@ -293,13 +314,13 @@ TEST(EventBaseTest, ReadImmediate) {
       {10, EventHandler::WRITE, 2345, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Schedule a timeout to unregister the handler
   eb.tryRunAfterDelay(std::bind(&TestHandler::unregisterHandler, &handler), 20);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -324,7 +345,7 @@ TEST(EventBaseTest, ReadImmediate) {
 /**
  * Test a WRITE event
  */
-TEST(EventBaseTest, WriteEvent) {
+TEST_F(EventBaseTest, WriteEvent) {
   EventBase eb;
   SocketPair sp;
 
@@ -341,10 +362,10 @@ TEST(EventBaseTest, WriteEvent) {
       {60, EventHandler::READ, 0, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -365,7 +386,7 @@ TEST(EventBaseTest, WriteEvent) {
 /**
  * Test (WRITE | PERSIST)
  */
-TEST(EventBaseTest, WritePersist) {
+TEST_F(EventBaseTest, WritePersist) {
   EventBase eb;
   SocketPair sp;
 
@@ -384,13 +405,13 @@ TEST(EventBaseTest, WritePersist) {
       {100, EventHandler::READ, 0, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Schedule a timeout to unregister the handler after the third read
   eb.tryRunAfterDelay(std::bind(&TestHandler::unregisterHandler, &handler), 85);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -412,7 +433,7 @@ TEST(EventBaseTest, WritePersist) {
 /**
  * Test registering for WRITE when the socket is immediately writable
  */
-TEST(EventBaseTest, WriteImmediate) {
+TEST_F(EventBaseTest, WriteImmediate) {
   EventBase eb;
   SocketPair sp;
 
@@ -425,6 +446,7 @@ TEST(EventBaseTest, WriteImmediate) {
       {10, EventHandler::READ, 0, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Schedule a timeout to unregister the handler
@@ -433,7 +455,6 @@ TEST(EventBaseTest, WriteImmediate) {
       std::bind(&TestHandler::unregisterHandler, &handler), unregisterTimeout);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -459,7 +480,7 @@ TEST(EventBaseTest, WriteImmediate) {
 /**
  * Test (READ | WRITE) when the socket becomes readable first
  */
-TEST(EventBaseTest, ReadWrite) {
+TEST_F(EventBaseTest, ReadWrite) {
   EventBase eb;
   SocketPair sp;
 
@@ -476,10 +497,10 @@ TEST(EventBaseTest, ReadWrite) {
       {40, EventHandler::READ, 0, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -499,7 +520,7 @@ TEST(EventBaseTest, ReadWrite) {
 /**
  * Test (READ | WRITE) when the socket becomes writable first
  */
-TEST(EventBaseTest, WriteRead) {
+TEST_F(EventBaseTest, WriteRead) {
   EventBase eb;
   SocketPair sp;
 
@@ -517,10 +538,10 @@ TEST(EventBaseTest, WriteRead) {
       {40, EventHandler::WRITE, sock1WriteLength, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -546,7 +567,7 @@ TEST(EventBaseTest, WriteRead) {
  * Test (READ | WRITE) when the socket becomes readable and writable
  * at the same time.
  */
-TEST(EventBaseTest, ReadWriteSimultaneous) {
+TEST_F(EventBaseTest, ReadWriteSimultaneous) {
   EventBase eb;
   SocketPair sp;
 
@@ -562,10 +583,10 @@ TEST(EventBaseTest, ReadWriteSimultaneous) {
       {10, EventHandler::READ | EventHandler::WRITE, 0, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -586,7 +607,7 @@ TEST(EventBaseTest, ReadWriteSimultaneous) {
 /**
  * Test (READ | WRITE | PERSIST)
  */
-TEST(EventBaseTest, ReadWritePersist) {
+TEST_F(EventBaseTest, ReadWritePersist) {
   EventBase eb;
   SocketPair sp;
 
@@ -605,13 +626,13 @@ TEST(EventBaseTest, ReadWritePersist) {
       {120, EventHandler::WRITE, 2345, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Schedule a timeout to unregister the handler
   eb.tryRunAfterDelay(std::bind(&TestHandler::unregisterHandler, &handler), 80);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -646,6 +667,7 @@ TEST(EventBaseTest, ReadWritePersist) {
   ASSERT_EQ(bytesRemaining, events[5].length);
 }
 
+namespace {
 class PartialReadHandler : public TestHandler {
  public:
   PartialReadHandler(EventBase* eventBase, int fd, size_t readLength)
@@ -661,13 +683,14 @@ class PartialReadHandler : public TestHandler {
   int fd_;
   size_t readLength_;
 };
+} // namespace
 
 /**
  * Test reading only part of the available data when a read event is fired.
  * When PERSIST is used, make sure the handler gets notified again the next
  * time around the loop.
  */
-TEST(EventBaseTest, ReadPartial) {
+TEST_F(EventBaseTest, ReadPartial) {
   EventBase eb;
   SocketPair sp;
 
@@ -682,13 +705,13 @@ TEST(EventBaseTest, ReadPartial) {
       {10, EventHandler::WRITE, (3 * readLength) + (readLength / 2), 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Schedule a timeout to unregister the handler
   eb.tryRunAfterDelay(std::bind(&TestHandler::unregisterHandler, &handler), 30);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -710,6 +733,7 @@ TEST(EventBaseTest, ReadPartial) {
   ASSERT_EQ(handler.log[3].bytesWritten, 0);
 }
 
+namespace {
 class PartialWriteHandler : public TestHandler {
  public:
   PartialWriteHandler(EventBase* eventBase, int fd, size_t writeLength)
@@ -725,13 +749,14 @@ class PartialWriteHandler : public TestHandler {
   int fd_;
   size_t writeLength_;
 };
+} // namespace
 
 /**
  * Test writing without completely filling up the write buffer when the fd
  * becomes writable.  When PERSIST is used, make sure the handler gets
  * notified again the next time around the loop.
  */
-TEST(EventBaseTest, WritePartial) {
+TEST_F(EventBaseTest, WritePartial) {
   EventBase eb;
   SocketPair sp;
 
@@ -748,13 +773,13 @@ TEST(EventBaseTest, WritePartial) {
       {10, EventHandler::READ, 0, 0},
       {0, 0, 0, 0},
   };
+  TimePoint start;
   scheduleEvents(&eb, sp[1], events);
 
   // Schedule a timeout to unregister the handler
   eb.tryRunAfterDelay(std::bind(&TestHandler::unregisterHandler, &handler), 30);
 
   // Loop
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -777,7 +802,7 @@ TEST(EventBaseTest, WritePartial) {
 /**
  * Test destroying a registered EventHandler
  */
-TEST(EventBaseTest, DestroyHandler) {
+TEST_F(EventBaseTest, DestroyHandler) {
   class DestroyHandler : public AsyncTimeout {
    public:
     DestroyHandler(EventBase* eb, EventHandler* h)
@@ -829,17 +854,21 @@ TEST(EventBaseTest, DestroyHandler) {
 // Tests for timeout events
 ///////////////////////////////////////////////////////////////////////////
 
-TEST(EventBaseTest, RunAfterDelay) {
+TEST_F(EventBaseTest, RunAfterDelay) {
   EventBase eb;
 
   TimePoint timestamp1(false);
   TimePoint timestamp2(false);
   TimePoint timestamp3(false);
-  eb.tryRunAfterDelay(std::bind(&TimePoint::reset, &timestamp1), 10);
-  eb.tryRunAfterDelay(std::bind(&TimePoint::reset, &timestamp2), 20);
-  eb.tryRunAfterDelay(std::bind(&TimePoint::reset, &timestamp3), 40);
+  auto fn1 = std::bind(&TimePoint::reset, &timestamp1);
+  auto fn2 = std::bind(&TimePoint::reset, &timestamp2);
+  auto fn3 = std::bind(&TimePoint::reset, &timestamp3);
 
   TimePoint start;
+  eb.tryRunAfterDelay(std::move(fn1), 10);
+  eb.tryRunAfterDelay(std::move(fn2), 20);
+  eb.tryRunAfterDelay(std::move(fn3), 40);
+
   eb.loop();
   TimePoint end;
 
@@ -853,7 +882,7 @@ TEST(EventBaseTest, RunAfterDelay) {
  * Test the behavior of tryRunAfterDelay() when some timeouts are
  * still scheduled when the EventBase is destroyed.
  */
-TEST(EventBaseTest, RunAfterDelayDestruction) {
+TEST_F(EventBaseTest, RunAfterDelayDestruction) {
   TimePoint timestamp1(false);
   TimePoint timestamp2(false);
   TimePoint timestamp3(false);
@@ -863,6 +892,7 @@ TEST(EventBaseTest, RunAfterDelayDestruction) {
 
   {
     EventBase eb;
+    start.reset();
 
     // Run two normal timeouts
     eb.tryRunAfterDelay(std::bind(&TimePoint::reset, &timestamp1), 10);
@@ -875,7 +905,6 @@ TEST(EventBaseTest, RunAfterDelayDestruction) {
     eb.tryRunAfterDelay(std::bind(&TimePoint::reset, &timestamp3), 80);
     eb.tryRunAfterDelay(std::bind(&TimePoint::reset, &timestamp4), 160);
 
-    start.reset();
     eb.loop();
     end.reset();
   }
@@ -891,6 +920,7 @@ TEST(EventBaseTest, RunAfterDelayDestruction) {
   // memory is leaked.
 }
 
+namespace {
 class TestTimeout : public AsyncTimeout {
  public:
   explicit TestTimeout(EventBase* eventBase)
@@ -902,18 +932,19 @@ class TestTimeout : public AsyncTimeout {
 
   TimePoint timestamp;
 };
+} // namespace
 
-TEST(EventBaseTest, BasicTimeouts) {
+TEST_F(EventBaseTest, BasicTimeouts) {
   EventBase eb;
 
   TestTimeout t1(&eb);
   TestTimeout t2(&eb);
   TestTimeout t3(&eb);
+  TimePoint start;
   t1.scheduleTimeout(10);
   t2.scheduleTimeout(20);
   t3.scheduleTimeout(40);
 
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -923,6 +954,7 @@ TEST(EventBaseTest, BasicTimeouts) {
   T_CHECK_TIMEOUT(start, end, milliseconds(40));
 }
 
+namespace {
 class ReschedulingTimeout : public AsyncTimeout {
  public:
   ReschedulingTimeout(EventBase* evb, const vector<uint32_t>& timeouts)
@@ -951,11 +983,12 @@ class ReschedulingTimeout : public AsyncTimeout {
   vector<uint32_t> timeouts_;
   vector<uint32_t>::const_iterator iterator_;
 };
+} // namespace
 
 /**
  * Test rescheduling the same timeout multiple times
  */
-TEST(EventBaseTest, ReuseTimeout) {
+TEST_F(EventBaseTest, ReuseTimeout) {
   EventBase eb;
 
   vector<uint32_t> timeouts;
@@ -964,9 +997,8 @@ TEST(EventBaseTest, ReuseTimeout) {
   timeouts.push_back(15);
 
   ReschedulingTimeout t(&eb, timeouts);
-  t.start();
-
   TimePoint start;
+  t.start();
   eb.loop();
   TimePoint end;
 
@@ -987,13 +1019,14 @@ TEST(EventBaseTest, ReuseTimeout) {
 /**
  * Test rescheduling a timeout before it has fired
  */
-TEST(EventBaseTest, RescheduleTimeout) {
+TEST_F(EventBaseTest, RescheduleTimeout) {
   EventBase eb;
 
   TestTimeout t1(&eb);
   TestTimeout t2(&eb);
   TestTimeout t3(&eb);
 
+  TimePoint start;
   t1.scheduleTimeout(15);
   t2.scheduleTimeout(30);
   t3.scheduleTimeout(30);
@@ -1006,7 +1039,6 @@ TEST(EventBaseTest, RescheduleTimeout) {
   // after 10ms, reschedule t3 to run later than originally scheduled
   eb.tryRunAfterDelay(std::bind(f, &t3, 40), 10);
 
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -1019,7 +1051,7 @@ TEST(EventBaseTest, RescheduleTimeout) {
 /**
  * Test cancelling a timeout
  */
-TEST(EventBaseTest, CancelTimeout) {
+TEST_F(EventBaseTest, CancelTimeout) {
   EventBase eb;
 
   vector<uint32_t> timeouts;
@@ -1028,10 +1060,10 @@ TEST(EventBaseTest, CancelTimeout) {
   timeouts.push_back(25);
 
   ReschedulingTimeout t(&eb, timeouts);
+  TimePoint start;
   t.start();
   eb.tryRunAfterDelay(std::bind(&AsyncTimeout::cancelTimeout, &t), 50);
 
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -1044,7 +1076,7 @@ TEST(EventBaseTest, CancelTimeout) {
 /**
  * Test destroying a scheduled timeout object
  */
-TEST(EventBaseTest, DestroyTimeout) {
+TEST_F(EventBaseTest, DestroyTimeout) {
   class DestroyTimeout : public AsyncTimeout {
    public:
     DestroyTimeout(EventBase* eb, AsyncTimeout* t)
@@ -1061,12 +1093,12 @@ TEST(EventBaseTest, DestroyTimeout) {
   EventBase eb;
 
   TestTimeout* t1 = new TestTimeout(&eb);
+  TimePoint start;
   t1->scheduleTimeout(30);
 
   DestroyTimeout dt(&eb, t1);
   dt.scheduleTimeout(10);
 
-  TimePoint start;
   eb.loop();
   TimePoint end;
 
@@ -1076,17 +1108,20 @@ TEST(EventBaseTest, DestroyTimeout) {
 /**
  * Test the scheduled executor impl
  */
-TEST(EventBaseTest, ScheduledFn) {
+TEST_F(EventBaseTest, ScheduledFn) {
   EventBase eb;
 
   TimePoint timestamp1(false);
   TimePoint timestamp2(false);
   TimePoint timestamp3(false);
-  eb.schedule(std::bind(&TimePoint::reset, &timestamp1), milliseconds(9));
-  eb.schedule(std::bind(&TimePoint::reset, &timestamp2), milliseconds(19));
-  eb.schedule(std::bind(&TimePoint::reset, &timestamp3), milliseconds(39));
-
+  auto fn1 = std::bind(&TimePoint::reset, &timestamp1);
+  auto fn2 = std::bind(&TimePoint::reset, &timestamp2);
+  auto fn3 = std::bind(&TimePoint::reset, &timestamp3);
   TimePoint start;
+  eb.schedule(std::move(fn1), milliseconds(9));
+  eb.schedule(std::move(fn2), milliseconds(19));
+  eb.schedule(std::move(fn3), milliseconds(39));
+
   eb.loop();
   TimePoint end;
 
@@ -1096,27 +1131,32 @@ TEST(EventBaseTest, ScheduledFn) {
   T_CHECK_TIMEOUT(start, end, milliseconds(39));
 }
 
-TEST(EventBaseTest, ScheduledFnAt) {
+TEST_F(EventBaseTest, ScheduledFnAt) {
   EventBase eb;
 
   TimePoint timestamp0(false);
   TimePoint timestamp1(false);
   TimePoint timestamp2(false);
   TimePoint timestamp3(false);
-  eb.scheduleAt(
-      std::bind(&TimePoint::reset, &timestamp1), eb.now() - milliseconds(5));
-  eb.scheduleAt(
-      std::bind(&TimePoint::reset, &timestamp1), eb.now() + milliseconds(9));
-  eb.scheduleAt(
-      std::bind(&TimePoint::reset, &timestamp2), eb.now() + milliseconds(19));
-  eb.scheduleAt(
-      std::bind(&TimePoint::reset, &timestamp3), eb.now() + milliseconds(39));
-
+  auto fn0 = std::bind(&TimePoint::reset, &timestamp0);
+  auto fn1 = std::bind(&TimePoint::reset, &timestamp1);
+  auto fn2 = std::bind(&TimePoint::reset, &timestamp2);
+  auto fn3 = std::bind(&TimePoint::reset, &timestamp3);
   TimePoint start;
+  eb.scheduleAt(fn0, eb.now() - milliseconds(5));
+  eb.scheduleAt(fn1, eb.now() + milliseconds(9));
+  eb.scheduleAt(fn2, eb.now() + milliseconds(19));
+  eb.scheduleAt(fn3, eb.now() + milliseconds(39));
+
+  TimePoint loopStart;
   eb.loop();
   TimePoint end;
 
-  T_CHECK_TIME_LT(start, timestamp0, milliseconds(0));
+  // Even though we asked to schedule the first function in the past,
+  // in practice it doesn't run until after 1 iteration of the HHWheelTimer tick
+  // interval.
+  T_CHECK_TIMEOUT(start, timestamp0, eb.timer().getTickInterval());
+
   T_CHECK_TIMEOUT(start, timestamp1, milliseconds(9));
   T_CHECK_TIMEOUT(start, timestamp2, milliseconds(19));
   T_CHECK_TIMEOUT(start, timestamp3, milliseconds(39));
@@ -1126,6 +1166,8 @@ TEST(EventBaseTest, ScheduledFnAt) {
 ///////////////////////////////////////////////////////////////////////////
 // Test for runInThreadTestFunc()
 ///////////////////////////////////////////////////////////////////////////
+
+namespace {
 
 struct RunInThreadData {
   RunInThreadData(int numThreads, int opsPerThread_)
@@ -1158,7 +1200,9 @@ void runInThreadTestFunc(RunInThreadArg* arg) {
   }
 }
 
-TEST(EventBaseTest, RunInThread) {
+} // namespace
+
+TEST_F(EventBaseTest, RunInThread) {
   constexpr uint32_t numThreads = 50;
   constexpr uint32_t opsPerThread = 100;
   RunInThreadData data(numThreads, opsPerThread);
@@ -1224,7 +1268,7 @@ TEST(EventBaseTest, RunInThread) {
 //  This test simulates some calls, and verifies that the waiting happens by
 //  triggering what otherwise would be race conditions, and trying to detect
 //  whether any of the race conditions happened.
-TEST(EventBaseTest, RunInEventBaseThreadAndWait) {
+TEST_F(EventBaseTest, RunInEventBaseThreadAndWait) {
   const size_t c = 256;
   vector<unique_ptr<atomic<size_t>>> atoms(c);
   for (size_t i = 0; i < c; ++i) {
@@ -1261,7 +1305,7 @@ TEST(EventBaseTest, RunInEventBaseThreadAndWait) {
   EXPECT_EQ(c, sum);
 }
 
-TEST(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitCross) {
+TEST_F(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitCross) {
   EventBase eb;
   thread th(&EventBase::loopForever, &eb);
   SCOPE_EXIT {
@@ -1273,7 +1317,7 @@ TEST(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitCross) {
   EXPECT_TRUE(mutated);
 }
 
-TEST(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitWithin) {
+TEST_F(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitWithin) {
   EventBase eb;
   thread th(&EventBase::loopForever, &eb);
   SCOPE_EXIT {
@@ -1287,7 +1331,7 @@ TEST(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitWithin) {
   });
 }
 
-TEST(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadNotLooping) {
+TEST_F(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadNotLooping) {
   EventBase eb;
   auto mutated = false;
   eb.runImmediatelyOrRunInEventBaseThreadAndWait([&] { mutated = true; });
@@ -1298,6 +1342,7 @@ TEST(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadNotLooping) {
 // Tests for runInLoop()
 ///////////////////////////////////////////////////////////////////////////
 
+namespace {
 class CountedLoopCallback : public EventBase::LoopCallback {
  public:
   CountedLoopCallback(
@@ -1324,10 +1369,11 @@ class CountedLoopCallback : public EventBase::LoopCallback {
   unsigned int count_;
   std::function<void()> action_;
 };
+} // namespace
 
 // Test that EventBase::loop() doesn't exit while there are
 // still LoopCallbacks remaining to be invoked.
-TEST(EventBaseTest, RepeatedRunInLoop) {
+TEST_F(EventBaseTest, RepeatedRunInLoop) {
   EventBase eventBase;
 
   CountedLoopCallback c(&eventBase, 10);
@@ -1342,7 +1388,7 @@ TEST(EventBaseTest, RepeatedRunInLoop) {
 }
 
 // Test that EventBase::loop() works as expected without time measurements.
-TEST(EventBaseTest, RunInLoopNoTimeMeasurement) {
+TEST_F(EventBaseTest, RunInLoopNoTimeMeasurement) {
   EventBase eventBase(false);
 
   CountedLoopCallback c(&eventBase, 10);
@@ -1357,7 +1403,7 @@ TEST(EventBaseTest, RunInLoopNoTimeMeasurement) {
 }
 
 // Test runInLoop() calls with terminateLoopSoon()
-TEST(EventBaseTest, RunInLoopStopLoop) {
+TEST_F(EventBaseTest, RunInLoopStopLoop) {
   EventBase eventBase;
 
   CountedLoopCallback c1(&eventBase, 20);
@@ -1385,7 +1431,7 @@ TEST(EventBaseTest, RunInLoopStopLoop) {
   ASSERT_LE(c1.getCount(), 11);
 }
 
-TEST(EventBaseTest, messageAvailableException) {
+TEST_F(EventBaseTest, messageAvailableException) {
   auto deadManWalking = [] {
     EventBase eventBase;
     std::thread t([&] {
@@ -1400,20 +1446,24 @@ TEST(EventBaseTest, messageAvailableException) {
   EXPECT_DEATH(deadManWalking(), ".*");
 }
 
-TEST(EventBaseTest, TryRunningAfterTerminate) {
-  EventBase eventBase;
-  CountedLoopCallback c1(
-      &eventBase, 1, std::bind(&EventBase::terminateLoopSoon, &eventBase));
-  eventBase.runInLoop(&c1);
-  eventBase.loopForever();
+TEST_F(EventBaseTest, TryRunningAfterTerminate) {
   bool ran = false;
-  eventBase.runInEventBaseThread([&]() { ran = true; });
+  {
+    EventBase eventBase;
+    CountedLoopCallback c1(
+        &eventBase, 1, std::bind(&EventBase::terminateLoopSoon, &eventBase));
+    eventBase.runInLoop(&c1);
+    eventBase.loopForever();
+    eventBase.runInEventBaseThread([&]() { ran = true; });
 
-  ASSERT_FALSE(ran);
+    ASSERT_FALSE(ran);
+  }
+  // Loop callbacks are triggered on EventBase destruction
+  ASSERT_TRUE(ran);
 }
 
 // Test cancelling runInLoop() callbacks
-TEST(EventBaseTest, CancelRunInLoop) {
+TEST_F(EventBaseTest, CancelRunInLoop) {
   EventBase eventBase;
 
   CountedLoopCallback c1(&eventBase, 20);
@@ -1466,11 +1516,12 @@ TEST(EventBaseTest, CancelRunInLoop) {
   ASSERT_EQ(c2.getCount(), 11);
 }
 
+namespace {
 class TerminateTestCallback : public EventBase::LoopCallback,
                               public EventHandler {
  public:
   TerminateTestCallback(EventBase* eventBase, int fd)
-      : EventHandler(eventBase, fd),
+      : EventHandler(eventBase, NetworkSocket::fromFd(fd)),
         eventBase_(eventBase),
         loopInvocations_(0),
         maxLoopInvocations_(0),
@@ -1522,6 +1573,7 @@ class TerminateTestCallback : public EventBase::LoopCallback,
   uint32_t eventInvocations_;
   uint32_t maxEventInvocations_;
 };
+} // namespace
 
 /**
  * Test that EventBase::loop() correctly detects when there are no more events
@@ -1532,7 +1584,7 @@ class TerminateTestCallback : public EventBase::LoopCallback,
  * EventBase::loop() incorrectly exited if there were no more fd handlers
  * registered, but a loop callback installed a new fd handler.
  */
-TEST(EventBaseTest, LoopTermination) {
+TEST_F(EventBaseTest, LoopTermination) {
   EventBase eventBase;
 
   // Open a pipe and close the write end,
@@ -1560,7 +1612,7 @@ TEST(EventBaseTest, LoopTermination) {
   close(pipeFds[0]);
 }
 
-TEST(EventBaseTest, CallbackOrderTest) {
+TEST_F(EventBaseTest, CallbackOrderTest) {
   size_t num = 0;
   EventBase evb;
 
@@ -1585,7 +1637,7 @@ TEST(EventBaseTest, CallbackOrderTest) {
   EXPECT_EQ(num, 2);
 }
 
-TEST(EventBaseTest, AlwaysEnqueueCallbackOrderTest) {
+TEST_F(EventBaseTest, AlwaysEnqueueCallbackOrderTest) {
   size_t num = 0;
   EventBase evb;
 
@@ -1614,6 +1666,7 @@ TEST(EventBaseTest, AlwaysEnqueueCallbackOrderTest) {
 // Tests for latency calculations
 ///////////////////////////////////////////////////////////////////////////
 
+namespace {
 class IdleTimeTimeoutSeries : public AsyncTimeout {
  public:
   explicit IdleTimeTimeoutSeries(
@@ -1648,6 +1701,7 @@ class IdleTimeTimeoutSeries : public AsyncTimeout {
   int timeouts_;
   std::deque<std::size_t>& timeout_;
 };
+} // namespace
 
 /**
  * Verify that idle time is correctly accounted for when decaying our loop
@@ -1658,7 +1712,7 @@ class IdleTimeTimeoutSeries : public AsyncTimeout {
  * later timeout is far enough in the future that the idle time should have
  * caused the loop time to decay.
  */
-TEST(EventBaseTest, IdleTime) {
+TEST_F(EventBaseTest, IdleTime) {
   EventBase eventBase;
   std::deque<std::size_t> timeouts0(4, 8080);
   timeouts0.push_front(8000);
@@ -1720,27 +1774,32 @@ TEST(EventBaseTest, IdleTime) {
 /**
  * Test that thisLoop functionality works with terminateLoopSoon
  */
-TEST(EventBaseTest, ThisLoop) {
-  EventBase eb;
+TEST_F(EventBaseTest, ThisLoop) {
   bool runInLoop = false;
   bool runThisLoop = false;
 
-  eb.runInLoop(
-      [&]() {
-        eb.terminateLoopSoon();
-        eb.runInLoop([&]() { runInLoop = true; });
-        eb.runInLoop([&]() { runThisLoop = true; }, true);
-      },
-      true);
-  eb.loopForever();
+  {
+    EventBase eb;
+    eb.runInLoop(
+        [&]() {
+          eb.terminateLoopSoon();
+          eb.runInLoop([&]() { runInLoop = true; });
+          eb.runInLoop([&]() { runThisLoop = true; }, true);
+        },
+        true);
+    eb.loopForever();
 
-  // Should not work
-  ASSERT_FALSE(runInLoop);
-  // Should work with thisLoop
-  ASSERT_TRUE(runThisLoop);
+    // Should not work
+    ASSERT_FALSE(runInLoop);
+    // Should work with thisLoop
+    ASSERT_TRUE(runThisLoop);
+  }
+
+  // Pending loop callbacks will be run when the EventBase is destroyed.
+  ASSERT_TRUE(runInLoop);
 }
 
-TEST(EventBaseTest, EventBaseThreadLoop) {
+TEST_F(EventBaseTest, EventBaseThreadLoop) {
   EventBase base;
   bool ran = false;
 
@@ -1750,7 +1809,7 @@ TEST(EventBaseTest, EventBaseThreadLoop) {
   ASSERT_TRUE(ran);
 }
 
-TEST(EventBaseTest, EventBaseThreadName) {
+TEST_F(EventBaseTest, EventBaseThreadName) {
   EventBase base;
   base.setName("foo");
   base.loop();
@@ -1762,7 +1821,7 @@ TEST(EventBaseTest, EventBaseThreadName) {
 #endif
 }
 
-TEST(EventBaseTest, RunBeforeLoop) {
+TEST_F(EventBaseTest, RunBeforeLoop) {
   EventBase base;
   CountedLoopCallback cb(&base, 1, [&]() { base.terminateLoopSoon(); });
   base.runBeforeLoop(&cb);
@@ -1770,7 +1829,7 @@ TEST(EventBaseTest, RunBeforeLoop) {
   ASSERT_EQ(cb.getCount(), 0);
 }
 
-TEST(EventBaseTest, RunBeforeLoopWait) {
+TEST_F(EventBaseTest, RunBeforeLoopWait) {
   EventBase base;
   CountedLoopCallback cb(&base, 1);
   base.tryRunAfterDelay([&]() { base.terminateLoopSoon(); }, 500);
@@ -1781,16 +1840,19 @@ TEST(EventBaseTest, RunBeforeLoopWait) {
   ASSERT_EQ(cb.getCount(), 0);
 }
 
+namespace {
 class PipeHandler : public EventHandler {
  public:
-  PipeHandler(EventBase* eventBase, int fd) : EventHandler(eventBase, fd) {}
+  PipeHandler(EventBase* eventBase, int fd)
+      : EventHandler(eventBase, NetworkSocket::fromFd(fd)) {}
 
   void handlerReady(uint16_t /* events */) noexcept override {
     abort();
   }
 };
+} // namespace
 
-TEST(EventBaseTest, StopBeforeLoop) {
+TEST_F(EventBaseTest, StopBeforeLoop) {
   EventBase evb;
 
   // Give the evb something to do.
@@ -1813,7 +1875,7 @@ TEST(EventBaseTest, StopBeforeLoop) {
   SUCCEED();
 }
 
-TEST(EventBaseTest, RunCallbacksOnDestruction) {
+TEST_F(EventBaseTest, RunCallbacksOnDestruction) {
   bool ran = false;
 
   {
@@ -1824,7 +1886,7 @@ TEST(EventBaseTest, RunCallbacksOnDestruction) {
   ASSERT_TRUE(ran);
 }
 
-TEST(EventBaseTest, LoopKeepAlive) {
+TEST_F(EventBaseTest, LoopKeepAlive) {
   EventBase evb;
 
   bool done = false;
@@ -1842,7 +1904,7 @@ TEST(EventBaseTest, LoopKeepAlive) {
   t.join();
 }
 
-TEST(EventBaseTest, LoopKeepAliveInLoop) {
+TEST_F(EventBaseTest, LoopKeepAliveInLoop) {
   EventBase evb;
 
   bool done = false;
@@ -1864,7 +1926,7 @@ TEST(EventBaseTest, LoopKeepAliveInLoop) {
   t.join();
 }
 
-TEST(EventBaseTest, LoopKeepAliveWithLoopForever) {
+TEST_F(EventBaseTest, LoopKeepAliveWithLoopForever) {
   std::unique_ptr<EventBase> evb = std::make_unique<EventBase>();
 
   bool done = false;
@@ -1892,7 +1954,7 @@ TEST(EventBaseTest, LoopKeepAliveWithLoopForever) {
   ASSERT_TRUE(done);
 }
 
-TEST(EventBaseTest, LoopKeepAliveShutdown) {
+TEST_F(EventBaseTest, LoopKeepAliveShutdown) {
   auto evb = std::make_unique<EventBase>();
 
   bool done = false;
@@ -1913,7 +1975,7 @@ TEST(EventBaseTest, LoopKeepAliveShutdown) {
   t.join();
 }
 
-TEST(EventBaseTest, LoopKeepAliveAtomic) {
+TEST_F(EventBaseTest, LoopKeepAliveAtomic) {
   auto evb = std::make_unique<EventBase>();
 
   static constexpr size_t kNumThreads = 100;
@@ -1958,12 +2020,12 @@ TEST(EventBaseTest, LoopKeepAliveAtomic) {
   }
 }
 
-TEST(EventBaseTest, LoopKeepAliveCast) {
+TEST_F(EventBaseTest, LoopKeepAliveCast) {
   EventBase evb;
   Executor::KeepAlive<> keepAlive = getKeepAliveToken(evb);
 }
 
-TEST(EventBaseTest, DrivableExecutorTest) {
+TEST_F(EventBaseTest, DrivableExecutorTest) {
   folly::Promise<bool> p;
   auto f = p.getFuture();
   EventBase base;
@@ -1992,14 +2054,14 @@ TEST(EventBaseTest, DrivableExecutorTest) {
   t.join();
 }
 
-TEST(EventBaseTest, IOExecutorTest) {
+TEST_F(EventBaseTest, IOExecutorTest) {
   EventBase base;
 
   // Ensure EventBase manages itself as an IOExecutor.
   EXPECT_EQ(base.getEventBase(), &base);
 }
 
-TEST(EventBaseTest, RequestContextTest) {
+TEST_F(EventBaseTest, RequestContextTest) {
   EventBase evb;
   auto defaultCtx = RequestContext::get();
   std::weak_ptr<RequestContext> rctx_weak_ptr;
@@ -2020,7 +2082,7 @@ TEST(EventBaseTest, RequestContextTest) {
   EXPECT_EQ(defaultCtx, RequestContext::get());
 }
 
-TEST(EventBaseTest, CancelLoopCallbackRequestContextTest) {
+TEST_F(EventBaseTest, CancelLoopCallbackRequestContextTest) {
   EventBase evb;
   CountedLoopCallback c(&evb, 1);
 
@@ -2044,7 +2106,7 @@ TEST(EventBaseTest, CancelLoopCallbackRequestContextTest) {
   EXPECT_EQ(defaultCtx, RequestContext::get());
 }
 
-TEST(EventBaseTest, TestStarvation) {
+TEST_F(EventBaseTest, TestStarvation) {
   EventBase evb;
   std::promise<void> stopRequested;
   std::promise<void> stopScheduled;
@@ -2077,7 +2139,7 @@ TEST(EventBaseTest, TestStarvation) {
   t.join();
 }
 
-TEST(EventBaseTest, RunOnDestructionBasic) {
+TEST_F(EventBaseTest, RunOnDestructionBasic) {
   bool ranOnDestruction = false;
   {
     EventBase evb;
@@ -2086,7 +2148,7 @@ TEST(EventBaseTest, RunOnDestructionBasic) {
   EXPECT_TRUE(ranOnDestruction);
 }
 
-TEST(EventBaseTest, RunOnDestructionCancelled) {
+TEST_F(EventBaseTest, RunOnDestructionCancelled) {
   struct Callback : EventBase::OnDestructionCallback {
     bool ranOnDestruction{false};
 
@@ -2105,7 +2167,7 @@ TEST(EventBaseTest, RunOnDestructionCancelled) {
   EXPECT_FALSE(cb->cancel());
 }
 
-TEST(EventBaseTest, RunOnDestructionAfterHandleDestroyed) {
+TEST_F(EventBaseTest, RunOnDestructionAfterHandleDestroyed) {
   EventBase evb;
   {
     bool ranOnDestruction = false;
@@ -2117,7 +2179,7 @@ TEST(EventBaseTest, RunOnDestructionAfterHandleDestroyed) {
   }
 }
 
-TEST(EventBaseTest, RunOnDestructionAddCallbackWithinCallback) {
+TEST_F(EventBaseTest, RunOnDestructionAddCallbackWithinCallback) {
   size_t callbacksCalled = 0;
   {
     EventBase evb;

@@ -196,9 +196,30 @@ void bulk_insert(
 }
 
 template <typename Container, typename Compare>
-Container&& as_sorted(Container&& container, Compare const& comp) {
-  using namespace std;
-  std::sort(begin(container), end(container), comp);
+bool is_sorted_unique(Container const& container, Compare const& comp) {
+  if (container.empty()) {
+    return true;
+  }
+  auto const e = container.end();
+  for (auto a = container.begin(), b = std::next(a); b != e; ++a, ++b) {
+    if (!comp(*a, *b)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+template <typename Container, typename Compare>
+Container&& as_sorted_unique(Container&& container, Compare const& comp) {
+  std::sort(container.begin(), container.end(), comp);
+  container.erase(
+      std::unique(
+          container.begin(),
+          container.end(),
+          [&](auto const& a, auto const& b) {
+            return !comp(a, b) && !comp(b, a);
+          }),
+      container.end());
   return static_cast<Container&&>(container);
 }
 } // namespace detail
@@ -240,6 +261,7 @@ class sorted_vector_set : detail::growth_policy_wrapper<GrowthPolicy> {
   typedef Compare key_compare;
   typedef Compare value_compare;
   typedef Allocator allocator_type;
+  typedef Container container_type;
 
   typedef typename Container::pointer pointer;
   typedef typename Container::reference reference;
@@ -295,25 +317,25 @@ class sorted_vector_set : detail::growth_policy_wrapper<GrowthPolicy> {
       Container&& container,
       const Compare& comp = Compare())
       : sorted_vector_set(
-            presorted,
-            detail::as_sorted(std::move(container), comp),
+            sorted_unique,
+            detail::as_sorted_unique(std::move(container), comp),
             comp) {}
 
   // Construct a sorted_vector_set by stealing the storage of a prefilled
-  // container. The container must be sorted, as presorted_t hints. Supports
-  // bulk construction of sorted_vector_set with zero allocations, not counting
-  // those performed by the caller. (The iterator range constructor performs at
-  // least one allocation).
+  // container. Its elements must be sorted and unique, as sorted_unique_t
+  // hints. Supports bulk construction of sorted_vector_set with zero
+  // allocations, not counting those performed by the caller. (The iterator
+  // range constructor performs at least one allocation).
   //
-  // Note that `sorted_vector_set(presorted_t, const Container& container)` is
-  // not provided, since the purpose of this constructor is to avoid an extra
+  // Note that `sorted_vector_set(sorted_unique_t, const Container& container)`
+  // is not provided, since the purpose of this constructor is to avoid an extra
   // copy.
   sorted_vector_set(
-      presorted_t,
+      sorted_unique_t,
       Container&& container,
       const Compare& comp = Compare())
       : m_(comp, container.get_allocator()) {
-    assert(std::is_sorted(container.begin(), container.end(), value_comp()));
+    assert(detail::is_sorted_unique(container, value_comp()));
     m_.cont_.swap(container);
   }
 
@@ -649,6 +671,7 @@ class sorted_vector_map : detail::growth_policy_wrapper<GrowthPolicy> {
   typedef typename Container::value_type value_type;
   typedef Compare key_compare;
   typedef Allocator allocator_type;
+  typedef Container container_type;
 
   struct value_compare : private Compare {
     bool operator()(const value_type& a, const value_type& b) const {
@@ -707,25 +730,26 @@ class sorted_vector_map : detail::growth_policy_wrapper<GrowthPolicy> {
       Container&& container,
       const Compare& comp = Compare())
       : sorted_vector_map(
-            presorted,
-            detail::as_sorted(std::move(container), value_compare(comp)),
+            sorted_unique,
+            detail::as_sorted_unique(std::move(container), value_compare(comp)),
             comp) {}
 
   // Construct a sorted_vector_map by stealing the storage of a prefilled
-  // container. The container must be sorted, as presorted_t hints. S supports
-  // bulk construction of sorted_vector_map with zero allocations, not counting
-  // those performed by the caller. (The iterator range constructor performs at
-  // least one allocation).
+  // container. Its elements must be sorted and unique, as sorted_unique_t
+  // hints. Supports bulk construction of sorted_vector_map with zero
+  // allocations, not counting those performed by the caller. (The iterator
+  // range constructor performs at least one allocation).
   //
-  // Note that `sorted_vector_map(presorted_t, const Container& container)` is
-  // not provided, since the purpose of this constructor is to avoid an extra
+  // Note that `sorted_vector_map(sorted_unique_t, const Container& container)`
+  // is not provided, since the purpose of this constructor is to avoid an extra
   // copy.
   sorted_vector_map(
-      presorted_t,
+      sorted_unique_t,
       Container&& container,
       const Compare& comp = Compare())
       : m_(value_compare(comp), container.get_allocator()) {
     assert(std::is_sorted(container.begin(), container.end(), value_comp()));
+    assert(detail::is_sorted_unique(container, value_comp()));
     m_.cont_.swap(container);
   }
 
@@ -829,6 +853,22 @@ class sorted_vector_map : detail::growth_policy_wrapper<GrowthPolicy> {
 
   void insert(std::initializer_list<value_type> ilist) {
     insert(ilist.begin(), ilist.end());
+  }
+
+  // emplace isn't better than insert for sorted_vector_map, but aids
+  // compatibility
+  template <typename... Args>
+  std::pair<iterator, bool> emplace(Args&&... args) {
+    value_type v(std::forward<Args>(args)...);
+    return insert(std::move(v));
+  }
+
+  std::pair<iterator, bool> emplace(const value_type& value) {
+    return insert(value);
+  }
+
+  std::pair<iterator, bool> emplace(value_type&& value) {
+    return insert(std::move(value));
   }
 
   size_type erase(const key_type& key) {

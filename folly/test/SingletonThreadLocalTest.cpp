@@ -32,6 +32,10 @@
 
 using namespace folly;
 
+extern "C" int* check() {
+  return &SingletonThreadLocal<int>::get();
+}
+
 namespace {
 static std::atomic<std::size_t> fooCreatedCount{0};
 static std::atomic<std::size_t> fooDeletedCount{0};
@@ -229,7 +233,7 @@ TEST(SingletonThreadLocalDeathTest, Overload) {
   auto exe = fs::executable_path();
   auto lib = exe.parent_path() / "singleton_thread_local_overload.so";
   auto message = stripLeftMargin(R"MESSAGE(
-    Overloaded folly::SingletonThreadLocal<int, DeathTag, ...> with differing trailing arguments:
+    Overloaded unique instance over <int, DeathTag, ...> with differing trailing arguments:
       folly::SingletonThreadLocal<int, DeathTag, Make1, DeathTag>
       folly::SingletonThreadLocal<int, DeathTag, Make2, DeathTag>
   )MESSAGE");

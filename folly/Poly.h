@@ -25,10 +25,6 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5
-#error Folly.Poly requires gcc-5 or greater
-#endif
-
 #include <cassert>
 #include <new>
 #include <type_traits>
@@ -53,6 +49,12 @@
 namespace folly {
 template <class I>
 struct Poly;
+
+// MSVC workaround
+template <class Node, class Tfx, class Access>
+struct PolySelf_ {
+  using type = decltype(Access::template self_<Node, Tfx>());
+};
 
 /**
  * Within the definition of interface `I`, `PolySelf<Base>` is an alias for
@@ -105,7 +107,7 @@ template <
     class Node,
     class Tfx = detail::MetaIdentity,
     class Access = detail::PolyAccess>
-using PolySelf = decltype(Access::template self_<Node, Tfx>());
+using PolySelf = _t<PolySelf_<Node, Tfx, Access>>;
 
 /**
  * When used in conjunction with `PolySelf`, controls how to construct `Poly`
@@ -115,7 +117,7 @@ using PolySelf = decltype(Access::template self_<Node, Tfx>());
  */
 using PolyDecay = detail::MetaQuote<std::decay_t>;
 
-#if !defined(__cpp_template_auto)
+#if !FOLLY_POLY_NTTP_AUTO
 
 /**
  * Use `FOLLY_POLY_MEMBERS(MEMS...)` on pre-C++17 compilers to specify a
@@ -422,15 +424,13 @@ constexpr bool poly_empty(Poly<I&> const&) noexcept {
  */
 template <
     class I,
-    std::enable_if_t<detail::Not<std::is_reference<I>>::value, int> = 0>
+    std::enable_if_t<Negation<std::is_reference<I>>::value, int> = 0>
 constexpr Poly<I>&& poly_move(detail::PolyRoot<I>& that) noexcept {
   return static_cast<Poly<I>&&>(static_cast<Poly<I>&>(that));
 }
 
 /// \overload
-template <
-    class I,
-    std::enable_if_t<detail::Not<std::is_const<I>>::value, int> = 0>
+template <class I, std::enable_if_t<Negation<std::is_const<I>>::value, int> = 0>
 Poly<I&&> poly_move(detail::PolyRoot<I&> const& that) noexcept {
   return detail::PolyAccess::move(that);
 }

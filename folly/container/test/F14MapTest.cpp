@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <unordered_map>
 
+#include <glog/logging.h>
+
 #include <folly/Conv.h>
 #include <folly/FBString.h>
 #include <folly/container/test/F14TestUtil.h>
@@ -178,6 +180,16 @@ TEST(F14FastMap, visitContiguousRanges) {
   runVisitContiguousRangesTest<folly::F14FastMap<int, int>>();
 }
 
+#if FOLLY_HAS_MEMORY_RESOURCE
+TEST(F14Map, pmr_empty) {
+  folly::pmr::F14ValueMap<int, int> m1;
+  folly::pmr::F14NodeMap<int, int> m2;
+  folly::pmr::F14VectorMap<int, int> m3;
+  folly::pmr::F14FastMap<int, int> m4;
+  EXPECT_TRUE(m1.empty() && m2.empty() && m3.empty() && m4.empty());
+}
+#endif
+
 ///////////////////////////////////
 #if FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE
 ///////////////////////////////////
@@ -277,6 +289,8 @@ void runSimple() {
   EXPECT_EQ(h8.size(), 2);
   EXPECT_EQ(h8.count(s("abc")), 1);
   EXPECT_EQ(h8.count(s("xyz")), 0);
+  EXPECT_TRUE(h8.contains(s("abc")));
+  EXPECT_FALSE(h8.contains(s("xyz")));
 
   EXPECT_TRUE(h7 != h8);
   EXPECT_TRUE(h8 != h9);
@@ -294,6 +308,10 @@ void runSimple() {
     EXPECT_EQ(h5.count(k), 1);
     EXPECT_EQ(h6.count(k), 1);
     EXPECT_EQ(h8.count(k), 1);
+    EXPECT_TRUE(h4.contains(k));
+    EXPECT_TRUE(h5.contains(k));
+    EXPECT_TRUE(h6.contains(k));
+    EXPECT_TRUE(h8.contains(k));
   }
 
   EXPECT_TRUE(h2 == h7);
@@ -311,7 +329,7 @@ void runSimple() {
   EXPECT_TRUE(h8.empty());
   EXPECT_EQ(h9.size(), 2);
 
-  auto expectH8 = [&](T& ref) { EXPECT_EQ(&ref, &h8); };
+  auto expectH8 = [&h8](T& ref) { EXPECT_EQ(&ref, &h8); };
   expectH8((h8 = h2));
   expectH8((h8 = std::move(h2)));
   expectH8((h8 = {}));
@@ -485,6 +503,8 @@ void runRandom() {
             EXPECT_EQ(t->second.val_, r->second.val_);
           }
           EXPECT_EQ(t0.count(k), r0.count(k));
+          // TODO: When std::unordered_map supports c++20:
+          // EXPECT_EQ(t0.contains(k), r0.contains(k));
         } else if (pct < 60) {
           // equal_range
           auto t = t0.equal_range(k);
@@ -663,6 +683,24 @@ TEST(F14VectorMap, simple) {
 TEST(F14FastMap, simple) {
   runSimple<F14FastMap<std::string, std::string>>();
 }
+
+#if FOLLY_HAS_MEMORY_RESOURCE
+TEST(F14ValueMap, pmr_simple) {
+  runSimple<pmr::F14ValueMap<std::string, std::string>>();
+}
+
+TEST(F14NodeMap, pmr_simple) {
+  runSimple<pmr::F14NodeMap<std::string, std::string>>();
+}
+
+TEST(F14VectorMap, pmr_simple) {
+  runSimple<pmr::F14VectorMap<std::string, std::string>>();
+}
+
+TEST(F14FastMap, pmr_simple) {
+  runSimple<pmr::F14FastMap<std::string, std::string>>();
+}
+#endif
 
 TEST(F14VectorMap, reverse_iterator) {
   using TMap = F14VectorMap<uint64_t, uint64_t>;
@@ -1183,10 +1221,13 @@ void runInsertAndEmplace(std::string const& name) {
   M m;
   typename M::key_type k;
   EXPECT_EQ(m.count(k), 0);
+  EXPECT_FALSE(m.contains(k));
   m.emplace();
   EXPECT_EQ(m.count(k), 1);
+  EXPECT_TRUE(m.contains(k));
   m.emplace();
   EXPECT_EQ(m.count(k), 1);
+  EXPECT_TRUE(m.contains(k));
 }
 
 TEST(F14ValueMap, destructuring) {
@@ -1304,9 +1345,20 @@ TEST(F14ValueMap, heterogeneousLookup) {
     EXPECT_TRUE(ref.end() == ref.find(buddy));
     EXPECT_EQ(hello, ref.find(hello)->first);
 
+    const auto buddyHashToken = ref.prehash(buddy);
+    const auto helloHashToken = ref.prehash(hello);
+
     // prehash + find
-    EXPECT_TRUE(ref.end() == ref.find(ref.prehash(buddy), buddy));
-    EXPECT_EQ(hello, ref.find(ref.prehash(hello), hello)->first);
+    EXPECT_TRUE(ref.end() == ref.find(buddyHashToken, buddy));
+    EXPECT_EQ(hello, ref.find(helloHashToken, hello)->first);
+
+    // contains
+    EXPECT_FALSE(ref.contains(buddy));
+    EXPECT_TRUE(ref.contains(hello));
+
+    // contains with prehash
+    EXPECT_FALSE(ref.contains(buddyHashToken, buddy));
+    EXPECT_TRUE(ref.contains(helloHashToken, hello));
 
     // equal_range
     EXPECT_TRUE(std::make_pair(ref.end(), ref.end()) == ref.equal_range(buddy));
@@ -1403,6 +1455,7 @@ void runHeterogeneousInsertTest() {
 
   resetTracking();
   EXPECT_EQ(map.count(10), 0);
+  EXPECT_FALSE(map.contains(10));
   EXPECT_EQ(Tracked<1>::counts.dist(Counts{0, 0, 0, 0}), 0)
       << Tracked<1>::counts;
 
@@ -1731,6 +1784,84 @@ TEST(F14Map, continuousCapacityBig3) {
 TEST(F14Map, continuousCapacityF12) {
   runContinuousCapacityTest<folly::F14VectorMap<uint16_t, uint16_t>>(
       0xfff0, 0xfffe);
+}
+
+template <template <class...> class TMap>
+void testContainsWithPrecomputedHash() {
+  TMap<int, int> m{};
+  const auto key{1};
+  m.insert({key, 1});
+  const auto hashToken = m.prehash(key);
+  EXPECT_TRUE(m.contains(hashToken, key));
+  const auto otherKey{2};
+  const auto hashTokenNotFound = m.prehash(otherKey);
+  EXPECT_FALSE(m.contains(hashTokenNotFound, otherKey));
+}
+
+TEST(F14Map, containsWithPrecomputedHash) {
+  testContainsWithPrecomputedHash<F14ValueMap>();
+  testContainsWithPrecomputedHash<F14VectorMap>();
+  testContainsWithPrecomputedHash<F14NodeMap>();
+  testContainsWithPrecomputedHash<F14FastMap>();
+}
+
+template <template <class...> class TMap>
+void testEraseIf() {
+  TMap<int, int> m{{1, 1}, {2, 2}, {3, 3}, {4, 4}};
+  const auto isEvenKey = [](const auto& p) { return p.first % 2 == 0; };
+  erase_if(m, isEvenKey);
+  ASSERT_EQ(2u, m.size());
+  EXPECT_TRUE(m.contains(1));
+  EXPECT_TRUE(m.contains(3));
+}
+
+TEST(F14Map, eraseIf) {
+  testEraseIf<F14ValueMap>();
+  testEraseIf<F14VectorMap>();
+  testEraseIf<F14NodeMap>();
+  testEraseIf<F14FastMap>();
+}
+
+namespace {
+template <std::size_t N>
+struct DivideBy {
+  // this is a lie for testing purposes
+  using folly_is_avalanching = std::true_type;
+
+  std::size_t operator()(std::size_t v) const {
+    return v / N;
+  }
+};
+} // namespace
+
+template <template <class...> class TMap>
+void testCopyAfterRemovedCollisions() {
+  // Insert 11 things into chunks 0, 1, and 2, 15 into chunk 3, then
+  // remove all but the last one from chunk 1 and see if we can find that
+  // one in a copy of the map.
+  TMap<std::size_t, bool, DivideBy<16>> map;
+  map.reserve(48);
+  for (std::size_t k = 0; k < 11; ++k) {
+    map[k] = true;
+    map[k + 16] = true;
+    map[k + 32] = true;
+  }
+  for (std::size_t k = 0; k < 14; ++k) {
+    map[k + 48] = true;
+  }
+  map[14 + 48] = true;
+  for (std::size_t k = 0; k < 14; ++k) {
+    map.erase(k + 48);
+  }
+  auto copy = map;
+  EXPECT_EQ(copy.count(14 + 48), 1);
+}
+
+TEST(F14Map, copyAfterRemovedCollisions) {
+  testCopyAfterRemovedCollisions<F14ValueMap>();
+  testCopyAfterRemovedCollisions<F14VectorMap>();
+  testCopyAfterRemovedCollisions<F14NodeMap>();
+  testCopyAfterRemovedCollisions<F14FastMap>();
 }
 
 ///////////////////////////////////
