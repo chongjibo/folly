@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -169,7 +169,7 @@ uint32_t crc32c_combine(uint32_t crc1, uint32_t crc2, size_t crc2len) {
     crc1 = crc32c(data, len, crc1);
   }
 
-  if (detail::crc32_hw_supported()) {
+  if (detail::crc32c_hw_supported()) {
     return detail::crc32c_combine_hw(crc1, crc2, crc2len - len);
   } else {
     return detail::crc32c_combine_sw(crc1, crc2, crc2len - len);

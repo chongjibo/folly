@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -44,7 +44,7 @@ TEST(Optional, CoroutineSuccess) {
     EXPECT_EQ((int)(2.0 * 7 + 7), *z);
     co_return* z;
   }();
-  EXPECT_TRUE(r0.hasValue());
+  EXPECT_TRUE(r0.has_value());
   EXPECT_EQ(21, *r0);
 }
 
@@ -60,7 +60,7 @@ TEST(Optional, CoroutineFailure) {
     ADD_FAILURE();
     co_return z;
   }();
-  EXPECT_TRUE(!r1.hasValue());
+  EXPECT_TRUE(!r1.has_value());
 }
 
 Optional<int> throws() {
@@ -94,7 +94,7 @@ TEST(Optional, CoroutineCleanedUp) {
     ADD_FAILURE() << "Should not be resuming";
     co_return x;
   }();
-  EXPECT_FALSE(r.hasValue());
+  EXPECT_FALSE(r.has_value());
   EXPECT_EQ(1, count_dest);
 }
 

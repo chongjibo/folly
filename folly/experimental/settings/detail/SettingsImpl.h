@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <memory>
@@ -20,12 +21,13 @@
 #include <string>
 #include <typeindex>
 
-#include <folly/CachelinePadded.h>
 #include <folly/Conv.h>
 #include <folly/Range.h>
 #include <folly/SharedMutex.h>
 #include <folly/ThreadLocal.h>
+#include <folly/Utility.h>
 #include <folly/experimental/settings/SettingsMetadata.h>
+#include <folly/lang/Aligned.h>
 
 namespace folly {
 namespace settings {
@@ -339,8 +341,9 @@ class SettingCore : public SettingCoreBase {
         defaultValue_(std::move(defaultValue)),
         trivialStorage_(trivialStorage),
         localValue_([]() {
-          return new CachelinePadded<
-              std::pair<Version, std::shared_ptr<Contents>>>(0, nullptr);
+          return new cacheline_aligned<
+              std::pair<Version, std::shared_ptr<Contents>>>(
+              in_place, 0, nullptr);
         }) {
     set(defaultValue_, "default");
     registerSetting(*this);
@@ -357,9 +360,9 @@ class SettingCore : public SettingCoreBase {
 
   /* Thread local versions start at 0, this will force a read on first access.
    */
-  CachelinePadded<std::atomic<Version>> settingVersion_{1};
+  cacheline_aligned<std::atomic<Version>> settingVersion_{in_place, 1};
 
-  ThreadLocal<CachelinePadded<std::pair<Version, std::shared_ptr<Contents>>>>
+  ThreadLocal<cacheline_aligned<std::pair<Version, std::shared_ptr<Contents>>>>
       localValue_;
 
   FOLLY_ALWAYS_INLINE const std::shared_ptr<Contents>& tlValue() const {

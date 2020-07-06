@@ -45,7 +45,7 @@ cdef extern from '<utility>' namespace 'std':
     unique_ptr[cIOBuf] move(unique_ptr[cIOBuf])
 
 
-cdef extern from "folly/python/iobuf.h" namespace "thrift::py3":
+cdef extern from "folly/python/iobuf.h" namespace "folly":
     unique_ptr[cIOBuf] iobuf_from_python(cFollyExecutor*, PyObject*, void*, uint64_t)
     bint check_iobuf_equal(cIOBuf*, cIOBuf*)
     bint check_iobuf_less(cIOBuf*, cIOBuf*)
@@ -64,6 +64,7 @@ cdef class IOBuf:
     cdef Py_ssize_t strides[1]
     @staticmethod
     cdef IOBuf create(cIOBuf* this, object parent)
+    cdef void cleanup(self)
     cdef unique_ptr[cIOBuf] c_clone(self)
 
 cdef unique_ptr[cIOBuf] from_python_buffer(memoryview view)

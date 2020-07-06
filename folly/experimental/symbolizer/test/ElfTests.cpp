@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -58,10 +58,9 @@ TEST_F(ElfTest, TinyNonElfFile) {
   folly::writeFull(tmpFile.fd(), contents.data(), contents.size());
 
   ElfFile elfFile;
-  const char* msg = nullptr;
-  auto res = elfFile.openNoThrow(tmpFile.path().c_str(), true, &msg);
-  EXPECT_EQ(ElfFile::kInvalidElfFile, res);
-  EXPECT_STREQ("not an ELF file (too short)", msg);
+  auto res = elfFile.openNoThrow(tmpFile.path().c_str());
+  EXPECT_EQ(ElfFile::kInvalidElfFile, res.code);
+  EXPECT_STREQ("not an ELF file (too short)", res.msg);
 }
 
 TEST_F(ElfTest, NonElfScript) {
@@ -71,10 +70,9 @@ TEST_F(ElfTest, NonElfScript) {
   folly::writeFull(tmpFile.fd(), contents.data(), contents.size());
 
   ElfFile elfFile;
-  const char* msg = nullptr;
-  auto res = elfFile.openNoThrow(tmpFile.path().c_str(), true, &msg);
-  EXPECT_EQ(ElfFile::kInvalidElfFile, res);
-  EXPECT_STREQ("invalid ELF magic", msg);
+  auto res = elfFile.openNoThrow(tmpFile.path().c_str());
+  EXPECT_EQ(ElfFile::kInvalidElfFile, res.code);
+  EXPECT_STREQ("invalid ELF magic", res.msg);
 }
 
 TEST_F(ElfTest, FailToOpenLargeFilename) {

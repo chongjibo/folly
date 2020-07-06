@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -46,6 +46,15 @@ static int64_t decodeInt(Cursor& curs) {
       return curs.read<int32_t>();
     case BserType::Int64:
       return curs.read<int64_t>();
+    case BserType::Array:
+    case BserType::Object:
+    case BserType::String:
+    case BserType::Real:
+    case BserType::True:
+    case BserType::False:
+    case BserType::Null:
+    case BserType::Template:
+    case BserType::Skip:
     default:
       throwDecodeError(
           curs, "invalid integer encoding detected (", (int8_t)enc, ")");
@@ -192,6 +201,15 @@ static size_t decodeHeader(Cursor& curs) {
     case BserType::Int64:
       int_size = 8;
       break;
+    case BserType::Array:
+    case BserType::Object:
+    case BserType::String:
+    case BserType::Real:
+    case BserType::True:
+    case BserType::False:
+    case BserType::Null:
+    case BserType::Template:
+    case BserType::Skip:
     default:
       int_size = 0;
   }

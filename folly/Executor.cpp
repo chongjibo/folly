@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,9 @@
 #include <stdexcept>
 
 #include <glog/logging.h>
+
+#include <folly/Portability.h>
+#include <folly/lang/Exception.h>
 
 namespace folly {
 
@@ -35,4 +38,48 @@ void Executor::keepAliveRelease() {
   LOG(FATAL) << __func__ << "() should not be called for folly::Executor types "
              << "which do not override keepAliveAcquire()";
 }
+
+#if defined(FOLLY_TLS)
+
+extern constexpr bool const executor_blocking_list_enabled = true;
+thread_local ExecutorBlockingList* executor_blocking_list = nullptr;
+
+#else
+
+extern constexpr bool const executor_blocking_list_enabled = false;
+ExecutorBlockingList* executor_blocking_list = nullptr;
+
+#endif
+
+Optional<ExecutorBlockingContext> getExecutorBlockingContext() noexcept {
+  return //
+      !executor_blocking_list || !executor_blocking_list->forbid ? none : //
+      make_optional(executor_blocking_list->curr);
+}
+
+ExecutorBlockingGuard::ExecutorBlockingGuard(PermitTag) noexcept
+    : list_{false, executor_blocking_list, {}} {
+  if (executor_blocking_list_enabled) {
+    executor_blocking_list = &list_;
+  }
+}
+
+ExecutorBlockingGuard::ExecutorBlockingGuard(
+    ForbidTag,
+    StringPiece name) noexcept
+    : list_{true, executor_blocking_list, {name}} {
+  if (executor_blocking_list_enabled) {
+    executor_blocking_list = &list_;
+  }
+}
+
+ExecutorBlockingGuard::~ExecutorBlockingGuard() {
+  if (executor_blocking_list_enabled) {
+    if (executor_blocking_list != &list_) {
+      terminate_with<std::logic_error>("dtor mismatch");
+    }
+    executor_blocking_list = list_.prev;
+  }
+}
+
 } // namespace folly

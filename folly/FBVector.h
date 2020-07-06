@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -372,7 +372,7 @@ class fbvector {
     if (!std::is_trivially_destructible<T>::value) {
 #define FOLLY_FBV_OP(p) (p)->~T()
       // EXPERIMENTAL DATA on fbvector<vector<int>> (where each vector<int> has
-      //  size 0).
+      //  size 0), were vector<int> to be relocatable.
       // The unrolled version seems to work faster for small to medium sized
       //  fbvectors. It gets a 10% speedup on fbvectors of size 1024, 64, and
       //  16.

@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -65,9 +65,9 @@ TEST(MapUtil, get_or_throw_specified) {
 TEST(MapUtil, get_optional) {
   std::map<int, int> m;
   m[1] = 2;
-  EXPECT_TRUE(get_optional(m, 1).hasValue());
+  EXPECT_TRUE(get_optional(m, 1).has_value());
   EXPECT_EQ(2, get_optional(m, 1).value());
-  EXPECT_FALSE(get_optional(m, 2).hasValue());
+  EXPECT_FALSE(get_optional(m, 2).has_value());
 }
 
 TEST(MapUtil, get_optional_path_simple) {

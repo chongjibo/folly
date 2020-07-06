@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -1564,7 +1564,7 @@ class BasicFixedString : private detail::fixedstring::FixedStringBase {
   /**
    * Compare two strings for lexicographical ordering.
    *
-   * Let `A` be the the
+   * Let `A` be the
    *   character sequence {`(*this)[this_pos]`, ...
    *   `(*this)[this_pos + this_count - 1]`}. Let `B` be the character sequence
    *   {`that[0]`, ...`that[count - 1]`}. Then...

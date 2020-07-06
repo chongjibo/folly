@@ -1,11 +1,11 @@
 /*
- * Copyright 2004-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/Optional.h>
@@ -308,12 +309,8 @@ class DistributedMutex {
    * characteristics as the non-timed version of the combine method.  If
    * performance is critical, use that one instead
    */
-  template <
-      typename Rep,
-      typename Period,
-      typename Task,
-      typename ReturnType = decltype(std::declval<Task&>()())>
-  folly::Optional<ReturnType> try_lock_combine_for(
+  template <typename Rep, typename Period, typename Task>
+  folly::Optional<invoke_result_t<Task&>> try_lock_combine_for(
       const std::chrono::duration<Rep, Period>& duration,
       Task task);
 
@@ -323,12 +320,8 @@ class DistributedMutex {
    * Other than the difference in the meaning of the second argument, the
    * semantics of this function are identical to try_lock_combine_for()
    */
-  template <
-      typename Clock,
-      typename Duration,
-      typename Task,
-      typename ReturnType = decltype(std::declval<Task&>()())>
-  folly::Optional<ReturnType> try_lock_combine_until(
+  template <typename Clock, typename Duration, typename Task>
+  folly::Optional<invoke_result_t<Task&>> try_lock_combine_until(
       const std::chrono::time_point<Clock, Duration>& deadline,
       Task task);
 

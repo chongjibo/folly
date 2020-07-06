@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -416,8 +416,8 @@ std::string prettyPrint(double val, PrettyType type, bool addSpace) {
 double prettyToDouble(
     folly::StringPiece* const prettyString,
     const PrettyType type) {
-  double value = folly::to<double>(prettyString);
-  while (prettyString->size() > 0 && std::isspace(prettyString->front())) {
+  auto value = folly::to<double>(prettyString);
+  while (!prettyString->empty() && std::isspace(prettyString->front())) {
     prettyString->advance(1); // Skipping spaces between number and suffix
   }
   const PrettySuffix* suffixes = kPrettySuffixes[type];
@@ -472,7 +472,7 @@ std::string hexDump(const void* ptr, size_t size) {
 // selects proper function.
 
 FOLLY_MAYBE_UNUSED
-static fbstring invoke_strerror_r(
+static std::string invoke_strerror_r(
     int (*strerror_r)(int, char*, size_t),
     int err,
     char* buf,
@@ -482,7 +482,7 @@ static fbstring invoke_strerror_r(
 
   // OSX/FreeBSD use EINVAL and Linux uses -1 so just check for non-zero
   if (r != 0) {
-    return to<fbstring>(
+    return to<std::string>(
         "Unknown error ", err, " (strerror_r failed with error ", errno, ")");
   } else {
     return buf;
@@ -490,7 +490,7 @@ static fbstring invoke_strerror_r(
 }
 
 FOLLY_MAYBE_UNUSED
-static fbstring invoke_strerror_r(
+static std::string invoke_strerror_r(
     char* (*strerror_r)(int, char*, size_t),
     int err,
     char* buf,
@@ -499,7 +499,7 @@ static fbstring invoke_strerror_r(
   return strerror_r(err, buf, buflen);
 }
 
-fbstring errnoStr(int err) {
+std::string errnoStr(int err) {
   int savedErrno = errno;
 
   // Ensure that we reset errno upon exit.
@@ -508,7 +508,7 @@ fbstring errnoStr(int err) {
   char buf[1024];
   buf[0] = '\0';
 
-  fbstring result;
+  std::string result;
 
   // https://developer.apple.com/library/mac/documentation/Darwin/Reference/ManPages/man3/strerror_r.3.html
   // http://www.kernel.org/doc/man-pages/online/pages/man3/strerror.3.html
@@ -518,7 +518,7 @@ fbstring errnoStr(int err) {
   // with strerrorlen_s). Note strerror_r and _s have swapped args.
   int r = strerror_s(buf, sizeof(buf), err);
   if (r != 0) {
-    result = to<fbstring>(
+    result = to<std::string>(
         "Unknown error ", err, " (strerror_r failed with error ", errno, ")");
   } else {
     result.assign(buf);
@@ -542,7 +542,7 @@ void toLowerAscii8(char& c) {
   // by adding 0x20.
 
   // Step 1: Clear the high order bit. We'll deal with it in Step 5.
-  uint8_t rotated = uint8_t(c & 0x7f);
+  auto rotated = uint8_t(c & 0x7f);
   // Currently, the value of rotated, as a function of the original c is:
   //   below 'A':   0- 64
   //   'A'-'Z':    65- 90
@@ -631,7 +631,7 @@ void toLowerAscii(char* str, size_t length) {
 
   // Convert a character at a time until we reach an address that
   // is at least 32-bit aligned
-  size_t n = (size_t)str;
+  auto n = (size_t)str;
   n &= kAlignMask32;
   n = std::min(n, length);
   size_t offset = 0;

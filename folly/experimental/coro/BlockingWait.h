@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/Try.h>
@@ -20,6 +21,7 @@
 #include <folly/experimental/coro/Task.h>
 #include <folly/experimental/coro/Traits.h>
 #include <folly/experimental/coro/ViaIfAsync.h>
+#include <folly/experimental/coro/detail/Malloc.h>
 #include <folly/experimental/coro/detail/Traits.h>
 #include <folly/fibers/Baton.h>
 #include <folly/synchronization/Baton.h>
@@ -54,6 +56,14 @@ class BlockingWaitPromiseBase {
 
  public:
   BlockingWaitPromiseBase() noexcept = default;
+
+  static void* operator new(std::size_t size) {
+    return ::folly_coro_async_malloc(size);
+  }
+
+  static void operator delete(void* ptr, std::size_t size) {
+    ::folly_coro_async_free(ptr, size);
+  }
 
   std::experimental::suspend_always initial_suspend() {
     return {};
@@ -196,7 +206,10 @@ class BlockingWaitTask {
     folly::Try<detail::lift_lvalue_reference_t<T>> result;
     auto& promise = coro_.promise();
     promise.setTry(&result);
-    coro_.resume();
+    {
+      RequestContextScopeGuard guard{RequestContext::saveContext()};
+      coro_.resume();
+    }
     promise.wait();
     return result;
   }
@@ -209,7 +222,11 @@ class BlockingWaitTask {
     folly::Try<detail::lift_lvalue_reference_t<T>> result;
     auto& promise = coro_.promise();
     promise.setTry(&result);
-    coro_.resume();
+    executor->add(
+        [coro = coro_, rctx = RequestContext::saveContext()]() mutable {
+          RequestContextScopeGuard guard{std::move(rctx)};
+          coro.resume();
+        });
     while (!promise.done()) {
       executor->drive();
     }
@@ -276,6 +293,69 @@ auto makeRefBlockingWaitTask(Awaitable&& awaitable)
   co_yield co_await static_cast<Awaitable&&>(awaitable);
 }
 
+class BlockingWaitExecutor final : public folly::DrivableExecutor {
+ public:
+  ~BlockingWaitExecutor() {
+    while (keepAliveCount_.load() > 0) {
+      drive();
+    }
+  }
+
+  void add(Func func) override {
+    auto wQueue = queue_.wlock();
+    bool empty = wQueue->empty();
+    wQueue->push_back(std::move(func));
+    if (empty) {
+      baton_.post();
+    }
+  }
+
+  void drive() override {
+    baton_.wait();
+    baton_.reset();
+
+    folly::fibers::runInMainContext([&]() {
+      std::vector<Func> funcs;
+      queue_.swap(funcs);
+      for (auto& func : funcs) {
+        std::exchange(func, nullptr)();
+      }
+    });
+  }
+
+ private:
+  bool keepAliveAcquire() override {
+    auto keepAliveCount =
+        keepAliveCount_.fetch_add(1, std::memory_order_relaxed);
+    DCHECK(keepAliveCount >= 0);
+    return true;
+  }
+
+  void keepAliveRelease() override {
+    auto keepAliveCount = keepAliveCount_.load(std::memory_order_relaxed);
+    do {
+      DCHECK(keepAliveCount > 0);
+      if (keepAliveCount == 1) {
+        add([this] {
+          // the final count *must* be released from this executor or else if we
+          // are mid-destructor we have a data race
+          keepAliveCount_.fetch_sub(1, std::memory_order_relaxed);
+        });
+        return;
+      }
+    } while (!keepAliveCount_.compare_exchange_weak(
+        keepAliveCount,
+        keepAliveCount - 1,
+        std::memory_order_release,
+        std::memory_order_relaxed));
+  }
+
+  folly::Synchronized<std::vector<Func>> queue_;
+  fibers::Baton baton_;
+
+  std::atomic<ssize_t> keepAliveCount_{0};
+};
+
 } // namespace detail
 
 /// blockingWait(Awaitable&&) -> await_result_t<Awaitable>
@@ -299,19 +379,33 @@ auto blockingWait(Awaitable&& awaitable)
           .get());
 }
 
-template <
-    typename SemiAwaitable,
-    std::enable_if_t<!is_awaitable_v<SemiAwaitable>, int> = 0>
-auto blockingWait(SemiAwaitable&& awaitable)
+template <typename SemiAwaitable>
+auto blockingWait(SemiAwaitable&& awaitable, folly::DrivableExecutor* executor)
     -> detail::decay_rvalue_reference_t<semi_await_result_t<SemiAwaitable>> {
-  folly::ManualExecutor executor;
   return static_cast<
       std::add_rvalue_reference_t<semi_await_result_t<SemiAwaitable>>>(
       detail::makeRefBlockingWaitTask(
           folly::coro::co_viaIfAsync(
               folly::getKeepAliveToken(executor),
               static_cast<SemiAwaitable&&>(awaitable)))
-          .getVia(&executor));
+          .getVia(executor));
+}
+
+template <
+    typename SemiAwaitable,
+    std::enable_if_t<!is_awaitable_v<SemiAwaitable>, int> = 0>
+auto blockingWait(SemiAwaitable&& awaitable)
+    -> detail::decay_rvalue_reference_t<semi_await_result_t<SemiAwaitable>> {
+  std::exception_ptr eptr;
+  {
+    detail::BlockingWaitExecutor executor;
+    try {
+      return blockingWait(static_cast<SemiAwaitable&&>(awaitable), &executor);
+    } catch (...) {
+      eptr = std::current_exception();
+    }
+  }
+  std::rethrow_exception(eptr);
 }
 
 } // namespace coro

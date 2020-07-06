@@ -1,3 +1,17 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Some additional configuration options.
 option(MSVC_ENABLE_ALL_WARNINGS "If enabled, pass /Wall to the compiler." ON)
 option(MSVC_ENABLE_DEBUG_INLINING "If enabled, enable inlining in the debug configuration. This allows /Zc:inline to be far more effective." OFF)
@@ -25,11 +39,10 @@ if (NOT MSVC_FAVORED_ARCHITECTURE STREQUAL "blend" AND NOT MSVC_FAVORED_ARCHITEC
   message(FATAL_ERROR "MSVC_FAVORED_ARCHITECTURE must be set to one of exactly, 'blend', 'AMD64', 'INTEL64', or 'ATOM'! Got '${MSVC_FAVORED_ARCHITECTURE}' instead!")
 endif()
 
-set(MSVC_LANGUAGE_VERSION "c++latest" CACHE STRING "One of 'c++14', 'c++17', or 'c++latest'. This determines which version of C++ to compile as.")
+set(MSVC_LANGUAGE_VERSION "c++17" CACHE STRING "One of 'c++17', or 'c++latest'. This determines which version of C++ to compile as.")
 set_property(
   CACHE MSVC_LANGUAGE_VERSION
   PROPERTY STRINGS
-    "c++14"
     "c++17"
     "c++latest"
 )
@@ -72,6 +85,22 @@ endif()
 foreach(flag_var CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG)
   if (${flag_var} MATCHES "/Ob0")
     string(REGEX REPLACE "/Ob0" "" ${flag_var} "${${flag_var}}")
+  endif()
+endforeach()
+
+# When building with Ninja, or with /MP enabled, there is the potential
+# for multiple processes to need to lock the same pdb file.
+# The /FS option (which is implicitly enabled by /MP) is widely believed
+# to be the solution for this, but even with /FS enabled the problem can
+# still randomly occur.
+# https://stackoverflow.com/a/58020501/149111 suggests that /Z7 should be
+# used; rather than placing the debug info into a .pdb file it embeds it
+# into the object files in a similar way to gcc/clang which should reduce
+# contention and potentially make the build faster... but at the cost of
+# larger object files
+foreach(flag_var CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG)
+  if (${flag_var} MATCHES "/Zi")
+    string(REGEX REPLACE "/Zi" "/Z7" ${flag_var} "${${flag_var}}")
   endif()
 endforeach()
 
@@ -203,6 +232,7 @@ function(apply_folly_compile_options_to_target THETARGET)
       /wd4435 # Object layout under /vd2 will change due to virtual base.
       /wd4514 # Unreferenced inline function has been removed. (caused by /Zc:inline)
       /wd4548 # Expression before comma has no effect. I wouldn't disable this normally, but malloc.h triggers this warning.
+      /wd4571 # Semantics of catch(...) changed in VC 7.1
       /wd4574 # ifdef'd macro was defined to 0.
       /wd4582 # Constructor is not implicitly called.
       /wd4583 # Destructor is not implicitly called.

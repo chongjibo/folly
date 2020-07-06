@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,23 +19,21 @@
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 
-using namespace testing;
 using testing::_;
 
 namespace folly {
 namespace test {
 
 class TestWriteChainAsyncTransportWrapper
-    : public WriteChainAsyncTransportWrapper<folly::AsyncTransportWrapper> {
+    : public WriteChainAsyncTransportWrapper<folly::AsyncTransport> {
  public:
   TestWriteChainAsyncTransportWrapper()
-      : WriteChainAsyncTransportWrapper<folly::AsyncTransportWrapper>(nullptr) {
-  }
+      : WriteChainAsyncTransportWrapper<folly::AsyncTransport>(nullptr) {}
 
   MOCK_METHOD3(
       writeChain,
       void(
-          folly::AsyncTransportWrapper::WriteCallback*,
+          folly::AsyncTransport::WriteCallback*,
           std::shared_ptr<folly::IOBuf>,
           folly::WriteFlags));
 

@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +20,7 @@
 
 #include <glog/logging.h>
 
+#include <folly/io/async/EventBaseBackendBase.h>
 #include <folly/io/async/EventUtil.h>
 #include <folly/net/NetworkSocket.h>
 #include <folly/portability/Event.h>
@@ -110,7 +111,7 @@ class EventHandler {
    * Returns true if the handler is currently registered.
    */
   bool isHandlerRegistered() const {
-    return EventUtil::isEventRegistered(&event_);
+    return event_.isEventRegistered();
   }
 
   /**
@@ -155,7 +156,7 @@ class EventHandler {
    * Return the set of events that we're currently registered for.
    */
   uint16_t getRegisteredEvents() const {
-    return (isHandlerRegistered()) ? uint16_t(event_.ev_events) : 0u;
+    return (isHandlerRegistered()) ? (uint16_t)(event_.eb_ev_events()) : 0u;
   }
 
   /**
@@ -178,6 +179,18 @@ class EventHandler {
 
   bool isPending() const;
 
+  void setEventCallback(EventReadCallback* cb) {
+    event_.setCallback(cb);
+  }
+
+  void setEventCallback(EventRecvmsgCallback* cb) {
+    event_.setCallback(cb);
+  }
+
+  void resetEventCallback() {
+    event_.resetCallback();
+  }
+
  private:
   bool registerImpl(uint16_t events, bool internal);
   void ensureNotRegistered(const char* fn);
@@ -186,7 +199,7 @@ class EventHandler {
 
   static void libeventCallback(libevent_fd_t fd, short events, void* arg);
 
-  struct event event_;
+  EventBaseBackendBase::Event event_;
   EventBase* eventBase_;
 };
 

@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -180,7 +180,7 @@ class GenImpl : public FBounded<Self> {
 
   // Child classes should override if the sequence generated is *definitely*
   // infinite. 'infinite' may be false_type for some infinite sequences
-  // (due the the Halting Problem).
+  // (due to the Halting Problem).
   //
   // In general, almost all sources are finite (only seq(n) produces an infinite
   // source), almost all operators keep the finiteness of the source (only cycle

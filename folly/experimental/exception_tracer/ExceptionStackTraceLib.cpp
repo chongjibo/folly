@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -30,13 +30,16 @@ namespace {
 // trace at all because in could be bogus
 FOLLY_TLS bool invalid;
 
-FOLLY_TLS StackTraceStack activeExceptions;
+FOLLY_TLS StackTraceStack uncaughtExceptions;
 FOLLY_TLS StackTraceStack caughtExceptions;
 
 } // namespace
 
-// This function is exported and may be found via dlsym(RTLD_NEXT, ...)
-extern "C" StackTraceStack* getExceptionStackTraceStack() {
+// These functions are exported and may be found via dlsym(RTLD_NEXT, ...)
+extern "C" const StackTraceStack* getUncaughtExceptionStackTraceStack() {
+  return invalid ? nullptr : &uncaughtExceptions;
+}
+extern "C" const StackTraceStack* getCaughtExceptionStackTraceStack() {
   return invalid ? nullptr : &caughtExceptions;
 }
 
@@ -45,8 +48,8 @@ namespace {
 void addActiveException() {
   // Capture stack trace
   if (!invalid) {
-    if (!activeExceptions.pushCurrent()) {
-      activeExceptions.clear();
+    if (!uncaughtExceptions.pushCurrent()) {
+      uncaughtExceptions.clear();
       caughtExceptions.clear();
       invalid = true;
     }
@@ -67,16 +70,16 @@ void moveTopException(StackTraceStack& from, StackTraceStack& to) {
 struct Initializer {
   Initializer() {
     registerCxaThrowCallback(
-        [](void*, std::type_info*, void (*)(void*)) noexcept {
+        [](void*, std::type_info*, void (**)(void*)) noexcept {
           addActiveException();
         });
 
     registerCxaBeginCatchCallback([](void*) noexcept {
-      moveTopException(activeExceptions, caughtExceptions);
+      moveTopException(uncaughtExceptions, caughtExceptions);
     });
 
     registerCxaRethrowCallback([]() noexcept {
-      moveTopException(caughtExceptions, activeExceptions);
+      moveTopException(caughtExceptions, uncaughtExceptions);
     });
 
     registerCxaEndCatchCallback([]() noexcept {
@@ -95,7 +98,7 @@ struct Initializer {
       // For Lua interop, we see the handlerCount = 0
       if ((top->handlerCount == 1) || (top->handlerCount == 0)) {
         if (!caughtExceptions.pop()) {
-          activeExceptions.clear();
+          uncaughtExceptions.clear();
           invalid = true;
         }
       }

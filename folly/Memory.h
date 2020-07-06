@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -53,11 +53,12 @@ inline void deallocateBytes(void* p, size_t n) {
 #endif
 }
 
-#if _POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600 || \
-    (defined(__ANDROID__) && (__ANDROID_API__ > 16)) ||   \
-    (defined(__APPLE__) &&                                \
-     (__MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_10_6 ||    \
-      __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_3_0))
+#if _POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600 ||   \
+    (defined(__ANDROID__) && (__ANDROID_API__ > 16)) ||     \
+    (defined(__APPLE__) &&                                  \
+     (__MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_10_6 ||      \
+      __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_3_0)) || \
+    defined(__FreeBSD__) || defined(__wasm32__)
 
 inline void* aligned_malloc(size_t size, size_t align) {
   // use posix_memalign, but mimic the behaviour of memalign
@@ -347,6 +348,30 @@ std::weak_ptr<T> to_weak_ptr(const std::shared_ptr<T>& ptr) {
   return std::weak_ptr<T>(ptr);
 }
 
+/**
+ *  copy_to_unique_ptr
+ *
+ *  Move or copy the argument to the heap and return it owned by a unique_ptr.
+ *
+ *  Like make_unique, but deduces the type of the owned object.
+ */
+template <typename T>
+std::unique_ptr<remove_cvref_t<T>> copy_to_unique_ptr(T&& t) {
+  return make_unique<remove_cvref_t<T>>(static_cast<T&&>(t));
+}
+
+/**
+ *  copy_to_shared_ptr
+ *
+ *  Move or copy the argument to the heap and return it owned by a shared_ptr.
+ *
+ *  Like make_shared, but deduces the type of the owned object.
+ */
+template <typename T>
+std::shared_ptr<remove_cvref_t<T>> copy_to_shared_ptr(T&& t) {
+  return std::make_shared<remove_cvref_t<T>>(static_cast<T&&>(t));
+}
+
 namespace detail {
 template <typename T>
 struct lift_void_to_char {
@@ -371,6 +396,13 @@ class SysAllocator {
 
  public:
   using value_type = T;
+
+  constexpr SysAllocator() = default;
+
+  constexpr SysAllocator(SysAllocator const&) = default;
+
+  template <typename U, std::enable_if_t<!std::is_same<U, T>::value, int> = 0>
+  constexpr SysAllocator(SysAllocator<U> const&) noexcept {}
 
   T* allocate(size_t count) {
     using lifted = typename detail::lift_void_to_char<T>::type;
@@ -441,7 +473,8 @@ class FixedAlign {
  * aligned_free.
  *
  * Accepts a policy parameter for providing the alignment, which must:
- *   * be invocable as std::size_t() noexcept, returning the alignment
+ *   * be invocable as std::size_t(std::size_t) noexcept
+ *     * taking the type alignment and returning the allocation alignment
  *   * be noexcept-copy-constructible
  *   * have noexcept operator==
  *   * have noexcept operator!=
@@ -463,7 +496,7 @@ class AlignedSysAllocator : private Align {
 
  public:
   static_assert(std::is_nothrow_copy_constructible<Align>::value, "");
-  static_assert(is_nothrow_invocable_r<std::size_t, Align>::value, "");
+  static_assert(is_nothrow_invocable_r_v<std::size_t, Align>, "");
 
   using value_type = T;
 
@@ -473,20 +506,23 @@ class AlignedSysAllocator : private Align {
 
   using Align::Align;
 
-  // TODO: remove this ctor, which is required only by gcc49
+  // TODO: remove this ctor, which is is no longer required as of under gcc7
   template <
       typename S = Align,
       std::enable_if_t<std::is_default_constructible<S>::value, int> = 0>
   constexpr AlignedSysAllocator() noexcept(noexcept(Align())) : Align() {}
 
-  template <typename U>
-  constexpr explicit AlignedSysAllocator(
+  constexpr AlignedSysAllocator(AlignedSysAllocator const&) = default;
+
+  template <typename U, std::enable_if_t<!std::is_same<U, T>::value, int> = 0>
+  constexpr AlignedSysAllocator(
       AlignedSysAllocator<U, Align> const& other) noexcept
       : Align(other.align()) {}
 
   T* allocate(size_t count) {
     using lifted = typename detail::lift_void_to_char<T>::type;
-    auto const p = aligned_malloc(sizeof(lifted) * count, align()());
+    auto const a = align()() < alignof(lifted) ? alignof(lifted) : align()();
+    auto const p = aligned_malloc(sizeof(lifted) * count, a);
     if (!p) {
       if (FOLLY_UNLIKELY(errno != ENOMEM)) {
         std::terminate();
@@ -526,7 +562,7 @@ class CxxAllocatorAdaptor {
   template <typename U, typename UAlloc>
   friend class CxxAllocatorAdaptor;
 
-  std::reference_wrapper<Inner> ref_;
+  Inner* inner_ = nullptr;
 
  public:
   using value_type = T;
@@ -535,26 +571,34 @@ class CxxAllocatorAdaptor {
   using propagate_on_container_move_assignment = std::true_type;
   using propagate_on_container_swap = std::true_type;
 
-  explicit CxxAllocatorAdaptor(Inner& ref) : ref_(ref) {}
+  constexpr explicit CxxAllocatorAdaptor() = default;
 
-  template <typename U>
-  explicit CxxAllocatorAdaptor(CxxAllocatorAdaptor<U, Inner> const& other)
-      : ref_(other.ref_) {}
+  constexpr explicit CxxAllocatorAdaptor(Inner& ref) : inner_(&ref) {}
+
+  constexpr CxxAllocatorAdaptor(CxxAllocatorAdaptor const&) = default;
+
+  template <typename U, std::enable_if_t<!std::is_same<U, T>::value, int> = 0>
+  constexpr CxxAllocatorAdaptor(CxxAllocatorAdaptor<U, Inner> const& other)
+      : inner_(other.inner_) {}
 
   T* allocate(std::size_t n) {
     using lifted = typename detail::lift_void_to_char<T>::type;
-    return static_cast<T*>(ref_.get().allocate(sizeof(lifted) * n));
+    if (inner_ == nullptr) {
+      throw_exception<std::bad_alloc>();
+    }
+    return static_cast<T*>(inner_->allocate(sizeof(lifted) * n));
   }
   void deallocate(T* p, std::size_t n) {
     using lifted = typename detail::lift_void_to_char<T>::type;
-    ref_.get().deallocate(p, sizeof(lifted) * n);
+    assert(inner_);
+    inner_->deallocate(p, sizeof(lifted) * n);
   }
 
   friend bool operator==(Self const& a, Self const& b) noexcept {
-    return std::addressof(a.ref_.get()) == std::addressof(b.ref_.get());
+    return a.inner_ == b.inner_;
   }
   friend bool operator!=(Self const& a, Self const& b) noexcept {
-    return std::addressof(a.ref_.get()) != std::addressof(b.ref_.get());
+    return a.inner_ != b.inner_;
   }
 };
 
@@ -666,12 +710,12 @@ struct AllocatorHasTrivialDeallocate<CxxAllocatorAdaptor<T, Alloc>>
 namespace detail {
 // note that construct and destroy here are methods, not short names for
 // the constructor and destructor
-FOLLY_CREATE_MEMBER_INVOKE_TRAITS(AllocatorConstruct_, construct);
-FOLLY_CREATE_MEMBER_INVOKE_TRAITS(AllocatorDestroy_, destroy);
+FOLLY_CREATE_MEMBER_INVOKER(AllocatorConstruct_, construct);
+FOLLY_CREATE_MEMBER_INVOKER(AllocatorDestroy_, destroy);
 
 template <typename Void, typename Alloc, typename... Args>
 struct AllocatorCustomizesConstruct_
-    : AllocatorConstruct_::template is_invocable<Alloc, Args...> {};
+    : folly::is_invocable<AllocatorConstruct_, Alloc, Args...> {};
 
 template <typename Alloc, typename... Args>
 struct AllocatorCustomizesConstruct_<
@@ -681,7 +725,7 @@ struct AllocatorCustomizesConstruct_<
 
 template <typename Void, typename Alloc, typename... Args>
 struct AllocatorCustomizesDestroy_
-    : AllocatorDestroy_::template is_invocable<Alloc, Args...> {};
+    : folly::is_invocable<AllocatorDestroy_, Alloc, Args...> {};
 
 template <typename Alloc, typename... Args>
 struct AllocatorCustomizesDestroy_<

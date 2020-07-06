@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
+#include <folly/Memory.h>
 #include <folly/executors/task_queue/PriorityLifoSemMPMCQueue.h>
 #include <folly/executors/task_queue/PriorityUnboundedBlockingQueue.h>
 #include <folly/executors/task_queue/UnboundedBlockingQueue.h>
@@ -28,6 +29,18 @@ DEFINE_bool(
 
 namespace folly {
 
+namespace {
+//  queue_alloc custom allocator is necessary until C++17
+//    http://open-std.org/JTC1/SC22/WG21/docs/papers/2012/n3396.htm
+//    https://gcc.gnu.org/bugzilla/show_bug.cgi?id=65122
+//    https://bugs.llvm.org/show_bug.cgi?id=22634
+using default_queue = UnboundedBlockingQueue<CPUThreadPoolExecutor::CPUTask>;
+using default_queue_alloc =
+    AlignedSysAllocator<default_queue, FixedAlign<alignof(default_queue)>>;
+
+constexpr folly::StringPiece executorName = "CPUThreadPoolExecutor";
+} // namespace
+
 const size_t CPUThreadPoolExecutor::kDefaultMaxQueueSize = 1 << 14;
 
 CPUThreadPoolExecutor::CPUThreadPoolExecutor(
@@ -38,8 +51,9 @@ CPUThreadPoolExecutor::CPUThreadPoolExecutor(
           numThreads,
           FLAGS_dynamic_cputhreadpoolexecutor ? 0 : numThreads,
           std::move(threadFactory)),
-      taskQueue_(std::move(taskQueue)) {
+      taskQueue_(taskQueue.release()) {
   setNumThreads(numThreads);
+  registerThreadPoolExecutor(this);
 }
 
 CPUThreadPoolExecutor::CPUThreadPoolExecutor(
@@ -50,25 +64,34 @@ CPUThreadPoolExecutor::CPUThreadPoolExecutor(
           numThreads.first,
           numThreads.second,
           std::move(threadFactory)),
-      taskQueue_(std::move(taskQueue)) {
+      taskQueue_(taskQueue.release()) {
   setNumThreads(numThreads.first);
+  registerThreadPoolExecutor(this);
 }
 
 CPUThreadPoolExecutor::CPUThreadPoolExecutor(
     size_t numThreads,
     std::shared_ptr<ThreadFactory> threadFactory)
-    : CPUThreadPoolExecutor(
+    : ThreadPoolExecutor(
           numThreads,
-          std::make_unique<UnboundedBlockingQueue<CPUTask>>(),
-          std::move(threadFactory)) {}
+          FLAGS_dynamic_cputhreadpoolexecutor ? 0 : numThreads,
+          std::move(threadFactory)),
+      taskQueue_(std::allocate_shared<default_queue>(default_queue_alloc{})) {
+  setNumThreads(numThreads);
+  registerThreadPoolExecutor(this);
+}
 
 CPUThreadPoolExecutor::CPUThreadPoolExecutor(
     std::pair<size_t, size_t> numThreads,
     std::shared_ptr<ThreadFactory> threadFactory)
-    : CPUThreadPoolExecutor(
-          numThreads,
-          std::make_unique<UnboundedBlockingQueue<CPUTask>>(),
-          std::move(threadFactory)) {}
+    : ThreadPoolExecutor(
+          numThreads.first,
+          numThreads.second,
+          std::move(threadFactory)),
+      taskQueue_(std::allocate_shared<default_queue>(default_queue_alloc{})) {
+  setNumThreads(numThreads.first);
+  registerThreadPoolExecutor(this);
+}
 
 CPUThreadPoolExecutor::CPUThreadPoolExecutor(size_t numThreads)
     : CPUThreadPoolExecutor(
@@ -98,6 +121,7 @@ CPUThreadPoolExecutor::CPUThreadPoolExecutor(
           std::move(threadFactory)) {}
 
 CPUThreadPoolExecutor::~CPUThreadPoolExecutor() {
+  deregisterThreadPoolExecutor(this);
   stop();
   CHECK(threadsToStop_ == 0);
 }
@@ -172,10 +196,12 @@ bool CPUThreadPoolExecutor::taskShouldStop(folly::Optional<CPUTask>& task) {
 
 void CPUThreadPoolExecutor::threadRun(ThreadPtr thread) {
   this->threadPoolHook_.registerThread();
+  ExecutorBlockingGuard guard{ExecutorBlockingGuard::ForbidTag{}, executorName};
 
   thread->startupBaton.post();
   while (true) {
     auto task = taskQueue_->try_take_for(threadTimeout_);
+
     // Handle thread stopping, either by task timeout, or
     // by 'poison' task added in join() or stop().
     if (UNLIKELY(!task || task.value().poison)) {

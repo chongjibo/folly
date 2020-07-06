@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/logging/GlogStyleFormatter.h>
 
 #include <folly/Format.h>
@@ -95,12 +96,8 @@ std::string GlogStyleFormatter::formatMessage(
     header.reserve(headerLengthGuess);
     headerFormatter.appendTo(header);
 
-    // Make a guess at how many lines will be in the message, just to make an
-    // initial buffer allocation.  If the guess is too small then the string
-    // will reallocate and grow as necessary, it will just be slightly less
-    // efficient than if we had guessed enough space.
-    size_t numLinesGuess = 4;
-    buffer.reserve(((header.size() + 1) * numLinesGuess) + msgData.size());
+    buffer.reserve(
+        ((header.size() + 1) * message.getNumNewlines()) + msgData.size());
 
     size_t idx = 0;
     while (true) {

@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,10 +31,20 @@
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/range/concepts.hpp>
 
+#include <folly/CppAttributes.h>
 #include <folly/Memory.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/SysMman.h>
+
+#if __has_include(<range/v3/range/concepts.hpp>)
+#include <range/v3/range/concepts.hpp>
+
+// Check conformance with the C++20 range concepts as specified
+// by the range-v3 library.
+CPP_assert(ranges::range<folly::StringPiece>);
+CPP_assert(ranges::view_<folly::StringPiece>);
+#endif
 
 using namespace folly;
 using namespace folly::detail;
@@ -1429,7 +1439,11 @@ TEST(Range, LiteralSuffix) {
   constexpr StringPiece piece = "hello";
   EXPECT_EQ(literalPiece, piece);
   constexpr auto literalPiece8 = u8"hello"_sp;
+#if __cpp_char8_t >= 201811L
+  constexpr Range<char8_t const*> piece8 = u8"hello";
+#else
   constexpr Range<char const*> piece8 = u8"hello";
+#endif
   EXPECT_EQ(literalPiece8, piece8);
   constexpr auto literalPiece16 = u"hello"_sp;
   constexpr Range<char16_t const*> piece16{u"hello", 5};
@@ -1645,7 +1659,7 @@ class NonPOD {
  public:
   NonPOD() {}
 };
-void test_func(Range<const NonPOD*>) {}
+FOLLY_MAYBE_UNUSED void test_func(Range<const NonPOD*>) {}
 
 } // anonymous namespace
 

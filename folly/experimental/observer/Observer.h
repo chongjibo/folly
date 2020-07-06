@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/ThreadLocal.h>
@@ -91,8 +92,12 @@ class Snapshot {
     return data_.get();
   }
 
-  std::shared_ptr<const T> getShared() const {
+  std::shared_ptr<const T> getShared() const& {
     return data_;
+  }
+
+  std::shared_ptr<const T> getShared() && {
+    return std::move(data_);
   }
 
   /**
@@ -128,7 +133,7 @@ class CallbackHandle {
   CallbackHandle(const CallbackHandle&) = delete;
   CallbackHandle(CallbackHandle&&) = default;
   CallbackHandle& operator=(const CallbackHandle&) = delete;
-  CallbackHandle& operator=(CallbackHandle&&) = default;
+  CallbackHandle& operator=(CallbackHandle&&) noexcept;
   ~CallbackHandle();
 
   // If callback is currently running, waits until it completes.
@@ -187,6 +192,24 @@ Observer<observer_detail::ResultOf<F>> makeObserver(F&& creator);
 
 template <typename F>
 Observer<observer_detail::ResultOfUnwrapSharedPtr<F>> makeObserver(F&& creator);
+
+/**
+ * The returned Observer will proxy updates from the input observer, but will
+ * skip updates that contain the same (according to operator==) value even if
+ * the actual object in the update is different.
+ */
+template <typename T>
+Observer<T> makeValueObserver(Observer<T> observer);
+
+/**
+ * A more efficient short-cut for makeValueObserver(makeObserver(...)).
+ */
+template <typename F>
+Observer<observer_detail::ResultOf<F>> makeValueObserver(F&& creator);
+
+template <typename F>
+Observer<observer_detail::ResultOfUnwrapSharedPtr<F>> makeValueObserver(
+    F&& creator);
 
 template <typename T>
 class TLObserver {

@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/experimental/symbolizer/StackTrace.h>
 
 // Must be first to ensure that UNW_LOCAL_ONLY is defined
@@ -22,6 +23,9 @@
 #ifdef __APPLE__
 #include <execinfo.h>
 #endif
+
+#include <folly/Portability.h>
+#include <memory>
 
 namespace folly {
 namespace symbolizer {
@@ -56,17 +60,19 @@ inline bool getFrameInfo(unw_cursor_t* cursor, uintptr_t& ip) {
   ip = uip - (r == 0);
   return true;
 }
-} // namespace
 
-ssize_t getStackTraceSafe(uintptr_t* addresses, size_t maxAddresses) {
+FOLLY_ALWAYS_INLINE
+ssize_t getStackTraceInPlace(
+    unw_context_t& context,
+    unw_cursor_t& cursor,
+    uintptr_t* addresses,
+    size_t maxAddresses) {
   if (maxAddresses == 0) {
     return 0;
   }
-  unw_context_t context;
   if (unw_getcontext(&context) < 0) {
     return -1;
   }
-  unw_cursor_t cursor;
   if (unw_init_local(&cursor, &context) < 0) {
     return -1;
   }
@@ -88,6 +94,26 @@ ssize_t getStackTraceSafe(uintptr_t* addresses, size_t maxAddresses) {
     }
   }
   return count;
+}
+} // namespace
+
+ssize_t getStackTraceSafe(uintptr_t* addresses, size_t maxAddresses) {
+  unw_context_t context;
+  unw_cursor_t cursor;
+  return getStackTraceInPlace(context, cursor, addresses, maxAddresses);
+}
+
+ssize_t getStackTraceHeap(uintptr_t* addresses, size_t maxAddresses) {
+  struct Ctx {
+    unw_context_t context;
+    unw_cursor_t cursor;
+  };
+  auto ctx_ptr = std::make_unique<Ctx>();
+  if (!ctx_ptr) {
+    return -1;
+  }
+  return getStackTraceInPlace(
+      ctx_ptr->context, ctx_ptr->cursor, addresses, maxAddresses);
 }
 } // namespace symbolizer
 } // namespace folly

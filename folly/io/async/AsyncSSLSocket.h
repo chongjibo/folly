@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,6 +22,7 @@
 #include <folly/String.h>
 #include <folly/io/Cursor.h>
 #include <folly/io/IOBuf.h>
+#include <folly/io/SocketOptionMap.h>
 #include <folly/io/async/AsyncPipe.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/AsyncTimeout.h>
@@ -34,8 +35,12 @@
 #include <folly/portability/OpenSSL.h>
 #include <folly/portability/Sockets.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
+#include <folly/ssl/SSLSession.h>
+#include <folly/ssl/SSLSessionManager.h>
 
 namespace folly {
+
+class AsyncSSLSocketConnector;
 
 /**
  * A class for performing asynchronous I/O on an SSL connection.
@@ -67,7 +72,7 @@ namespace folly {
  * want to give up if the remote end stops responding and no further
  * progress can be made sending the data.
  */
-class AsyncSSLSocket : public virtual AsyncSocket {
+class AsyncSSLSocket : public AsyncSocket {
  public:
   typedef std::unique_ptr<AsyncSSLSocket, Destructor> UniquePtr;
   using X509_deleter = folly::static_function_deleter<X509, &X509_free>;
@@ -195,7 +200,7 @@ class AsyncSSLSocket : public virtual AsyncSocket {
    * Create a client AsyncSSLSocket
    */
   AsyncSSLSocket(
-      const std::shared_ptr<folly::SSLContext>& ctx,
+      std::shared_ptr<folly::SSLContext> ctx,
       EventBase* evb,
       bool deferSecurityNegotiation = false);
 
@@ -217,7 +222,7 @@ class AsyncSSLSocket : public virtual AsyncSocket {
    *          unencrypted data can be sent before sslConn/Accept
    */
   AsyncSSLSocket(
-      const std::shared_ptr<folly::SSLContext>& ctx,
+      std::shared_ptr<folly::SSLContext> ctx,
       EventBase* evb,
       NetworkSocket fd,
       bool server = true,
@@ -228,7 +233,7 @@ class AsyncSSLSocket : public virtual AsyncSocket {
    * AsyncSocket.
    */
   AsyncSSLSocket(
-      const std::shared_ptr<folly::SSLContext>& ctx,
+      std::shared_ptr<folly::SSLContext> ctx,
       AsyncSocket::UniquePtr oldAsyncSocket,
       bool server = true,
       bool deferSecurityNegotiation = false);
@@ -315,9 +320,9 @@ class AsyncSSLSocket : public virtual AsyncSocket {
    * the flag should be reset.
    */
 
-  // Inherit TAsyncTransport methods from AsyncSocket except the
+  // Inherit AsyncTransport methods from AsyncSocket except the
   // following.
-  // See the documentation in TAsyncTransport.h
+  // See the documentation in AsyncTransport.h
   // TODO: implement graceful shutdown in close()
   // TODO: implement detachSSL() that returns the SSL connection
   void closeNow() override;
@@ -374,7 +379,7 @@ class AsyncSSLSocket : public virtual AsyncSocket {
       ConnectCallback* callback,
       const folly::SocketAddress& address,
       int timeout = 0,
-      const OptionMap& options = emptyOptionMap,
+      const SocketOptionMap& options = emptySocketOptionMap,
       const folly::SocketAddress& bindAddr = anyAddress()) noexcept override;
 
   /**
@@ -397,10 +402,19 @@ class AsyncSSLSocket : public virtual AsyncSocket {
       const folly::SocketAddress& address,
       std::chrono::milliseconds connectTimeout,
       std::chrono::milliseconds totalConnectTimeout,
-      const OptionMap& options = emptyOptionMap,
+      const SocketOptionMap& options = emptySocketOptionMap,
       const folly::SocketAddress& bindAddr = anyAddress()) noexcept;
 
   using AsyncSocket::connect;
+
+  /**
+   * If a connect request is in-flight, cancels it and closes the socket
+   * immediately. Otherwise, this is a no-op.
+   *
+   * This does not invoke any connection related callbacks. Call this to
+   * prevent any connect callback while cleaning up, etc.
+   */
+  void cancelConnect() override;
 
   /**
    * Initiate an SSL connection on the socket
@@ -451,6 +465,13 @@ class AsyncSSLSocket : public virtual AsyncSocket {
   SSL_SESSION* getSSLSession();
 
   /**
+   * Currently unsupported. Eventually intended to replace getSSLSession()
+   * once TLS 1.3 is enabled by default.
+   * Get an abstracted SSL Session.
+   */
+  std::shared_ptr<ssl::SSLSession> getSSLSessionV2();
+
+  /**
    * Get a handle to the SSL struct.
    */
   const SSL* getSSL() const;
@@ -464,6 +485,13 @@ class AsyncSSLSocket : public virtual AsyncSocket {
    *                      reference count to session.
    */
   void setSSLSession(SSL_SESSION* session, bool takeOwnership = false);
+
+  /**
+   * Currently unsupported. Eventually intended to replace setSSLSession()
+   * once TLS 1.3 is enabled by default.
+   * Set the abstracted SSL session to be used during sslConn.
+   */
+  void setSSLSessionV2(std::shared_ptr<ssl::SSLSession> session);
 
   /**
    * Get the name of the protocol selected by the client during
@@ -526,7 +554,9 @@ class AsyncSSLSocket : public virtual AsyncSocket {
   virtual const char* getNegotiatedCipherName() const;
 
   /**
-   * Get the server name for this SSL connection.
+   * Get the server name for this SSL connection. Returns the SNI sent in the
+   * ClientHello, if enableClientHelloParsing() was called.
+   *
    * Returns the server name used or the constant value "NONE" when no SSL
    * session has been established.
    * If openssl has no SNI support, throw AsyncSocketException.
@@ -697,9 +727,9 @@ class AsyncSSLSocket : public virtual AsyncSocket {
   static int bioRead(BIO* b, char* out, int outl);
   void resetClientHelloParsing(SSL* ssl);
   static void clientHelloParsingCallback(
-      int write_p,
+      int written,
       int version,
-      int content_type,
+      int contentType,
       const void* buf,
       size_t len,
       SSL* ssl,
@@ -775,6 +805,11 @@ class AsyncSSLSocket : public virtual AsyncSocket {
     asyncOperationFinishCallback_ = std::move(cb);
   }
 
+  // zero copy is not supported by openssl.
+  bool setZeroCopy(bool /*enable*/) override {
+    return false;
+  }
+
  private:
   /**
    * Handle the return from invoking SSL_accept
@@ -782,6 +817,9 @@ class AsyncSSLSocket : public virtual AsyncSocket {
   void handleReturnFromSSLAccept(int ret);
 
   void init();
+
+  // Need to clean this up during a cancel if callback hasn't fired yet.
+  AsyncSSLSocketConnector* allocatedConnectCallback_;
 
  protected:
   /**
@@ -837,7 +875,7 @@ class AsyncSSLSocket : public virtual AsyncSocket {
    * applied. If verifyPeer_ was explicitly set either via sslConn/sslAccept,
    * those options override the settings in the underlying SSLContext.
    */
-  void applyVerificationOptions(const ssl::SSLUniquePtr& ssl);
+  bool applyVerificationOptions(const ssl::SSLUniquePtr& ssl);
 
   /**
    * Sets up SSL with a custom write bio which intercepts all writes.
@@ -873,7 +911,7 @@ class AsyncSSLSocket : public virtual AsyncSocket {
 
   void startSSLConnect();
 
-  static void sslInfoCallback(const SSL* ssl, int type, int val);
+  static void sslInfoCallback(const SSL* ssl, int where, int ret);
 
   // Whether the current write to the socket should use MSG_MORE.
   bool corkCurrentWrite_{false};
@@ -890,7 +928,6 @@ class AsyncSSLSocket : public virtual AsyncSocket {
   // Callback for SSL_accept() or SSL_connect()
   HandshakeCB* handshakeCallback_{nullptr};
   ssl::SSLUniquePtr ssl_;
-  SSL_SESSION* sslSession_{nullptr};
   Timeout handshakeTimeout_;
   Timeout connectionTimeout_;
 
@@ -955,6 +992,8 @@ class AsyncSSLSocket : public virtual AsyncSocket {
   std::unique_ptr<ReadCallback> asyncOperationFinishCallback_;
   // Whether this socket is currently waiting on SSL_accept
   bool waitingOnAccept_{false};
+  // Manages the session for the socket
+  folly::ssl::SSLSessionManager sslSessionManager_;
 };
 
 } // namespace folly

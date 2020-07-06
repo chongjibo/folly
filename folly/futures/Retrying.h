@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -67,7 +67,7 @@ namespace futures {
  *  overflow due to the recursive nature of the retry implementation
  */
 template <class Policy, class FF>
-invoke_result_t<FF, size_t> retrying(Policy&& p, FF&& ff);
+auto retrying(Policy&& p, FF&& ff);
 
 namespace detail {
 
@@ -79,11 +79,14 @@ struct retrying_policy_traits {
   using result = invoke_result_t<Policy, size_t, const exception_wrapper&>;
   using is_raw = std::is_same<result, bool>;
   using is_fut = std::is_same<result, Future<bool>>;
+  using is_semi_fut = std::is_same<result, SemiFuture<bool>>;
   using tag = typename std::conditional<
       is_raw::value,
       retrying_policy_raw_tag,
-      typename std::conditional<is_fut::value, retrying_policy_fut_tag, void>::
-          type>::type;
+      typename std::conditional<
+          is_fut::value || is_semi_fut::value,
+          retrying_policy_fut_tag,
+          void>::type>::type;
 };
 
 template <class Policy, class FF, class Prom>
@@ -136,14 +139,15 @@ template <class Policy, class FF>
 typename std::enable_if<
     isSemiFuture<invoke_result_t<FF, size_t>>::value ||
         isSemiFuture<invoke_result_t<Policy, size_t, exception_wrapper>>::value,
-    invoke_result_t<FF, size_t>>::type
+    SemiFuture<typename isFutureOrSemiFuture<
+        invoke_result_t<FF, size_t>>::Inner>>::type
 retrying(size_t k, Policy&& p, FF&& ff) {
   auto sf = folly::makeSemiFuture().deferExValue(
       [k, p = std::forward<Policy>(p), ff = std::forward<FF>(ff)](
           Executor::KeepAlive<> ka, auto&&) mutable {
         auto futureP = [p = std::forward<Policy>(p), ka](
-                           size_t k, exception_wrapper e) {
-          return p(k, std::move(e)).via(ka);
+                           size_t kk, exception_wrapper e) {
+          return p(kk, std::move(e)).via(ka);
         };
         auto futureFF = [ff = std::forward<FF>(ff), ka = std::move(ka)](
                             size_t v) { return ff(v).via(ka); };
@@ -162,8 +166,7 @@ retrying(Policy&& p, FF&& ff, retrying_policy_raw_tag) {
 }
 
 template <class Policy, class FF>
-invoke_result_t<FF, size_t>
-retrying(Policy&& p, FF&& ff, retrying_policy_fut_tag) {
+auto retrying(Policy&& p, FF&& ff, retrying_policy_fut_tag) {
   return retrying(0, std::forward<Policy>(p), std::forward<FF>(ff));
 }
 
@@ -263,7 +266,7 @@ retryingPolicyCappedJitteredExponentialBackoff(
 } // namespace detail
 
 template <class Policy, class FF>
-invoke_result_t<FF, size_t> retrying(Policy&& p, FF&& ff) {
+auto retrying(Policy&& p, FF&& ff) {
   using tag = typename detail::retrying_policy_traits<Policy>::tag;
   return detail::retrying(std::forward<Policy>(p), std::forward<FF>(ff), tag());
 }

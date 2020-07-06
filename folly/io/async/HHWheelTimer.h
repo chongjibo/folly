@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -170,7 +170,7 @@ class HHWheelTimerBase : private folly::AsyncTimeout,
    */
   static int DEFAULT_TICK_INTERVAL;
   explicit HHWheelTimerBase(
-      folly::TimeoutManager* timeoutManager,
+      folly::TimeoutManager* timeoutMananger,
       Duration intervalDuration = Duration(DEFAULT_TICK_INTERVAL),
       AsyncTimeout::InternalEnum internal = AsyncTimeout::InternalEnum::NORMAL,
       Duration defaultTimeoutDuration = Duration(-1));
@@ -299,7 +299,10 @@ class HHWheelTimerBase : private folly::AsyncTimeout,
     return t.count() / interval_.count();
   }
 
-  bool cascadeTimers(int bucket, int tick);
+  bool cascadeTimers(
+      int bucket,
+      int tick,
+      std::chrono::steady_clock::time_point curTime);
   void scheduleTimeoutInternal(Duration timeout);
 
   int64_t expireTick_;

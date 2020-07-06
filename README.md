@@ -72,7 +72,12 @@ Folly is published on GitHub at https://github.com/facebook/folly
 
 #### Dependencies
 
-folly requires gcc 5.1+ and a version of boost compiled with C++14 support.
+folly supports gcc (5.1+), clang, or MSVC. It should run on Linux (x86-32,
+x86-64, and ARM), iOS, macOS, and Windows (x86-64). The CMake build is only
+tested on some of these platforms; at a minimum, we aim to support macOS and
+Linux (on the latest Ubuntu LTS release or newer.)
+
+folly requires a version of boost compiled with C++14 support.
 
 googletest is required to build and run folly's tests.  You can download
 it from https://github.com/google/googletest/archive/release-1.8.0.tar.gz
@@ -104,6 +109,11 @@ cmake \
   -DCMAKE_LIBRARY_PATH=/alt/lib/path1:/alt/lib/path2 ...
 ```
 
+#### Building tests
+
+By default, building the tests is disabled as part of the CMake `all` target.
+To build the tests, specify `-DBUILD_TESTS=ON` to CMake at configure time.
+
 #### Ubuntu 16.04 LTS
 
 The following packages are required (feel free to cut and paste the apt-get
@@ -127,7 +137,21 @@ sudo apt-get install \
     binutils-dev \
     libjemalloc-dev \
     libssl-dev \
-    pkg-config
+    pkg-config \
+    libunwind-dev
+```
+
+Folly relies on [fmt](https://github.com/fmtlib/fmt) which needs to be installed from source.
+The following commands will download, compile, and install fmt.
+
+```
+git clone https://github.com/fmtlib/fmt.git && cd fmt
+
+mkdir _build && cd _build
+cmake ..
+
+make -j$(nproc)
+sudo make install
 ```
 
 If advanced debugging functionality is required, use:

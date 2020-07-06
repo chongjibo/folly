@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/logging/LogConfigParser.h>
 
 #include <folly/Conv.h>
@@ -22,7 +23,6 @@
 #include <folly/lang/SafeAssert.h>
 #include <folly/logging/LogName.h>
 
-using std::shared_ptr;
 using std::string;
 
 namespace folly {
@@ -142,6 +142,19 @@ LogCategoryConfig parseJsonCategoryConfig(
           ", expected a boolean")};
     }
     config.inheritParentLevel = inherit->asBool();
+  }
+
+  auto* propagate = value.get_ptr("propagate");
+  if (propagate) {
+    if (!parseJsonLevel(
+            *propagate, categoryName, config.propagateLevelMessagesToParent)) {
+      throw LogConfigParseError{to<string>(
+          "unexpected data type for propagate field of category \"",
+          categoryName,
+          "\": got ",
+          dynamicTypename(*propagate),
+          ", expected a string or integer")};
+    }
   }
 
   auto* handlers = value.get_ptr("handlers");
@@ -277,7 +290,7 @@ LogConfig::CategoryConfigMap parseCategoryConfigs(StringPiece value) {
     std::vector<StringPiece> handlerPieces;
     folly::split(":", configString, handlerPieces);
     FOLLY_SAFE_DCHECK(
-        handlerPieces.size() >= 1,
+        !handlerPieces.empty(),
         "folly::split() always returns a list of length 1");
     auto levelString = trimWhitespace(handlerPieces[0]);
 
@@ -389,7 +402,7 @@ std::pair<std::string, LogHandlerConfig> parseHandlerConfig(StringPiece value) {
         handlerName,
         "\": name cannot contain a comma when using the basic config format")};
   }
-  if (handlerType.hasValue()) {
+  if (handlerType.has_value()) {
     if (handlerType->empty()) {
       throw LogConfigParseError{to<string>(
           "error parsing configuration for log handler \"",
@@ -414,7 +427,7 @@ std::pair<std::string, LogHandlerConfig> parseHandlerConfig(StringPiece value) {
     std::vector<StringPiece> pieces;
     folly::split(",", optionsStr, pieces);
     FOLLY_SAFE_DCHECK(
-        pieces.size() >= 1, "folly::split() always returns a list of length 1");
+        !pieces.empty(), "folly::split() always returns a list of length 1");
 
     for (const auto& piece : pieces) {
       StringPiece optionName;
@@ -455,7 +468,7 @@ LogConfig parseLogConfig(StringPiece value) {
   std::vector<StringPiece> pieces;
   folly::split(";", value, pieces);
   FOLLY_SAFE_DCHECK(
-      pieces.size() >= 1, "folly::split() always returns a list of length 1");
+      !pieces.empty(), "folly::split() always returns a list of length 1");
 
   auto categoryConfigs = parseCategoryConfigs(pieces[0]);
   LogConfig::HandlerConfigMap handlerConfigs;
@@ -571,7 +584,7 @@ dynamic logConfigToDynamic(const LogHandlerConfig& config) {
     options.insert(opt.first, opt.second);
   }
   auto result = dynamic::object("options", options);
-  if (config.type.hasValue()) {
+  if (config.type.has_value()) {
     result("type", config.type.value());
   }
   return result;
@@ -579,8 +592,9 @@ dynamic logConfigToDynamic(const LogHandlerConfig& config) {
 
 dynamic logConfigToDynamic(const LogCategoryConfig& config) {
   auto value = dynamic::object("level", logLevelToString(config.level))(
-      "inherit", config.inheritParentLevel);
-  if (config.handlers.hasValue()) {
+      "inherit", config.inheritParentLevel)(
+      "propagate", logLevelToString(config.propagateLevelMessagesToParent));
+  if (config.handlers.has_value()) {
     auto handlers = dynamic::array();
     for (const auto& handlerName : config.handlers.value()) {
       handlers.push_back(handlerName);

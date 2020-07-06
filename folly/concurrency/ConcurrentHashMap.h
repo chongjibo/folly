@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/Optional.h>
@@ -34,8 +35,13 @@ namespace folly {
  *      atomic maps (AtomicUnorderedMap, AtomicHashMap), BUT only
  *      if you can perfectly size the atomic maps, and you don't
  *      need erase().  If you don't know the size in advance or
- *      your workload frequently calls erase(), this is the
- *      better choice.
+ *      your workload needs erase(), this is the better choice.
+ *
+ * [Note on performance under frequent removal: Sustained frequent
+ * removal from this map may lead to high contention (on the hazptr
+ * domain list of tagged objects which include structures used in this
+ * map). Planned redesign of the reclamation algorithm for such
+ * objects will eliminate this potential bottleneck.]
  *
  * The interface is as close to std::unordered_map as possible, but there
  * are a handful of changes:
@@ -98,7 +104,7 @@ namespace folly {
  * old value until the new value is completely constructed and
  * inserted.
  *
- * Q: Why does map.erase() not actually destroy elements?
+ * Q: Why do map.erase() and clear() not actually destroy elements?
  *
  * A: Hazard Pointers are used to improve the performance of
  * concurrent access.  They can be thought of as a simple Garbage
@@ -192,8 +198,8 @@ class ConcurrentHashMap {
           std::memory_order_relaxed);
       o.segments_[i].store(nullptr, std::memory_order_relaxed);
     }
-    batch_.store(o.batch(), std::memory_order_relaxed);
-    o.batch_.store(nullptr, std::memory_order_relaxed);
+    cohort_.store(o.cohort(), std::memory_order_relaxed);
+    o.cohort_.store(nullptr, std::memory_order_relaxed);
   }
 
   ConcurrentHashMap& operator=(ConcurrentHashMap&& o) {
@@ -210,9 +216,9 @@ class ConcurrentHashMap {
     }
     size_ = o.size_;
     max_size_ = o.max_size_;
-    batch_shutdown_cleanup();
-    batch_.store(o.batch(), std::memory_order_relaxed);
-    o.batch_.store(nullptr, std::memory_order_relaxed);
+    cohort_shutdown_cleanup();
+    cohort_.store(o.cohort(), std::memory_order_relaxed);
+    o.cohort_.store(nullptr, std::memory_order_relaxed);
     return *this;
   }
 
@@ -224,7 +230,7 @@ class ConcurrentHashMap {
         Allocator().deallocate((uint8_t*)seg, sizeof(SegmentT));
       }
     }
-    batch_shutdown_cleanup();
+    cohort_shutdown_cleanup();
   }
 
   bool empty() const noexcept {
@@ -304,7 +310,7 @@ class ConcurrentHashMap {
   std::pair<ConstIterator, bool> emplace(Args&&... args) {
     using Node = typename SegmentT::Node;
     auto node = (Node*)Allocator().allocate(sizeof(Node));
-    new (node) Node(ensureBatch(), std::forward<Args>(args)...);
+    new (node) Node(ensureCohort(), std::forward<Args>(args)...);
     auto segment = pickSegment(node->getItem().first);
     std::pair<ConstIterator, bool> res(
         std::piecewise_construct,
@@ -319,6 +325,11 @@ class ConcurrentHashMap {
     return res;
   }
 
+  /*
+   * The bool component will always be true if the map has been updated via
+   * either insertion or assignment. Note that this is different from the
+   * std::map::insert_or_assign interface.
+   */
   template <typename Key, typename Value>
   std::pair<ConstIterator, bool> insert_or_assign(Key&& k, Value&& v) {
     auto segment = pickSegment(k);
@@ -562,7 +573,7 @@ class ConcurrentHashMap {
   SegmentT* ensureSegment(uint64_t i) const {
     SegmentT* seg = segments_[i].load(std::memory_order_acquire);
     if (!seg) {
-      auto b = ensureBatch();
+      auto b = ensureCohort();
       SegmentT* newseg = (SegmentT*)Allocator().allocate(sizeof(SegmentT));
       newseg = new (newseg)
           SegmentT(size_ >> ShardBits, load_factor_, max_size_ >> ShardBits, b);
@@ -577,40 +588,37 @@ class ConcurrentHashMap {
     return seg;
   }
 
-  hazptr_obj_batch<Atom>* batch() const noexcept {
-    return batch_.load(std::memory_order_acquire);
+  hazptr_obj_cohort<Atom>* cohort() const noexcept {
+    return cohort_.load(std::memory_order_acquire);
   }
 
-  hazptr_obj_batch<Atom>* ensureBatch() const {
-    auto b = batch();
+  hazptr_obj_cohort<Atom>* ensureCohort() const {
+    auto b = cohort();
     if (!b) {
-      auto storage = Allocator().allocate(sizeof(hazptr_obj_batch<Atom>));
-      auto newbatch = new (storage) hazptr_obj_batch<Atom>();
-      if (batch_.compare_exchange_strong(b, newbatch)) {
-        b = newbatch;
+      auto storage = Allocator().allocate(sizeof(hazptr_obj_cohort<Atom>));
+      auto newcohort = new (storage) hazptr_obj_cohort<Atom>();
+      if (cohort_.compare_exchange_strong(b, newcohort)) {
+        b = newcohort;
       } else {
-        newbatch->shutdown_and_reclaim();
-        newbatch->~hazptr_obj_batch<Atom>();
-        Allocator().deallocate(storage, sizeof(hazptr_obj_batch<Atom>));
+        newcohort->~hazptr_obj_cohort<Atom>();
+        Allocator().deallocate(storage, sizeof(hazptr_obj_cohort<Atom>));
       }
     }
     return b;
   }
 
-  void batch_shutdown_cleanup() {
-    auto b = batch();
+  void cohort_shutdown_cleanup() {
+    auto b = cohort();
     if (b) {
-      b->shutdown_and_reclaim();
-      hazptr_cleanup_batch_tag(b);
-      b->~hazptr_obj_batch<Atom>();
-      Allocator().deallocate((uint8_t*)b, sizeof(hazptr_obj_batch<Atom>));
+      b->~hazptr_obj_cohort<Atom>();
+      Allocator().deallocate((uint8_t*)b, sizeof(hazptr_obj_cohort<Atom>));
     }
   }
 
   mutable Atom<SegmentT*> segments_[NumShards];
   size_t size_{0};
   size_t max_size_{0};
-  mutable Atom<hazptr_obj_batch<Atom>*> batch_{nullptr};
+  mutable Atom<hazptr_obj_cohort<Atom>*> cohort_{nullptr};
 };
 
 #if FOLLY_SSE_PREREQ(4, 2) && !FOLLY_MOBILE

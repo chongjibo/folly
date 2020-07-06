@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <signal.h>
@@ -21,6 +22,7 @@
 #include <folly/SocketAddress.h>
 #include <folly/experimental/TestUtil.h>
 #include <folly/fibers/FiberManagerMap.h>
+#include <folly/io/SocketOptionMap.h>
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncServerSocket.h>
 #include <folly/io/async/AsyncSocket.h>
@@ -149,7 +151,7 @@ class SendMsgAncillaryDataCallback : public SendMsgParamsCallbackBase {
   std::vector<char> ancillaryData_;
 };
 
-class WriteCallbackBase : public AsyncTransportWrapper::WriteCallback {
+class WriteCallbackBase : public AsyncTransport::WriteCallback {
  public:
   explicit WriteCallbackBase(SendMsgParamsCallbackBase* mcb = nullptr)
       : state(STATE_WAITING),
@@ -235,7 +237,7 @@ class WriteCheckTimestampCallback : public WriteCallbackBase {
     EXPECT_NE(socket_->getNetworkSocket(), NetworkSocket());
     int flags = SOF_TIMESTAMPING_OPT_ID | SOF_TIMESTAMPING_OPT_TSONLY |
         SOF_TIMESTAMPING_SOFTWARE;
-    AsyncSocket::OptionKey tstampingOpt = {SOL_SOCKET, SO_TIMESTAMPING};
+    SocketOptionKey tstampingOpt = {SOL_SOCKET, SO_TIMESTAMPING};
     int ret = tstampingOpt.apply(socket_->getNetworkSocket(), flags);
     EXPECT_EQ(ret, 0);
   }
@@ -318,7 +320,7 @@ class WriteCheckTimestampCallback : public WriteCallbackBase {
 };
 #endif // FOLLY_HAVE_MSG_ERRQUEUE
 
-class ReadCallbackBase : public AsyncTransportWrapper::ReadCallback {
+class ReadCallbackBase : public AsyncTransport::ReadCallback {
  public:
   explicit ReadCallbackBase(WriteCallbackBase* wcb)
       : wcb_(wcb), state(STATE_WAITING) {}
@@ -388,7 +390,9 @@ class ReadCallback : public ReadCallbackBase {
 
     currentBuffer.length = len;
 
-    wcb_->setSocket(socket_);
+    if (wcb_) {
+      wcb_->setSocket(socket_);
+    }
 
     // Write back the same data.
     socket_->write(wcb_, currentBuffer.buffer, len, writeFlags);
@@ -553,6 +557,7 @@ class HandshakeCallback : public AsyncSSLSocket::HandshakeCB {
 
   // Functions inherited from AsyncSSLSocketHandshakeCallback
   void handshakeSuc(AsyncSSLSocket* sock) noexcept override {
+    isResumed_ = sock->getSSLSessionReused();
     std::lock_guard<std::mutex> g(mutex_);
     cv_.notify_all();
     EXPECT_EQ(sock, socket_.get());
@@ -564,6 +569,7 @@ class HandshakeCallback : public AsyncSSLSocket::HandshakeCB {
   void handshakeErr(
       AsyncSSLSocket* /* sock */,
       const AsyncSocketException& ex) noexcept override {
+    isResumed_ = false;
     std::lock_guard<std::mutex> g(mutex_);
     cv_.notify_all();
     std::cerr << "HandshakeCallback::handshakeError " << ex.what() << std::endl;
@@ -593,6 +599,10 @@ class HandshakeCallback : public AsyncSSLSocket::HandshakeCB {
     return socket_;
   }
 
+  bool isResumed() const {
+    return isResumed_;
+  }
+
   StateEnum state;
   std::shared_ptr<AsyncSSLSocket> socket_;
   ReadCallbackBase* rcb_;
@@ -600,6 +610,7 @@ class HandshakeCallback : public AsyncSSLSocket::HandshakeCB {
   std::mutex mutex_;
   std::condition_variable cv_;
   std::string errorString_;
+  bool isResumed_{false};
 };
 
 class SSLServerAcceptCallback : public SSLServerAcceptCallbackBase {
@@ -760,7 +771,7 @@ void sslsocketpair(
     AsyncSSLSocket::UniquePtr* serverSock);
 
 class BlockingWriteClient : private AsyncSSLSocket::HandshakeCB,
-                            private AsyncTransportWrapper::WriteCallback {
+                            private AsyncTransport::WriteCallback {
  public:
   explicit BlockingWriteClient(AsyncSSLSocket::UniquePtr socket)
       : socket_(std::move(socket)), bufLen_(2500), iovCount_(2000) {
@@ -818,7 +829,7 @@ class BlockingWriteClient : private AsyncSSLSocket::HandshakeCB,
 };
 
 class BlockingWriteServer : private AsyncSSLSocket::HandshakeCB,
-                            private AsyncTransportWrapper::ReadCallback {
+                            private AsyncTransport::ReadCallback {
  public:
   explicit BlockingWriteServer(AsyncSSLSocket::UniquePtr socket)
       : socket_(std::move(socket)), bufSize_(2500 * 2000), bytesRead_(0) {
@@ -887,7 +898,7 @@ class BlockingWriteServer : private AsyncSSLSocket::HandshakeCB,
 };
 
 class AlpnClient : private AsyncSSLSocket::HandshakeCB,
-                   private AsyncTransportWrapper::WriteCallback {
+                   private AsyncTransport::WriteCallback {
  public:
   explicit AlpnClient(AsyncSSLSocket::UniquePtr socket)
       : nextProto(nullptr), nextProtoLength(0), socket_(std::move(socket)) {
@@ -921,7 +932,7 @@ class AlpnClient : private AsyncSSLSocket::HandshakeCB,
 };
 
 class AlpnServer : private AsyncSSLSocket::HandshakeCB,
-                   private AsyncTransportWrapper::ReadCallback {
+                   private AsyncTransport::ReadCallback {
  public:
   explicit AlpnServer(AsyncSSLSocket::UniquePtr socket)
       : nextProto(nullptr), nextProtoLength(0), socket_(std::move(socket)) {
@@ -956,7 +967,7 @@ class AlpnServer : private AsyncSSLSocket::HandshakeCB,
 };
 
 class RenegotiatingServer : public AsyncSSLSocket::HandshakeCB,
-                            public AsyncTransportWrapper::ReadCallback {
+                            public AsyncTransport::ReadCallback {
  public:
   explicit RenegotiatingServer(AsyncSSLSocket::UniquePtr socket)
       : socket_(std::move(socket)) {
@@ -999,7 +1010,7 @@ class RenegotiatingServer : public AsyncSSLSocket::HandshakeCB,
 
 #ifndef OPENSSL_NO_TLSEXT
 class SNIClient : private AsyncSSLSocket::HandshakeCB,
-                  private AsyncTransportWrapper::WriteCallback {
+                  private AsyncTransport::WriteCallback {
  public:
   explicit SNIClient(AsyncSSLSocket::UniquePtr socket)
       : serverNameMatch(false), socket_(std::move(socket)) {
@@ -1031,7 +1042,7 @@ class SNIClient : private AsyncSSLSocket::HandshakeCB,
 };
 
 class SNIServer : private AsyncSSLSocket::HandshakeCB,
-                  private AsyncTransportWrapper::ReadCallback {
+                  private AsyncTransport::ReadCallback {
  public:
   explicit SNIServer(
       AsyncSSLSocket::UniquePtr socket,
@@ -1087,8 +1098,8 @@ class SNIServer : private AsyncSSLSocket::HandshakeCB,
 #endif
 
 class SSLClient : public AsyncSocket::ConnectCallback,
-                  public AsyncTransportWrapper::WriteCallback,
-                  public AsyncTransportWrapper::ReadCallback {
+                  public AsyncTransport::WriteCallback,
+                  public AsyncTransport::ReadCallback {
  private:
   EventBase* eventBase_;
   std::shared_ptr<AsyncSSLSocket> sslSocket_;
@@ -1240,7 +1251,7 @@ class SSLClient : public AsyncSocket::ConnectCallback,
 };
 
 class SSLHandshakeBase : public AsyncSSLSocket::HandshakeCB,
-                         private AsyncTransportWrapper::WriteCallback {
+                         private AsyncTransport::WriteCallback {
  public:
   explicit SSLHandshakeBase(
       AsyncSSLSocket::UniquePtr socket,

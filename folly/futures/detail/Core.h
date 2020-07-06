@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include <boost/variant.hpp>
+
 #include <folly/Executor.h>
 #include <folly/Function.h>
 #include <folly/Optional.h>
@@ -31,6 +33,7 @@
 #include <folly/futures/detail/Types.h>
 #include <folly/lang/Assume.h>
 #include <folly/lang/Exception.h>
+#include <folly/synchronization/AtomicUtil.h>
 #include <folly/synchronization/MicroSpinLock.h>
 #include <glog/logging.h>
 
@@ -72,18 +75,269 @@ struct SpinLock : private MicroSpinLock {
 };
 static_assert(sizeof(SpinLock) == 1, "missized");
 
-template <typename T>
-bool compare_exchange_strong_release_acquire(
-    std::atomic<T>& self,
-    T& expected,
-    T desired) {
-  if (kIsSanitizeThread) {
-    // Workaround for https://github.com/google/sanitizers/issues/970
-    return self.compare_exchange_strong(
-        expected, desired, std::memory_order_acq_rel);
+class DeferredExecutor;
+
+class UniqueDeleter {
+ public:
+  void operator()(DeferredExecutor* ptr);
+};
+
+using DeferredWrapper = std::unique_ptr<DeferredExecutor, UniqueDeleter>;
+
+/**
+ * Wrapper type that represents either a KeepAlive or a DeferredExecutor.
+ * Acts as if a type-safe tagged union of the two using knowledge that the two
+ * can safely be distinguished.
+ */
+class KeepAliveOrDeferred {
+ public:
+  KeepAliveOrDeferred(Executor::KeepAlive<> ka) : storage_{std::move(ka)} {
+    DCHECK(!isDeferred());
   }
-  return self.compare_exchange_strong(
-      expected, desired, std::memory_order_release, std::memory_order_acquire);
+
+  KeepAliveOrDeferred(DeferredWrapper deferred)
+      : storage_{std::move(deferred)} {}
+
+  KeepAliveOrDeferred() {}
+
+  ~KeepAliveOrDeferred() {}
+
+  KeepAliveOrDeferred(KeepAliveOrDeferred&& other)
+      : storage_{std::move(other.storage_)} {}
+
+  KeepAliveOrDeferred& operator=(KeepAliveOrDeferred&& other) {
+    storage_ = std::move(other.storage_);
+    return *this;
+  }
+
+  DeferredExecutor* getDeferredExecutor() const {
+    if (!isDeferred()) {
+      return nullptr;
+    }
+    return asDeferred().get();
+  }
+
+  Executor* getKeepAliveExecutor() const {
+    if (isDeferred()) {
+      return nullptr;
+    }
+    return asKeepAlive().get();
+  }
+
+  Executor::KeepAlive<> stealKeepAlive() && {
+    if (isDeferred()) {
+      return Executor::KeepAlive<>{};
+    }
+    return std::move(asKeepAlive());
+  }
+
+  std::unique_ptr<DeferredExecutor, UniqueDeleter> stealDeferred() && {
+    if (!isDeferred()) {
+      return std::unique_ptr<DeferredExecutor, UniqueDeleter>{};
+    }
+    return std::move(asDeferred());
+  }
+
+  bool isDeferred() const {
+    return boost::get<DeferredWrapper>(&storage_) != nullptr;
+  }
+
+  bool isKeepAlive() const {
+    return !isDeferred();
+  }
+
+  KeepAliveOrDeferred copy() const;
+
+  explicit operator bool() const {
+    return getDeferredExecutor() || getKeepAliveExecutor();
+  }
+
+ private:
+  boost::variant<DeferredWrapper, Executor::KeepAlive<>> storage_;
+
+  friend class DeferredExecutor;
+
+  Executor::KeepAlive<>& asKeepAlive() {
+    return boost::get<Executor::KeepAlive<>>(storage_);
+  }
+
+  const Executor::KeepAlive<>& asKeepAlive() const {
+    return boost::get<Executor::KeepAlive<>>(storage_);
+  }
+
+  DeferredWrapper& asDeferred() {
+    return boost::get<DeferredWrapper>(storage_);
+  }
+
+  const DeferredWrapper& asDeferred() const {
+    return boost::get<DeferredWrapper>(storage_);
+  }
+};
+
+/**
+ * Defer work until executor is actively boosted.
+ */
+class DeferredExecutor final {
+ public:
+  // addFrom will:
+  //  * run func inline if there is a stored executor and completingKA matches
+  //    the stored executor
+  //  * enqueue func into the stored executor if one exists
+  //  * store func until an executor is set otherwise
+  void addFrom(
+      Executor::KeepAlive<>&& completingKA,
+      Executor::KeepAlive<>::KeepAliveFunc func) {
+    auto state = state_.load(std::memory_order_acquire);
+    if (state == State::DETACHED) {
+      return;
+    }
+
+    // If we are completing on the current executor, call inline, otherwise
+    // add
+    auto addWithInline =
+        [&](Executor::KeepAlive<>::KeepAliveFunc&& addFunc) mutable {
+          if (completingKA.get() == executor_.get()) {
+            addFunc(std::move(completingKA));
+          } else {
+            executor_.copy().add(std::move(addFunc));
+          }
+        };
+
+    if (state == State::HAS_EXECUTOR) {
+      addWithInline(std::move(func));
+      return;
+    }
+    DCHECK(state == State::EMPTY);
+    func_ = std::move(func);
+    if (folly::atomic_compare_exchange_strong_explicit(
+            &state_,
+            &state,
+            State::HAS_FUNCTION,
+            std::memory_order_release,
+            std::memory_order_acquire)) {
+      return;
+    }
+    DCHECK(state == State::DETACHED || state == State::HAS_EXECUTOR);
+    if (state == State::DETACHED) {
+      std::exchange(func_, nullptr);
+      return;
+    }
+    addWithInline(std::exchange(func_, nullptr));
+  }
+
+  Executor* getExecutor() const {
+    assert(executor_.get());
+    return executor_.get();
+  }
+
+  void setExecutor(folly::Executor::KeepAlive<> executor) {
+    if (nestedExecutors_) {
+      auto nestedExecutors = std::exchange(nestedExecutors_, nullptr);
+      for (auto& nestedExecutor : *nestedExecutors) {
+        assert(nestedExecutor.get());
+        nestedExecutor.get()->setExecutor(executor.copy());
+      }
+    }
+    executor_ = std::move(executor);
+    auto state = state_.load(std::memory_order_acquire);
+    if (state == State::EMPTY &&
+        folly::atomic_compare_exchange_strong_explicit(
+            &state_,
+            &state,
+            State::HAS_EXECUTOR,
+            std::memory_order_release,
+            std::memory_order_acquire)) {
+      return;
+    }
+
+    DCHECK(state == State::HAS_FUNCTION);
+    state_.store(State::HAS_EXECUTOR, std::memory_order_release);
+    executor_.copy().add(std::exchange(func_, nullptr));
+  }
+
+  void setNestedExecutors(std::vector<DeferredWrapper> executors) {
+    DCHECK(!nestedExecutors_);
+    nestedExecutors_ =
+        std::make_unique<std::vector<DeferredWrapper>>(std::move(executors));
+  }
+
+  void detach() {
+    if (nestedExecutors_) {
+      auto nestedExecutors = std::exchange(nestedExecutors_, nullptr);
+      for (auto& nestedExecutor : *nestedExecutors) {
+        assert(nestedExecutor.get());
+        nestedExecutor.get()->detach();
+      }
+    }
+    auto state = state_.load(std::memory_order_acquire);
+    if (state == State::EMPTY &&
+        folly::atomic_compare_exchange_strong_explicit(
+            &state_,
+            &state,
+            State::DETACHED,
+            std::memory_order_release,
+            std::memory_order_acquire)) {
+      return;
+    }
+
+    DCHECK(state == State::HAS_FUNCTION);
+    state_.store(State::DETACHED, std::memory_order_release);
+    std::exchange(func_, nullptr);
+  }
+
+  DeferredWrapper copy() {
+    acquire();
+    return DeferredWrapper(this);
+  }
+
+  static DeferredWrapper create() {
+    return DeferredWrapper(new DeferredExecutor{});
+  }
+
+ private:
+  DeferredExecutor() {}
+  friend class UniqueDeleter;
+
+  bool acquire() {
+    auto keepAliveCount =
+        keepAliveCount_.fetch_add(1, std::memory_order_relaxed);
+    DCHECK(keepAliveCount > 0);
+    return true;
+  }
+
+  void release() {
+    auto keepAliveCount =
+        keepAliveCount_.fetch_sub(1, std::memory_order_acq_rel);
+    DCHECK(keepAliveCount > 0);
+    if (keepAliveCount == 1) {
+      delete this;
+    }
+  }
+
+  enum class State { EMPTY, HAS_FUNCTION, HAS_EXECUTOR, DETACHED };
+  std::atomic<State> state_{State::EMPTY};
+  Executor::KeepAlive<>::KeepAliveFunc func_;
+  folly::Executor::KeepAlive<> executor_;
+  std::unique_ptr<std::vector<DeferredWrapper>> nestedExecutors_;
+  std::atomic<ssize_t> keepAliveCount_{1};
+};
+
+inline void UniqueDeleter::operator()(DeferredExecutor* ptr) {
+  if (ptr) {
+    ptr->release();
+  }
+}
+
+inline KeepAliveOrDeferred KeepAliveOrDeferred::copy() const {
+  if (isDeferred()) {
+    if (auto def = getDeferredExecutor()) {
+      return KeepAliveOrDeferred{def->copy()};
+    } else {
+      return KeepAliveOrDeferred{};
+    }
+  } else {
+    return KeepAliveOrDeferred{asKeepAlive()};
+  }
 }
 
 /// The shared state object for Future and Promise.
@@ -328,14 +582,13 @@ class Core final {
   /// If it transitions to Done, synchronously initiates a call to the callback,
   /// and might also synchronously execute that callback (e.g., if there is no
   /// executor or if the executor is inline).
-  template <typename F>
   void setCallback(
-      F&& func,
+      Callback&& func,
       std::shared_ptr<folly::RequestContext>&& context,
       futures::detail::InlineContinuation allowInline) {
     DCHECK(!hasCallback());
 
-    ::new (&callback_) Callback(std::forward<F>(func));
+    ::new (&callback_) Callback(std::move(func));
     ::new (&context_) Context(std::move(context));
 
     auto state = state_.load(std::memory_order_acquire);
@@ -344,8 +597,12 @@ class Core final {
         : State::OnlyCallback;
 
     if (state == State::Start) {
-      if (detail::compare_exchange_strong_release_acquire(
-              state_, state, nextState)) {
+      if (folly::atomic_compare_exchange_strong_explicit(
+              &state_,
+              &state,
+              nextState,
+              std::memory_order_release,
+              std::memory_order_acquire)) {
         return;
       }
       assume(state == State::OnlyResult || state == State::Proxy);
@@ -378,8 +635,12 @@ class Core final {
     auto state = state_.load(std::memory_order_acquire);
     switch (state) {
       case State::Start:
-        if (detail::compare_exchange_strong_release_acquire(
-                state_, state, State::Proxy)) {
+        if (folly::atomic_compare_exchange_strong_explicit(
+                &state_,
+                &state,
+                State::Proxy,
+                std::memory_order_release,
+                std::memory_order_acquire)) {
           break;
         }
         assume(
@@ -391,7 +652,10 @@ class Core final {
       case State::OnlyCallbackAllowInline:
         proxyCallback(state);
         break;
-
+      case State::OnlyResult:
+      case State::Proxy:
+      case State::Done:
+      case State::Empty:
       default:
         terminate_with<std::logic_error>("setCallback unexpected state");
     }
@@ -428,8 +692,12 @@ class Core final {
     auto state = state_.load(std::memory_order_acquire);
     switch (state) {
       case State::Start:
-        if (detail::compare_exchange_strong_release_acquire(
-                state_, state, State::OnlyResult)) {
+        if (folly::atomic_compare_exchange_strong_explicit(
+                &state_,
+                &state,
+                State::OnlyResult,
+                std::memory_order_release,
+                std::memory_order_acquire)) {
           return;
         }
         assume(
@@ -442,7 +710,10 @@ class Core final {
         state_.store(State::Done, std::memory_order_relaxed);
         doCallback(std::move(completingKA), state);
         return;
-
+      case State::OnlyResult:
+      case State::Proxy:
+      case State::Done:
+      case State::Empty:
       default:
         terminate_with<std::logic_error>("setResult unexpected state");
     }
@@ -466,7 +737,7 @@ class Core final {
   /// Call only from consumer thread, either before attaching a callback or
   /// after the callback has already been invoked, but not concurrently with
   /// anything which might trigger invocation of the callback.
-  void setExecutor(Executor::KeepAlive<> x) {
+  void setExecutor(KeepAliveOrDeferred&& x) {
     DCHECK(
         state_ != State::OnlyCallback &&
         state_ != State::OnlyCallbackAllowInline);
@@ -474,7 +745,26 @@ class Core final {
   }
 
   Executor* getExecutor() const {
-    return executor_.get();
+    if (!executor_.isKeepAlive()) {
+      return nullptr;
+    }
+    return executor_.getKeepAliveExecutor();
+  }
+
+  DeferredExecutor* getDeferredExecutor() const {
+    if (!executor_.isDeferred()) {
+      return {};
+    }
+
+    return executor_.getDeferredExecutor();
+  }
+
+  DeferredWrapper stealDeferredExecutor() {
+    if (executor_.isKeepAlive()) {
+      return {};
+    }
+
+    return std::move(executor_).stealDeferred();
   }
 
   /// Call only from consumer thread
@@ -564,6 +854,9 @@ class Core final {
       case State::Empty:
         break;
 
+      case State::Start:
+      case State::OnlyCallback:
+      case State::OnlyCallbackAllowInline:
       default:
         terminate_with<std::logic_error>("~Core unexpected state");
     }
@@ -606,13 +899,32 @@ class Core final {
   void doCallback(Executor::KeepAlive<>&& completingKA, State priorState) {
     DCHECK(state_ == State::Done);
 
-    auto executor = std::exchange(executor_, Executor::KeepAlive<>());
-    bool allowInline =
-        (executor.get() == completingKA.get() &&
-         priorState == State::OnlyCallbackAllowInline);
-    // If we have no executor or if we are allowing inline executor on a
-    // matching executor, run inline.
-    if (executor && !allowInline) {
+    auto executor = std::exchange(executor_, KeepAliveOrDeferred{});
+
+    // Customise inline behaviour
+    // If addCompletingKA is non-null, then we are allowing inline execution
+    auto doAdd = [](Executor::KeepAlive<>&& addCompletingKA,
+                    KeepAliveOrDeferred&& currentExecutor,
+                    auto&& keepAliveFunc) mutable {
+      if (auto deferredExecutorPtr = currentExecutor.getDeferredExecutor()) {
+        deferredExecutorPtr->addFrom(
+            std::move(addCompletingKA), std::move(keepAliveFunc));
+      } else {
+        // If executors match call inline
+        auto currentKeepAlive = std::move(currentExecutor).stealKeepAlive();
+        if (addCompletingKA.get() == currentKeepAlive.get()) {
+          keepAliveFunc(std::move(currentKeepAlive));
+        } else {
+          std::move(currentKeepAlive).add(std::move(keepAliveFunc));
+        }
+      }
+    };
+
+    if (executor) {
+      // If we are not allowing inline, clear the completing KA to disallow
+      if (!(priorState == State::OnlyCallbackAllowInline)) {
+        completingKA = Executor::KeepAlive<>{};
+      }
       exception_wrapper ew;
       // We need to reset `callback_` after it was executed (which can happen
       // through the executor or, if `Executor::add` throws, below). The
@@ -628,14 +940,16 @@ class Core final {
       CoreAndCallbackReference guard_local_scope(this);
       CoreAndCallbackReference guard_lambda(this);
       try {
-        auto xPtr = executor.get();
-        xPtr->add([core_ref = std::move(guard_lambda),
-                   executor = std::move(executor)]() mutable {
-          auto cr = std::move(core_ref);
-          Core* const core = cr.getCore();
-          RequestContextScopeGuard rctx(std::move(core->context_));
-          core->callback_(std::move(executor), std::move(core->result_));
-        });
+        doAdd(
+            std::move(completingKA),
+            std::move(executor),
+            [core_ref =
+                 std::move(guard_lambda)](Executor::KeepAlive<>&& ka) mutable {
+              auto cr = std::move(core_ref);
+              Core* const core = cr.getCore();
+              RequestContextScopeGuard rctx(std::move(core->context_));
+              core->callback_(std::move(ka), std::move(core->result_));
+            });
       } catch (const std::exception& e) {
         ew = exception_wrapper(std::current_exception(), e);
       } catch (...) {
@@ -654,7 +968,7 @@ class Core final {
         detachOne();
       };
       RequestContextScopeGuard rctx(std::move(context_));
-      callback_(std::move(executor), std::move(result_));
+      callback_(std::move(completingKA), std::move(result_));
     }
   }
 
@@ -706,14 +1020,14 @@ class Core final {
   std::atomic<unsigned char> callbackReferences_{0};
   std::atomic<bool> interruptHandlerSet_{false};
   SpinLock interruptLock_;
-  Executor::KeepAlive<> executor_;
+  KeepAliveOrDeferred executor_;
   union {
     Context context_;
   };
   std::unique_ptr<exception_wrapper> interrupt_{};
   std::function<void(exception_wrapper const&)> interruptHandler_{nullptr};
 };
-
 } // namespace detail
 } // namespace futures
+
 } // namespace folly

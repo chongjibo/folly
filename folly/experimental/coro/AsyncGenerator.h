@@ -1,11 +1,11 @@
 /*
- * Copyright 2019-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,12 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
+#include <folly/CancellationToken.h>
 #include <folly/Traits.h>
 #include <folly/experimental/coro/CurrentExecutor.h>
+#include <folly/experimental/coro/Invoke.h>
 #include <folly/experimental/coro/Utils.h>
 #include <folly/experimental/coro/ViaIfAsync.h>
+#include <folly/experimental/coro/WithCancellation.h>
+#include <folly/experimental/coro/detail/Malloc.h>
 #include <folly/experimental/coro/detail/ManualLifetime.h>
 
 #include <glog/logging.h>
@@ -56,6 +61,14 @@ class AsyncGeneratorPromise {
     }
   }
 
+  static void* operator new(std::size_t size) {
+    return ::folly_coro_async_malloc(size);
+  }
+
+  static void operator delete(void* ptr, std::size_t size) {
+    ::folly_coro_async_free(ptr, size);
+  }
+
   AsyncGenerator<Reference, Value> get_return_object() noexcept;
 
   std::experimental::suspend_always initial_suspend() noexcept {
@@ -64,6 +77,7 @@ class AsyncGeneratorPromise {
 
   YieldAwaiter final_suspend() noexcept {
     DCHECK(!hasValue_);
+    clearContext();
     return {};
   }
 
@@ -72,7 +86,7 @@ class AsyncGeneratorPromise {
     DCHECK(!hasValue_);
     value_.construct(static_cast<Reference&&>(value));
     hasValue_ = true;
-    executor_.reset();
+    clearContext();
     return YieldAwaiter{};
   }
 
@@ -92,7 +106,7 @@ class AsyncGeneratorPromise {
     DCHECK(!hasValue_);
     value_.construct(static_cast<U&&>(value));
     hasValue_ = true;
-    executor_.reset();
+    clearContext();
     return {};
   }
 
@@ -108,11 +122,26 @@ class AsyncGeneratorPromise {
   template <typename U>
   auto await_transform(U&& value) {
     return folly::coro::co_viaIfAsync(
-        executor_.get_alias(), static_cast<U&&>(value));
+        executor_.get_alias(),
+        folly::coro::co_withCancellation(
+            cancelToken_, static_cast<U&&>(value)));
   }
 
   auto await_transform(folly::coro::co_current_executor_t) noexcept {
     return AwaitableReady<folly::Executor*>{executor_.get()};
+  }
+
+  auto await_transform(folly::coro::co_current_cancellation_token_t) noexcept {
+    return AwaitableReady<folly::CancellationToken>{cancelToken_};
+  }
+
+  void setCancellationToken(folly::CancellationToken cancelToken) noexcept {
+    // Only keep the first cancellation token.
+    // ie. the inner-most cancellation scope of the consumer's calling context.
+    if (!hasCancelTokenOverride_) {
+      cancelToken_ = std::move(cancelToken);
+      hasCancelTokenOverride_ = true;
+    }
   }
 
   void setExecutor(folly::Executor::KeepAlive<> executor) noexcept {
@@ -131,20 +160,16 @@ class AsyncGeneratorPromise {
     }
   }
 
-  Reference value() noexcept {
+  decltype(auto) getRvalue() noexcept {
     DCHECK(hasValue_);
-    return value_.get();
-  }
-
-  std::add_pointer_t<Reference> valuePointer() noexcept {
-    DCHECK(hasValue_);
-    return std::addressof(value_.get());
+    return std::move(value_).get();
   }
 
   void clearValue() noexcept {
-    DCHECK(hasValue_);
-    hasValue_ = false;
-    value_.destruct();
+    if (hasValue_) {
+      hasValue_ = false;
+      value_.destruct();
+    }
   }
 
   bool hasValue() const noexcept {
@@ -152,11 +177,19 @@ class AsyncGeneratorPromise {
   }
 
  private:
+  void clearContext() noexcept {
+    executor_ = {};
+    cancelToken_ = {};
+    hasCancelTokenOverride_ = false;
+  }
+
   std::experimental::coroutine_handle<> continuation_;
   folly::Executor::KeepAlive<> executor_;
+  folly::CancellationToken cancelToken_;
   std::exception_ptr exception_;
   ManualLifetime<Reference> value_;
   bool hasValue_ = false;
+  bool hasCancelTokenOverride_ = false;
 };
 
 } // namespace detail
@@ -238,10 +271,8 @@ class AsyncGeneratorPromise {
 //
 //  folly::coro::Task<void> consumer() {
 //    auto records = getRecordsAsync();
-//    for (auto it = co_await records.begin();
-//         it != records.end();
-//         co_await ++it) {
-//      auto&& record = *it;
+//    while (auto item = co_await records.next()) {
+//      auto&& record = *item;
 //      process(record);
 //    }
 //  }
@@ -262,154 +293,6 @@ class FOLLY_NODISCARD AsyncGenerator {
   using value_type = Value;
   using reference = Reference;
   using pointer = std::add_pointer_t<Reference>;
-
-  struct sentinel {};
-
-  class async_iterator {
-    class FOLLY_NODISCARD AdvanceAwaiter {
-     public:
-      explicit AdvanceAwaiter(async_iterator& iter) noexcept : iter_(iter) {}
-
-      bool await_ready() noexcept {
-        return false;
-      }
-
-      handle_t await_suspend(
-          std::experimental::coroutine_handle<> continuation) noexcept {
-        auto& promise = iter_.coro_.promise();
-        promise.setContinuation(continuation);
-        promise.clearValue();
-        return iter_.coro_;
-      }
-
-      async_iterator& await_resume() {
-        if (iter_.coro_.done()) {
-          iter_.coro_.promise().throwIfException();
-        }
-        return iter_;
-      }
-
-     private:
-      async_iterator& iter_;
-    };
-
-    class FOLLY_NODISCARD AdvanceSemiAwaitable {
-     public:
-      explicit AdvanceSemiAwaitable(async_iterator& iter) noexcept
-          : iter_(iter) {}
-
-      friend AdvanceAwaiter co_viaIfAsync(
-          folly::Executor::KeepAlive<> executor,
-          AdvanceSemiAwaitable awaitable) noexcept {
-        awaitable.iter_.coro_.promise().setExecutor(std::move(executor));
-        return AdvanceAwaiter{awaitable.iter_};
-      }
-
-     private:
-      async_iterator& iter_;
-    };
-
-    friend class AdvanceAwaiter;
-    friend class AdvanceSemiAwaitable;
-
-   public:
-    using async_iterator_category = std::input_iterator_tag;
-    using value_type = typename AsyncGenerator::value_type;
-    using reference = typename AsyncGenerator::reference;
-    using pointer = typename AsyncGenerator::pointer;
-
-    async_iterator() noexcept = default;
-
-    explicit async_iterator(handle_t coro) noexcept : coro_(coro) {}
-
-    async_iterator(async_iterator&& other) noexcept
-        : coro_(std::exchange(other.coro_, {})) {}
-
-    async_iterator& operator=(async_iterator&& other) noexcept {
-      coro_ = std::exchange(other.coro_, {});
-      return *this;
-    }
-
-    AdvanceSemiAwaitable operator++() noexcept {
-      return AdvanceSemiAwaitable(*this);
-    }
-
-    typename AsyncGenerator::reference operator*() const
-        noexcept(std::is_nothrow_copy_constructible<Reference>::value) {
-      return coro_.promise().value();
-    }
-
-    typename AsyncGenerator::pointer operator->() const noexcept {
-      return coro_.promise().valuePointer();
-    }
-
-    friend bool operator==(const async_iterator& it, sentinel) noexcept {
-      return !it.coro_ || it.coro_.done();
-    }
-
-    friend bool operator!=(const async_iterator& it, sentinel s) noexcept {
-      return !(it == s);
-    }
-
-    friend bool operator==(sentinel s, const async_iterator& it) noexcept {
-      return it == s;
-    }
-
-    friend bool operator!=(sentinel s, const async_iterator& it) noexcept {
-      return it != s;
-    }
-
-   private:
-    handle_t coro_;
-  };
-
- private:
-  class FOLLY_NODISCARD BeginAwaiter {
-   public:
-    BeginAwaiter(handle_t coro) noexcept : coro_(coro) {}
-
-    bool await_ready() noexcept {
-      return !coro_;
-    }
-
-    handle_t await_suspend(
-        std::experimental::coroutine_handle<> continuation) noexcept {
-      coro_.promise().setContinuation(continuation);
-      return coro_;
-    }
-
-    FOLLY_NODISCARD async_iterator await_resume() {
-      if (coro_ && coro_.done()) {
-        coro_.promise().throwIfException();
-      }
-      return async_iterator{coro_};
-    }
-
-   private:
-    handle_t coro_;
-  };
-
-  class FOLLY_NODISCARD BeginSemiAwaitable {
-   public:
-    explicit BeginSemiAwaitable(handle_t coro) noexcept : coro_(coro) {}
-
-    // A BeginSemiAwaitable requires an executor to be injected by calling
-    // the folly::coro::co_viaIfAsync() function. This is done implicitly
-    // by coroutine-types such as Task<T> and AsyncGenerator<T> which call
-    // co_viaIfAsync() from their promise_type::await_transform() method
-    // to inject the awaiting coroutine's current executor.
-    friend BeginAwaiter co_viaIfAsync(
-        folly::Executor::KeepAlive<> executor,
-        BeginSemiAwaitable&& awaitable) noexcept {
-      if (awaitable.coro_) {
-        awaitable.coro_.promise().setExecutor(std::move(executor));
-      }
-      return BeginAwaiter{awaitable.coro_};
-    }
-
-   private:
-    handle_t coro_;
-  };
 
  public:
   AsyncGenerator() noexcept : coro_() {}
@@ -435,26 +318,176 @@ class FOLLY_NODISCARD AsyncGenerator {
     std::swap(coro_, other.coro_);
   }
 
-  // begin() returns a SemiAwaitable type that must either be awaited within
-  // the context of a coroutine that has an associated folly::Executor (eg.
-  // a folly::coro::Task<T> or a folly::coro::AsyncGenerator<T>) or otherwise
-  // must have an executor explicitly injected by calling
-  // folly::co_viaIfAsync(executor, gen.begin()).
-  //
-  // The result of `co_await this->begin()` is an 'async_iterator' that can
-  // be used to access the current elements of the sequence and advance to
-  // the next element.
-  //
-  // Note that the AsyncGenerator is an input-range and the elements can only
-  // be consumed once. It is undefined behaviour to call the .begin() method
-  // multiple times for the same generator object.
-  FOLLY_NODISCARD BeginSemiAwaitable begin() noexcept {
-    DCHECK(!hasStarted());
-    return BeginSemiAwaitable{coro_};
+  class NextAwaitable;
+  class NextSemiAwaitable;
+
+  class NextResult {
+   public:
+    NextResult() noexcept : hasValue_(false) {}
+
+    NextResult(NextResult&& other) noexcept : hasValue_(other.hasValue_) {
+      if (hasValue_) {
+        value_.construct(std::move(other.value_).get());
+      }
+    }
+
+    ~NextResult() {
+      if (hasValue_) {
+        value_.destruct();
+      }
+    }
+
+    NextResult& operator=(NextResult&& other) {
+      if (&other != this) {
+        if (has_value()) {
+          hasValue_ = false;
+          value_.destruct();
+        }
+
+        if (other.has_value()) {
+          value_.construct(std::move(other.value_).get());
+          hasValue_ = true;
+        }
+      }
+      return *this;
+    }
+
+    bool has_value() const noexcept {
+      return hasValue_;
+    }
+
+    explicit operator bool() const noexcept {
+      return has_value();
+    }
+
+    decltype(auto) value() & {
+      DCHECK(has_value());
+      return value_.get();
+    }
+
+    decltype(auto) value() && {
+      DCHECK(has_value());
+      return std::move(value_).get();
+    }
+
+    decltype(auto) value() const& {
+      DCHECK(has_value());
+      return value_.get();
+    }
+
+    decltype(auto) value() const&& {
+      DCHECK(has_value());
+      return std::move(value_).get();
+    }
+
+    decltype(auto) operator*() & {
+      return value();
+    }
+
+    decltype(auto) operator*() && {
+      return std::move(*this).value();
+    }
+
+    decltype(auto) operator*() const& {
+      return value();
+    }
+
+    decltype(auto) operator*() const&& {
+      return std::move(*this).value();
+    }
+
+    decltype(auto) operator-> () {
+      DCHECK(has_value());
+      auto&& x = value_.get();
+      return std::addressof(x);
+    }
+
+    decltype(auto) operator-> () const {
+      DCHECK(has_value());
+      auto&& x = value_.get();
+      return std::addressof(x);
+    }
+
+   private:
+    friend NextAwaitable;
+    explicit NextResult(handle_t coro) noexcept : hasValue_(true) {
+      value_.construct(coro.promise().getRvalue());
+    }
+
+    detail::ManualLifetime<Reference> value_;
+    bool hasValue_ = false;
+  };
+
+  class NextAwaitable {
+   public:
+    bool await_ready() {
+      return !coro_;
+    }
+
+    handle_t await_suspend(
+        std::experimental::coroutine_handle<> continuation) noexcept {
+      auto& promise = coro_.promise();
+      promise.setContinuation(continuation);
+      promise.clearValue();
+      return coro_;
+    }
+
+    NextResult await_resume() {
+      if (!coro_) {
+        return NextResult{};
+      } else if (coro_.done()) {
+        coro_.promise().throwIfException();
+        return NextResult{};
+      } else {
+        return NextResult{coro_};
+      }
+    }
+
+   private:
+    friend NextSemiAwaitable;
+    explicit NextAwaitable(handle_t coro) noexcept : coro_(coro) {}
+
+    handle_t coro_;
+  };
+
+  class NextSemiAwaitable {
+   public:
+    NextAwaitable viaIfAsync(Executor::KeepAlive<> executor) noexcept {
+      if (coro_) {
+        coro_.promise().setExecutor(std::move(executor));
+      }
+      return NextAwaitable{coro_};
+    }
+
+    friend NextSemiAwaitable co_withCancellation(
+        CancellationToken cancelToken,
+        NextSemiAwaitable&& awaitable) {
+      if (awaitable.coro_) {
+        awaitable.coro_.promise().setCancellationToken(std::move(cancelToken));
+      }
+      return NextSemiAwaitable{std::exchange(awaitable.coro_, {})};
+    }
+
+   private:
+    friend AsyncGenerator;
+
+    explicit NextSemiAwaitable(handle_t coro) noexcept : coro_(coro) {}
+
+    handle_t coro_;
+  };
+
+  NextSemiAwaitable next() noexcept {
+    DCHECK(!coro_ || !coro_.done());
+    return NextSemiAwaitable{coro_};
   }
 
-  FOLLY_NODISCARD sentinel end() noexcept {
-    return {};
+  template <typename F, typename... A, typename F_, typename... A_>
+  friend AsyncGenerator
+  folly_co_invoke(tag_t<AsyncGenerator, F, A...>, F_ f, A_... a) {
+    auto r = invoke(static_cast<F&&>(f), static_cast<A&&>(a)...);
+    while (auto v = co_await r.next()) {
+      co_yield std::move(v).value();
+    }
   }
 
  private:
@@ -463,10 +496,6 @@ class FOLLY_NODISCARD AsyncGenerator {
   explicit AsyncGenerator(
       std::experimental::coroutine_handle<promise_type> coro) noexcept
       : coro_(coro) {}
-
-  bool hasStarted() const noexcept {
-    return coro_ && (coro_.done() || coro_.promise().hasValue());
-  }
 
   std::experimental::coroutine_handle<promise_type> coro_;
 };
@@ -480,37 +509,7 @@ AsyncGeneratorPromise<Reference, Value>::get_return_object() noexcept {
       AsyncGeneratorPromise<Reference, Value>>::from_promise(*this)};
 }
 
-template <typename T>
-inline constexpr bool is_async_generator_v = false;
-
-template <typename Reference, typename Value>
-inline constexpr bool is_async_generator_v<AsyncGenerator<Reference, Value>> =
-    true;
-
 } // namespace detail
-
-// Helper for immediately invoking a lambda with captures that returns an
-// AsyncGenerator to keep the lambda alive until the generator completes.
-//
-// Example:
-//   auto gen = co_invoke([min, max]() -> AsyncGenerator<T> {
-//     for (int i = min; i <= max; ++i) {
-//       co_yield co_await doSomething(i);
-//     }
-//   });
-template <typename Func, typename... Args>
-auto co_invoke(Func func, Args... args) -> std::enable_if_t<
-    detail::is_async_generator_v<invoke_result_t<Func, Args...>>,
-    invoke_result_t<Func, Args...>> {
-  auto asyncRange =
-      folly::invoke(static_cast<Func&&>(func), static_cast<Args&&>(args)...);
-  const auto itEnd = asyncRange.end();
-  auto it = co_await asyncRange.begin();
-  while (it != itEnd) {
-    co_yield* it;
-    co_await++ it;
-  }
-}
 
 } // namespace coro
 } // namespace folly

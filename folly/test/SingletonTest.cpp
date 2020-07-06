@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -33,6 +33,7 @@
 FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
 
 using namespace folly;
+using namespace std::chrono_literals;
 
 TEST(Singleton, MissingSingleton) {
   EXPECT_DEATH(
@@ -1020,4 +1021,57 @@ TEST(Singleton, LeakySingletonLSAN) {
   auto* ptr1 = &gPtr.get();
   EXPECT_NE(ptr0, ptr1);
   EXPECT_EQ(*ptr1, 1);
+}
+
+TEST(Singleton, ShutdownTimer) {
+  struct VaultTag {};
+  struct PrivateTag {};
+  struct Object {
+    ~Object() {
+      /* sleep override */ std::this_thread::sleep_for(shutdownDuration);
+    }
+
+    std::chrono::milliseconds shutdownDuration;
+  };
+  using SingletonObject = Singleton<Object, PrivateTag, VaultTag>;
+
+  auto& vault = *SingletonVault::singleton<VaultTag>();
+  SingletonObject object;
+  vault.registrationComplete();
+
+  vault.setShutdownTimeout(10ms);
+  SingletonObject::try_get()->shutdownDuration = 1s;
+  EXPECT_DEATH(
+      [&]() {
+        vault.startShutdownTimer();
+        vault.destroyInstances();
+      }(),
+      "Failed to complete shutdown within 10ms.");
+
+  vault.setShutdownTimeout(1s);
+  SingletonObject::try_get()->shutdownDuration = 10ms;
+  vault.startShutdownTimer();
+  vault.destroyInstances();
+}
+
+TEST(Singleton, ShutdownTimerDisable) {
+  struct VaultTag {};
+  struct PrivateTag {};
+  struct Object {
+    ~Object() {
+      /* sleep override */ std::this_thread::sleep_for(shutdownDuration);
+    }
+
+    std::chrono::milliseconds shutdownDuration;
+  };
+  using SingletonObject = Singleton<Object, PrivateTag, VaultTag>;
+
+  auto& vault = *SingletonVault::singleton<VaultTag>();
+  SingletonObject object;
+  vault.registrationComplete();
+
+  vault.disableShutdownTimeout();
+  SingletonObject::try_get()->shutdownDuration = 100ms;
+  vault.startShutdownTimer();
+  vault.destroyInstances();
 }

@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/logging/AsyncFileWriter.h>
 
 #include <folly/Exception.h>
@@ -35,18 +36,23 @@ bool AsyncFileWriter::ttyOutput() const {
 }
 
 void AsyncFileWriter::writeToFile(
-    std::vector<std::string>* ioQueue,
+    const std::vector<std::string>& ioQueue,
     size_t numDiscarded) {
+#ifndef _WIN32
   // kNumIovecs controls the maximum number of strings we write at once in a
   // single writev() call.
   constexpr int kNumIovecs = 64;
   std::array<iovec, kNumIovecs> iovecs;
+#endif // !_WIN32
 
   size_t idx = 0;
-  while (idx < ioQueue->size()) {
+  while (idx < ioQueue.size()) {
+#ifndef _WIN32
+    // On POSIX platforms use writev() to minimize the number of system calls
+    // we use to write the data.
     int numIovecs = 0;
-    while (numIovecs < kNumIovecs && idx < ioQueue->size()) {
-      const auto& str = (*ioQueue)[idx];
+    while (numIovecs < kNumIovecs && idx < ioQueue.size()) {
+      const auto& str = ioQueue[idx];
       iovecs[numIovecs].iov_base = const_cast<char*>(str.data());
       iovecs[numIovecs].iov_len = str.size();
       ++numIovecs;
@@ -54,7 +60,17 @@ void AsyncFileWriter::writeToFile(
     }
 
     auto ret = folly::writevFull(file_.fd(), iovecs.data(), numIovecs);
+    folly::checkUnixError(ret, "writevFull() failed");
+#else // _WIN32
+    // On Windows folly's writevFull() function is just a wrapper that calls
+    // write() multiple times.  Go ahead and do that ourselves here, since there
+    // is no point constructing the iovec data structure.
+    auto ret =
+        folly::writeFull(file_.fd(), ioQueue[idx].data(), ioQueue[idx].size());
     folly::checkUnixError(ret, "writeFull() failed");
+    CHECK_EQ(ret, ioQueue[idx].size());
+    ++idx;
+#endif // _WIN32
   }
 
   if (numDiscarded > 0) {
@@ -69,7 +85,7 @@ void AsyncFileWriter::writeToFile(
 }
 
 void AsyncFileWriter::performIO(
-    std::vector<std::string>* ioQueue,
+    const std::vector<std::string>& ioQueue,
     size_t numDiscarded) {
   try {
     writeToFile(ioQueue, numDiscarded);

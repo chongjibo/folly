@@ -1,11 +1,11 @@
 /*
- * Copyright 2019-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/Try.h>
@@ -77,12 +78,12 @@ using range_reference_t = iterator_reference_t<range_iterator_t<Range>>;
 // point. This means that awaiting multiple sub-tasks that all complete
 // synchronously will still execute them sequentially on the current thread.
 //
-// If any of the input operations complete with an exception then the whole
-// collectAll() operation will also complete with an exception once all of the
-// operations have completed. Any partial results will be discarded.
-// If multiple operations fail with an exception then one of the exceptions
-// will be rethrown to the caller (which one is unspecified) and the other
-// exceptions are discarded.
+// If any of the input operations complete with an exception then it will
+// request cancellation of any outstanding tasks and the whole collectAll()
+// operation will complete with an exception once all of the operations
+// have completed.  Any partial results will be discarded. If multiple
+// operations fail with an exception then the exception from the first task
+// to fail will be rethrown and subsequent errors are discarded.
 //
 // If you need to know which operation failed or you want to handle partial
 // failures then you can use the folly::coro::collectAllTry() instead which
@@ -116,6 +117,9 @@ auto collectAll(SemiAwaitables&&... awaitables) -> folly::coro::Task<std::tuple<
 // operations and handle partial failures but has a less-convenient interface
 // than collectAll().
 //
+// It also differs in that failure of one subtask does _not_ request
+// cancellation of the other subtasks.
+//
 // Example: Handling partial failure with collectAllTry()
 //    folly::coro::Task<Foo> doSomething();
 //    folly::coro::Task<Bar> doSomethingElse();
@@ -143,29 +147,30 @@ auto collectAllTry(SemiAwaitables&&... awaitables)
         remove_cvref_t<SemiAwaitables>>...>>;
 
 ////////////////////////////////////////////////////////////////////////
-// rangeCollectAll(RangeOf<SemiAwaitable<T>>&&)
+// collectAllRange(RangeOf<SemiAwaitable<T>>&&)
 //   -> SemiAwaitable<std::vector<T>>
 //
 // The collectAllRange() function can be used to concurrently await a collection
 // of SemiAwaitable objects, returning a std::vector of the individual results
 // once all operations have completed.
 //
-// If any of the operations fail with an exception the entire operation fails
-// with an exception and any partial results are discarded. If more than one
-// operation fails with an exception then the exception from the first failed
-// operation in the input range is rethrown. Other results and exceptions are
-// discarded.
+// If any of the operations fail with an exception then requests cancellation of
+// any outstanding operations and the entire operation fails with an exception,
+// discarding any partial results. If more than one operation fails with an
+// exception then the exception from task that failed first (in time) is
+// rethrown. Other results and exceptions are discarded.
 //
 // If you need to be able to distinguish which operation failed or handle
 // partial failures then use collectAllTryRange() instead.
 //
 // Note that the expression `*it` must be SemiAwaitable.
 // This typically means that containers of Task<T> must be adapted to produce
-// moved-elements by applying the ranges::view::move transform.
+// moved-elements by applying the ranges::views::move transform.
 // e.g.
 //
 //   std::vector<Task<T>> tasks = ...;
-//   std::vector<T> vals = co_await collectAllRange(tasks | ranges::view::move);
+//   std::vector<T> vals = co_await collectAllRange(tasks |
+//   ranges::views::move);
 //
 template <
     typename InputRange,
@@ -204,22 +209,22 @@ auto collectAllTryRange(InputRange awaitables)
         detail::range_reference_t<InputRange>>>>;
 
 // collectAllRange()/collectAllTryRange() overloads that simplifies the
-// common-case where an rvalue std::vector<Task<T>> is passed.
+// common-case where an rvalue std::vector<SemiAwaitable> is passed.
 //
-// This avoids the caller needing to pipe the input through ranges::view::move
-// transform to force the Task<T> elements to be rvalue-references since the
-// std::vector<T>::reference type is T& rather than T&& and Task<T>& is not
-// awaitable.
-template <typename T>
-auto collectAllRange(std::vector<Task<T>> awaitables)
-    -> decltype(collectAllRange(awaitables | ranges::view::move)) {
-  co_return co_await collectAllRange(awaitables | ranges::view::move);
+// This avoids the caller needing to pipe the input through ranges::views::move
+// transform to force the elements to be rvalue-references since the
+// std::vector<T>::reference type is T& rather than T&& and some awaitables,
+// such as Task<U>, are not lvalue awaitable.
+template <typename SemiAwaitable>
+auto collectAllRange(std::vector<SemiAwaitable> awaitables)
+    -> decltype(collectAllRange(awaitables | ranges::views::move)) {
+  co_return co_await collectAllRange(awaitables | ranges::views::move);
 }
 
-template <typename T>
-auto collectAllTryRange(std::vector<Task<T>> awaitables)
-    -> decltype(collectAllTryRange(awaitables | ranges::view::move)) {
-  co_return co_await collectAllTryRange(awaitables | ranges::view::move);
+template <typename SemiAwaitable>
+auto collectAllTryRange(std::vector<SemiAwaitable> awaitables)
+    -> decltype(collectAllTryRange(awaitables | ranges::views::move)) {
+  co_return co_await collectAllTryRange(awaitables | ranges::views::move);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -233,15 +238,16 @@ auto collectAllTryRange(std::vector<Task<T>> awaitables)
 // 'maxConcurrency' of these input awaitables to be concurrently awaited
 // at any one point in time.
 //
-// If any of the input awaitables fail with an exception then the whole
-// operation fails with an exception. If multiple input awaitables fail with
-// an exception then one of these exceptions will be rethrown and the rest
-// of the results will be discarded.
+// If any of the input awaitables fail with an exception then requests
+// cancellation of any incomplete operations and fails the whole
+// operation with an exception. If multiple input awaitables fail with
+// an exception then the exeception from the first task to fail (in time)
+// will be rethrown and the rest of the results will be discarded.
 //
 // If there is an exception thrown while iterating over the input-range then
 // it will still guarantee that any prior awaitables in the input-range will
 // run to completion before completing the collectAllWindowed() operation with
-// an exception.
+// the exception thrown during iteration.
 //
 // The resulting std::vector will contain the results in the corresponding
 // order of their respective awaitables in the input range.
@@ -282,26 +288,26 @@ auto collectAllTryWindowed(InputRange awaitables, std::size_t maxConcurrency)
         detail::range_reference_t<InputRange>>>>;
 
 // collectAllWindowed()/collectAllTryWindowed() overloads that simplify the
-// use of these functions with std::vector<Task<T>>.
-template <typename T>
+// use of these functions with std::vector<SemiAwaitable>.
+template <typename SemiAwaitable>
 auto collectAllWindowed(
-    std::vector<Task<T>> awaitables,
+    std::vector<SemiAwaitable> awaitables,
     std::size_t maxConcurrency)
     -> decltype(
-        collectAllWindowed(awaitables | ranges::view::move, maxConcurrency)) {
+        collectAllWindowed(awaitables | ranges::views::move, maxConcurrency)) {
   co_return co_await collectAllWindowed(
-      awaitables | ranges::view::move, maxConcurrency);
+      awaitables | ranges::views::move, maxConcurrency);
 }
 
-template <typename T>
+template <typename SemiAwaitable>
 auto collectAllTryWindowed(
-    std::vector<Task<T>> awaitables,
+    std::vector<SemiAwaitable> awaitables,
     std::size_t maxConcurrency)
     -> decltype(collectAllTryWindowed(
-        awaitables | ranges::view::move,
+        awaitables | ranges::views::move,
         maxConcurrency)) {
   co_return co_await collectAllTryWindowed(
-      awaitables | ranges::view::move, maxConcurrency);
+      awaitables | ranges::views::move, maxConcurrency);
 }
 
 } // namespace coro

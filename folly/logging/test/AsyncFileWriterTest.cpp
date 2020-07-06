@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <thread>
 
 #include <folly/Conv.h>
@@ -155,7 +156,7 @@ TEST(AsyncFileWriter, ioError) {
   //
   // GTest on Windows doesn't support alternation in the regex syntax -_-....
   const std::string kExpectedErrorMessage =
-#if _WIN32
+#ifdef _WIN32
       // The `pipe` call above is actually implemented via sockets, so we get
       // a different error message.
       "An established connection was aborted by the software in your host machine\\.";
@@ -257,7 +258,7 @@ TEST(AsyncFileWriter, flush) {
   EXPECT_EQ(bytesRead, paddingSize);
 
   // Make sure flush completes successfully now
-  std::move(future).get(10ms);
+  std::move(future).get(50ms);
 }
 
 // A large-ish message suffix, just to consume space and help fill up
@@ -371,7 +372,7 @@ class ReadStats {
     size_t messageIndex = 0;
     try {
       parseMessage(msg, &threadID, &messageIndex);
-    } catch (const std::exception& ex) {
+    } catch (const std::exception&) {
       ++numUnableToParse_;
       XLOG(ERR, "unable to parse log message: ", msg);
       return;
@@ -617,6 +618,7 @@ TEST(AsyncFileWriter, discard) {
   readStats.check();
 }
 
+#ifndef _WIN32
 /**
  * Test that AsyncFileWriter operates correctly after a fork() in both the
  * parent and child processes.
@@ -802,3 +804,4 @@ TEST(AsyncFileWriter, crazyForks) {
   SKIP() << "pthread_atfork() is not supported on this platform";
 #endif // FOLLY_HAVE_PTHREAD_ATFORK
 }
+#endif // !_WIN32

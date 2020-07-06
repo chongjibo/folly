@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -39,6 +39,10 @@
 
 namespace folly {
 namespace symbolizer {
+
+const unsigned long kAllFatalSignals = (1UL << SIGSEGV) | (1UL << SIGILL) |
+    (1UL << SIGFPE) | (1UL << SIGABRT) | (1UL << SIGBUS) | (1UL << SIGTERM) |
+    (1UL << SIGQUIT);
 
 namespace {
 
@@ -88,7 +92,7 @@ void FatalSignalCallbackRegistry::run() {
 
 std::atomic<FatalSignalCallbackRegistry*> gFatalSignalCallbackRegistry{};
 
-static FatalSignalCallbackRegistry* getFatalSignalCallbackRegistry() {
+FatalSignalCallbackRegistry* getFatalSignalCallbackRegistry() {
   // Leak it so we don't have to worry about destruction order
   static FatalSignalCallbackRegistry* fatalSignalCallbackRegistry =
       new FatalSignalCallbackRegistry();
@@ -361,8 +365,15 @@ void dumpSignalInfo(int signum, siginfo_t* siginfo) {
   printDec(getpid());
   print(" (pthread TID ");
   printHex((uint64_t)pthread_self());
+#if defined(__linux__)
   print(") (linux TID ");
   printDec(syscall(__NR_gettid));
+#elif defined(__FreeBSD__)
+  long tid = 0;
+  syscall(432, &tid);
+  print(") (freebsd TID ");
+  printDec(tid);
+#endif
 
   // Kernel-sourced signals don't give us useful info for pid/uid.
   if (siginfo->si_code <= 0) {
@@ -482,7 +493,7 @@ bool isSmallSigAltStackEnabled() {
 
 } // namespace
 
-void installFatalSignalHandler() {
+void installFatalSignalHandler(std::bitset<64> signals) {
   if (gAlreadyInstalled.exchange(true)) {
     // Already done.
     return;
@@ -523,7 +534,10 @@ void installFatalSignalHandler() {
   sa.sa_sigaction = &signalHandler;
 
   for (auto p = kFatalSignals; p->name; ++p) {
-    CHECK_ERR(sigaction(p->number, &sa, &p->oldAction));
+    if ((p->number < static_cast<int>(signals.size())) &&
+        signals.test(p->number)) {
+      CHECK_ERR(sigaction(p->number, &sa, &p->oldAction));
+    }
   }
 }
 } // namespace symbolizer

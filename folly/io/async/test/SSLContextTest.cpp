@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,8 +19,9 @@
 #include <folly/portability/GTest.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
 
+#include <folly/io/async/test/SSLUtil.h>
+
 using namespace std;
-using namespace testing;
 
 namespace folly {
 
@@ -31,12 +32,8 @@ class SSLContextTest : public testing::Test {
 };
 
 void SSLContextTest::verifySSLCipherList(const vector<string>& ciphers) {
-  int i = 0;
   ssl::SSLUniquePtr ssl(ctx.createSSL());
-  for (auto& cipher : ciphers) {
-    ASSERT_STREQ(cipher.c_str(), SSL_get_cipher_list(ssl.get(), i++));
-  }
-  ASSERT_EQ(nullptr, SSL_get_cipher_list(ssl.get(), i));
+  EXPECT_EQ(ciphers, test::getNonTLS13CipherList(ssl.get()));
 }
 
 TEST_F(SSLContextTest, TestSetCipherString) {
@@ -48,6 +45,24 @@ TEST_F(SSLContextTest, TestSetCipherList) {
   const vector<string> ciphers = {"ECDHE-RSA-AES128-SHA", "AES256-SHA"};
   ctx.setCipherList(ciphers);
   verifySSLCipherList(ciphers);
+}
+
+TEST_F(SSLContextTest, TestCipherRemoval) {
+  ctx.setCipherList({"ECDHE-RSA-AES128-SHA", "AES256-SHA"});
+  {
+    ssl::SSLUniquePtr ssl(ctx.createSSL());
+    auto ciphers = test::getCiphersFromSSL(ssl.get());
+    EXPECT_TRUE(
+        std::find(begin(ciphers), end(ciphers), "AES256-SHA") != end(ciphers));
+  }
+
+  ctx.setCipherList({"ECDHE-RSA-AES128-SHA"});
+  {
+    ssl::SSLUniquePtr ssl(ctx.createSSL());
+    auto ciphers = test::getCiphersFromSSL(ssl.get());
+    EXPECT_FALSE(
+        std::find(begin(ciphers), end(ciphers), "AES256-SHA") != end(ciphers));
+  }
 }
 
 TEST_F(SSLContextTest, TestLoadCertKey) {
@@ -162,6 +177,17 @@ TEST_F(SSLContextTest, TestLoadCertificateChain) {
   SSL_CTX_get0_chain_certs(sctx, &stack);
   ASSERT_NE(stack, nullptr);
   EXPECT_EQ(1, sk_X509_num(stack));
+}
+
+TEST_F(SSLContextTest, TestGetFromSSLCtx) {
+  // Positive test
+  SSLContext* contextPtr = SSLContext::getFromSSLCtx(ctx.getSSLCtx());
+  EXPECT_EQ(contextPtr, &ctx);
+
+  // Negative test
+  SSL_CTX* randomCtx = SSL_CTX_new(SSLv23_method());
+  EXPECT_EQ(nullptr, SSLContext::getFromSSLCtx(randomCtx));
+  SSL_CTX_free(randomCtx);
 }
 
 } // namespace folly

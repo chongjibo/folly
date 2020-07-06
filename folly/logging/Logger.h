@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,10 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
-#include <folly/Conv.h>
-#include <folly/Format.h>
 #include <folly/logging/LogCategory.h>
 #include <folly/logging/LogLevel.h>
 #include <folly/logging/LogStream.h>
@@ -39,9 +38,9 @@
       ##__VA_ARGS__)
 
 /**
- * Log a message to the specified logger, using a folly::format() string.
+ * Log a message to the specified logger, using a fmt::format() string.
  *
- * The arguments will be processed using folly::format().  The format syntax
+ * The arguments will be processed using fmt::format().  The format syntax
  * is similar to Python format strings.
  *
  * This macro avoids evaluating the log arguments unless the log level check
@@ -84,7 +83,7 @@
 
 /**
  * FB_LOGF_RAW() is similar to FB_LOG_RAW(), but formats the log arguments
- * using folly::format().
+ * using fmt::format().
  */
 #define FB_LOGF_RAW(                                                   \
     logger, level, filename, linenumber, functionName, fmt, arg1, ...) \

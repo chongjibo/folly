@@ -97,17 +97,17 @@ Other Advantages
 Beyond the primary goals mentioned above, this log library does have some other
 advantages over glog:
 
-## Support for using `folly::format()` to generate formatted log messages
+## Support for using `fmt::format()` to generate formatted log messages
 
 Two separate mechanisms are provided for formatting log messages: basic
 concatenation of arguments into string (using `folly::to<std::string>()`),
-and more flexible formatting using `folly::format()`.  This provides convenient
+and more flexible formatting using `fmt::format()`.  This provides convenient
 and type-safe mechanisms for formatting log messages.
 
 ## Escapes unprintable characters in log messages by default.
 
-This makes it safer to safer to log arbitrary input data, without worrying if
-the data may contain potentially malicious terminal escape sequences.
+This makes it safer to log arbitrary input data, without worrying if the data
+may contain potentially malicious terminal escape sequences.
 
 For instance, this helps avoid vulnerabilities like CVE-2013-1862 and
 CVE-2009-4496.

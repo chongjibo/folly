@@ -1,3 +1,17 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 include(CheckCXXSourceCompiles)
 include(CheckCXXSourceRuns)
 include(CheckFunctionExists)
@@ -6,7 +20,11 @@ include(CheckSymbolExists)
 include(CheckTypeSize)
 include(CheckCXXCompilerFlag)
 
-CHECK_INCLUDE_FILE_CXX(jemalloc/jemalloc.h FOLLY_USE_JEMALLOC)
+if (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+  CHECK_INCLUDE_FILE_CXX(malloc_np.h FOLLY_USE_JEMALLOC)
+else()
+  CHECK_INCLUDE_FILE_CXX(jemalloc/jemalloc.h FOLLY_USE_JEMALLOC)
+endif()
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
   # clang only rejects unknown warning flags if -Werror=unknown-warning-option
@@ -71,6 +89,7 @@ check_symbol_exists(pthread_atfork pthread.h FOLLY_HAVE_PTHREAD_ATFORK)
 # it fails complaining that there are multiple overloaded versions of memrchr()
 check_function_exists(memrchr FOLLY_HAVE_MEMRCHR)
 check_symbol_exists(accept4 sys/socket.h FOLLY_HAVE_ACCEPT4)
+check_symbol_exists(getrandom sys/random.h FOLLY_HAVE_GETRANDOM)
 check_symbol_exists(preadv sys/uio.h FOLLY_HAVE_PREADV)
 check_symbol_exists(pwritev sys/uio.h FOLLY_HAVE_PWRITEV)
 check_symbol_exists(clock_gettime time.h FOLLY_HAVE_CLOCK_GETTIME)

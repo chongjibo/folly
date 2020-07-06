@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,9 +19,8 @@
 #include <glog/logging.h>
 
 #include <folly/Benchmark.h>
+#include <folly/Conv.h>
 #include <folly/portability/GTest.h>
-
-using namespace folly;
 
 // clang-format off
 [[noreturn]] void fail() {
@@ -37,4 +36,13 @@ TEST(SafeAssert, AssertionFailure) {
   succeed();
   EXPECT_DEATH(fail(), "Assertion failure: 0 \\+ 0");
   EXPECT_DEATH(fail(), "Message: hello");
+}
+
+TEST(SafeAssert, AssertionFailureErrno) {
+  EXPECT_DEATH(
+      FOLLY_SAFE_PCHECK((errno = EINVAL) && false, "hello"),
+      folly::to<std::string>("Error: ", EINVAL, " \\(EINVAL\\)"));
+  EXPECT_DEATH(
+      FOLLY_SAFE_PCHECK((errno = 999) && false, "hello"),
+      folly::to<std::string>("Error: 999 \\(<unknown>\\)"));
 }

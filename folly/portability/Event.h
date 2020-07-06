@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,9 +31,5 @@
 #include <folly/net/detail/SocketFileDescriptorMap.h>
 
 namespace folly {
-#ifdef _MSC_VER
-using libevent_fd_t = evutil_socket_t;
-#else
-using libevent_fd_t = int;
-#endif
+using libevent_fd_t = decltype(event::ev_fd);
 } // namespace folly

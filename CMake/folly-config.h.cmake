@@ -1,11 +1,11 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -44,6 +44,7 @@
 
 #cmakedefine FOLLY_HAVE_MEMRCHR 1
 #cmakedefine FOLLY_HAVE_ACCEPT4 1
+#cmakedefine01 FOLLY_HAVE_GETRANDOM
 #cmakedefine FOLLY_HAVE_PREADV 1
 #cmakedefine FOLLY_HAVE_PWRITEV 1
 #cmakedefine FOLLY_HAVE_CLOCK_GETTIME 1
@@ -81,3 +82,5 @@
 #cmakedefine01 FOLLY_LIBRARY_SANITIZE_ADDRESS
 
 #cmakedefine FOLLY_SUPPORT_SHARED_LIBRARY 1
+
+#cmakedefine01 FOLLY_HAVE_LIBRT

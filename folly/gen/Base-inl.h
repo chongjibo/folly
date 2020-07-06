@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -1076,7 +1076,7 @@ class Order : public Operator<Order<Selector, Comparer>> {
       };
       auto vals = source_ | as<VectorType>();
       std::sort(vals.begin(), vals.end(), comparer);
-      return std::move(vals);
+      return vals;
     }
 
    public:
@@ -1268,7 +1268,7 @@ class GroupByAdjacent : public Operator<GroupByAdjacent<Selector>> {
 
         if (key == newKey) {
           // grow the current group
-          values.push_back(value);
+          values.push_back(std::forward<Value>(value));
         } else {
           // flush the current group
           GroupType group(key.value(), std::move(values));
@@ -1279,7 +1279,7 @@ class GroupByAdjacent : public Operator<GroupByAdjacent<Selector>> {
           // start a new group
           key.emplace(newKey);
           values.clear();
-          values.push_back(value);
+          values.push_back(std::forward<Value>(value));
         }
         return true;
       });
@@ -2574,7 +2574,7 @@ struct from_rangev3_copy_fn {
  ******************************************************************************
  * Pipe fittings between a container/range-v3 and a folly::gen.
  * Example: vec | gen::from_container | folly::gen::filter(...);
- * Example: vec | ranges::view::filter(...) | gen::from_rangev3 | gen::xxx;
+ * Example: vec | ranges::views::filter(...) | gen::from_rangev3 | gen::xxx;
  ******************************************************************************
  */
 constexpr detail::from_container_fn from_container;
@@ -2594,7 +2594,7 @@ template <typename Range>
 auto rangev3_will_be_consumed(Range&& r) {
   // intentionally use `r` instead of `std::forward<Range>(r)`; see above.
   // range-v3 ranges copy in O(1) so it is appropriate.
-  return ranges::view::all(r);
+  return ranges::views::all(r);
 }
 #endif // FOLLY_USE_RANGEV3
 

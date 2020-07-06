@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -176,10 +176,14 @@ void SingletonHolder<T>::destroyInstance() {
   instance_copy_.reset();
   if (destroy_baton_) {
     constexpr std::chrono::seconds kDestroyWaitTime{5};
+    auto const wait_options =
+        destroy_baton_->wait_options().logging_enabled(false);
     auto last_reference_released =
-        destroy_baton_->try_wait_for(kDestroyWaitTime);
+        destroy_baton_->try_wait_for(kDestroyWaitTime, wait_options);
     if (last_reference_released) {
+      vault_.addToShutdownLog("Destroying " + type().name());
       teardown_(instance_ptr_);
+      vault_.addToShutdownLog(type().name() + " destroyed.");
     } else {
       print_destructor_stack_trace_->store(true);
       detail::singletonWarnDestroyInstanceLeak(type(), instance_ptr_);

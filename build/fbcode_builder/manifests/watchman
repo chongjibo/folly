@@ -12,19 +12,21 @@ builder = cmake
 
 [dependencies]
 boost
-folly
+cpptoml
+fb303
 fbthrift
+folly
 pcre
+googletest
 
 [shipit.pathmap]
 fbcode/watchman = .
-fbcode/fboss/common = common
 fbcode/eden/fs = eden/fs
 
 [shipit.strip]
 ^fbcode/eden/fs/(?!.*\.thrift|service/shipit_test_file\.txt)
 
-[cmake.defines]
+[cmake.defines.fb=on]
 ENABLE_EDEN_SUPPORT=ON
 
 # FB macos specific settings
@@ -33,3 +35,6 @@ ENABLE_EDEN_SUPPORT=ON
 WATCHMAN_STATE_DIR=/opt/facebook/watchman/var/run/watchman
 # tell cmake not to try to create /opt/facebook/...
 INSTALL_WATCHMAN_STATE_DIR=OFF
+
+[depends.environment]
+WATCHMAN_VERSION_OVERRIDE

@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -50,6 +50,11 @@ using SetOrMapValueType = std::conditional_t<
     KeyType,
     MapValueType<KeyType, MappedTypeOrVoid>>;
 
+template <typename T>
+using IsNothrowMoveAndDestroy = Conjunction<
+    std::is_nothrow_move_constructible<T>,
+    std::is_nothrow_destructible<T>>;
+
 // Used to enable EBO for Hasher, KeyEqual, and Alloc.  std::tuple of
 // all empty objects is empty in libstdc++ but not libc++.
 template <
@@ -71,7 +76,7 @@ struct ObjectHolder {
 };
 
 template <char Tag, typename T>
-struct ObjectHolder<Tag, T, true> : private T {
+struct ObjectHolder<Tag, T, true> : T {
   template <typename... Args>
   ObjectHolder(Args&&... args) : T{std::forward<Args>(args)...} {}
 
@@ -588,6 +593,10 @@ class ValueContainerPolicy : public BasePolicy<
     return Super::moveValue(item);
   }
 
+  Value const& valueAtItem(Item const& item) const {
+    return item;
+  }
+
   Value&& valueAtItemForExtract(Item& item) {
     return std::move(item);
   }
@@ -607,18 +616,18 @@ class ValueContainerPolicy : public BasePolicy<
   }
 
   template <typename T>
-  std::enable_if_t<std::is_nothrow_move_constructible<T>::value>
-  complainUnlessNothrowMove() {}
+  std::enable_if_t<IsNothrowMoveAndDestroy<T>::value>
+  complainUnlessNothrowMoveAndDestroy() {}
 
   template <typename T>
   [[deprecated(
-      "use F14NodeMap/Set or mark key and mapped type move constructor nothrow")]] std::
-      enable_if_t<!std::is_nothrow_move_constructible<T>::value>
-      complainUnlessNothrowMove() {}
+      "mark {key_type,mapped_type} {move constructor,destructor} noexcept, or use F14Node* if they aren't")]] std::
+      enable_if_t<!IsNothrowMoveAndDestroy<T>::value>
+      complainUnlessNothrowMoveAndDestroy() {}
 
   void moveItemDuringRehash(Item* itemAddr, Item& src) {
-    complainUnlessNothrowMove<Key>();
-    complainUnlessNothrowMove<lift_unit_t<MappedTypeOrVoid>>();
+    complainUnlessNothrowMoveAndDestroy<Key>();
+    complainUnlessNothrowMoveAndDestroy<lift_unit_t<MappedTypeOrVoid>>();
 
     constructValueAtItem(0, itemAddr, Super::moveValue(src));
     if (destroyItemOnClear()) {
@@ -636,7 +645,7 @@ class ValueContainerPolicy : public BasePolicy<
     }
   }
 
-  void destroyItem(Item& item) {
+  void destroyItem(Item& item) noexcept {
     Alloc& a = this->alloc();
     auto ptr = std::addressof(item);
     AllocTraits::destroy(a, ptr);
@@ -836,6 +845,10 @@ class NodeContainerPolicy
     return Super::moveValue(*item);
   }
 
+  Value const& valueAtItem(Item const& item) const {
+    return *item;
+  }
+
   Value&& valueAtItemForExtract(Item& item) {
     return std::move(*item);
   }
@@ -868,7 +881,18 @@ class NodeContainerPolicy
     prefetchAddr(std::addressof(*item));
   }
 
-  void destroyItem(Item& item) {
+  template <typename T>
+  std::enable_if_t<std::is_nothrow_destructible<T>::value>
+  complainUnlessNothrowDestroy() {}
+
+  template <typename T>
+  [[deprecated("Mark key and mapped type destructor nothrow")]] std::
+      enable_if_t<!std::is_nothrow_destructible<T>::value>
+      complainUnlessNothrowDestroy() {}
+
+  void destroyItem(Item& item) noexcept {
+    complainUnlessNothrowDestroy<Key>();
+    complainUnlessNothrowDestroy<lift_unit_t<MappedTypeOrVoid>>();
     if (item != nullptr) {
       Alloc& a = this->alloc();
       AllocTraits::destroy(a, std::addressof(*item));
@@ -1019,6 +1043,7 @@ class VectorContainerPolicy : public BasePolicy<
       KeyEqualOrVoid,
       AllocOrVoid,
       uint32_t>;
+  using Value = typename Super::Value;
   using Alloc = typename Super::Alloc;
   using AllocTraits = typename Super::AllocTraits;
   using ByteAlloc = typename Super::ByteAlloc;
@@ -1028,7 +1053,6 @@ class VectorContainerPolicy : public BasePolicy<
   using Item = typename Super::Item;
   using ItemIter = typename Super::ItemIter;
   using KeyEqual = typename Super::KeyEqual;
-  using Value = typename Super::Value;
 
   using Super::kAllocIsAlwaysEqual;
 
@@ -1179,6 +1203,10 @@ class VectorContainerPolicy : public BasePolicy<
     return {item};
   }
 
+  Value const& valueAtItem(Item const& item) const {
+    return values_[item];
+  }
+
   Value&& valueAtItemForExtract(Item& item) {
     return std::move(values_[item]);
   }
@@ -1194,9 +1222,10 @@ class VectorContainerPolicy : public BasePolicy<
   template <typename Table, typename... Args>
   void constructValueAtItem(Table&& table, Item* itemAddr, Args&&... args) {
     Alloc& a = this->alloc();
-    std::size_t size = table.size();
-    FOLLY_SAFE_DCHECK(size < std::numeric_limits<InternalSizeType>::max(), "");
-    *itemAddr = static_cast<InternalSizeType>(size);
+    auto size = static_cast<InternalSizeType>(table.size());
+    FOLLY_SAFE_DCHECK(
+        table.size() < std::numeric_limits<InternalSizeType>::max(), "");
+    *itemAddr = size;
     auto dst = std::addressof(values_[size]);
     // TODO(T31574848): clean up assume-s used to optimize placement new
     assume(dst != nullptr);
@@ -1209,7 +1238,7 @@ class VectorContainerPolicy : public BasePolicy<
       // because the item and tag are already set in the table before
       // calling constructValueAtItem, so if there is a tag collision
       // find may evaluate values_[size] during the search.
-      auto i = tlsMinstdRand(size + 1);
+      auto i = static_cast<InternalSizeType>(tlsMinstdRand(size + 1));
       if (i != size) {
         auto& lhsItem = *itemAddr;
         auto rhsIter = table.find(
@@ -1239,21 +1268,21 @@ class VectorContainerPolicy : public BasePolicy<
     prefetchAddr(std::addressof(values_[item]));
   }
 
-  void destroyItem(Item&) {}
+  void destroyItem(Item&) noexcept {}
 
   template <typename T>
-  std::enable_if_t<std::is_nothrow_move_constructible<T>::value>
-  complainUnlessNothrowMove() {}
+  std::enable_if_t<IsNothrowMoveAndDestroy<T>::value>
+  complainUnlessNothrowMoveAndDestroy() {}
 
   template <typename T>
   [[deprecated(
-      "use F14NodeMap/Set or mark key and mapped type move constructor nothrow")]] std::
-      enable_if_t<!std::is_nothrow_move_constructible<T>::value>
-      complainUnlessNothrowMove() {}
+      "mark {key_type,mapped_type} {move constructor,destructor} noexcept, or use F14Node* if they aren't")]] std::
+      enable_if_t<!IsNothrowMoveAndDestroy<T>::value>
+      complainUnlessNothrowMoveAndDestroy() {}
 
   void transfer(Alloc& a, Value* src, Value* dst, std::size_t n) {
-    complainUnlessNothrowMove<Key>();
-    complainUnlessNothrowMove<lift_unit_t<MappedTypeOrVoid>>();
+    complainUnlessNothrowMoveAndDestroy<Key>();
+    complainUnlessNothrowMoveAndDestroy<lift_unit_t<MappedTypeOrVoid>>();
 
     auto origSrc = src;
     if (valueIsTriviallyCopyable()) {

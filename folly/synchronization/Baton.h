@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,9 +23,11 @@
 #include <thread>
 
 #include <folly/Likely.h>
+#include <folly/detail/AsyncTrace.h>
 #include <folly/detail/Futex.h>
 #include <folly/detail/MemoryIdler.h>
 #include <folly/portability/Asm.h>
+#include <folly/synchronization/AtomicUtil.h>
 #include <folly/synchronization/WaitOptions.h>
 #include <folly/synchronization/detail/Spin.h>
 
@@ -73,7 +75,7 @@ class Baton {
     // requirement in which the caller must _know_ that this is true, they
     // are not allowed to be merely lucky.  If two threads are involved,
     // the destroying thread must actually have synchronized with the
-    // waiting thread after wait() returned.  To convey causality the the
+    // waiting thread after wait() returned.  To convey causality the
     // waiting thread must have used release semantics and the destroying
     // thread must have used acquire semantics for that communication,
     // so we are guaranteed to see the post-wait() value of state_,
@@ -263,6 +265,12 @@ class Baton {
   FOLLY_NOINLINE bool tryWaitSlow(
       const std::chrono::time_point<Clock, Duration>& deadline,
       const WaitOptions& opt) noexcept {
+    if (opt.logging_enabled()) {
+      folly::async_tracing::logBlockingOperation(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              deadline - Clock::now()));
+    }
+
     switch (detail::spin_pause_until(deadline, opt, [=] { return ready(); })) {
       case detail::spin_result::success:
         return true;
@@ -285,15 +293,14 @@ class Baton {
 
     // guess we have to block :(
     uint32_t expected = INIT;
-    if (!state_.compare_exchange_strong(
-            expected,
-            WAITING,
+    if (!folly::atomic_compare_exchange_strong_explicit<Atom>(
+            &state_,
+            &expected,
+            static_cast<uint32_t>(WAITING),
             std::memory_order_relaxed,
-            std::memory_order_relaxed)) {
+            std::memory_order_acquire)) {
       // CAS failed, last minute reprieve
       assert(expected == EARLY_DELIVERY);
-      // TODO: move the acquire to the compare_exchange failure load after C++17
-      std::atomic_thread_fence(std::memory_order_acquire);
       return true;
     }
 

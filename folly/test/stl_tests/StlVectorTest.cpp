@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,8 +20,6 @@
 
 This file contains an extensive STL compliance test suite for an STL vector
 implementation (such as FBVector).
-
-GCC 4.7 is required.
 
 */
 
@@ -541,7 +539,7 @@ struct DataTracker : Tracker {
     }
     print("~Data()");
     uid = 0xdeadbeef;
-    self = (DataTracker*)0xfeebdaed;
+    self = (DataTracker*)0xdead1010;
   }
 
   DataTracker& operator=(const DataTracker& o) noexcept {
@@ -2863,7 +2861,7 @@ STL_TEST("23.2.3 Table 100.12", at, is_destructible, a) {
   try {
     ca.at(ca.size());
     FAIL() << "at(size) should have thrown an error";
-  } catch (const std::out_of_range& e) {
+  } catch (const std::out_of_range&) {
   } catch (...) {
     FAIL() << "at(size) threw error other than out_of_range";
   }
@@ -2931,7 +2929,7 @@ STL_TEST("23.3.6.3", lengthError, is_move_constructible) {
   try {
     u.reserve(big);
     FAIL() << "reserve(big) should have thrown an error";
-  } catch (const std::length_error& e) {
+  } catch (const std::length_error&) {
   } catch (...) {
     FAIL() << "reserve(big) threw error other than length_error";
   }

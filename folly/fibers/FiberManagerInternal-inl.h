@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <cassert>
@@ -43,6 +44,11 @@ inline FiberManager::Options preprocessOptions(FiberManager::Options opts) {
    */
   opts.stackSize *= std::exchange(opts.stackSizeMultiplier, 1);
   return opts;
+}
+
+template <class F>
+FOLLY_NOINLINE invoke_result_t<F> runNoInline(F&& func) {
+  return func();
 }
 
 } // namespace
@@ -196,7 +202,7 @@ void FiberManager::runFibersHelper(LoopFunc&& loopFunc) {
 #endif
 
   // Support nested FiberManagers
-  auto originalFiberManager = std::exchange(currentFiberManager_, this);
+  auto originalFiberManager = std::exchange(getCurrentFiberManager(), this);
 
   numUncaughtExceptions_ = uncaught_exceptions();
   currentException_ = std::current_exception();
@@ -221,7 +227,7 @@ void FiberManager::runFibersHelper(LoopFunc&& loopFunc) {
     if (!readyFibers_.empty()) {
       ensureLoopScheduled();
     }
-    std::swap(currentFiberManager_, originalFiberManager);
+    std::swap(getCurrentFiberManager(), originalFiberManager);
     CHECK_EQ(this, originalFiberManager);
   };
 
@@ -275,6 +281,10 @@ inline void FiberManager::loopUntilNoReadyImpl() {
 }
 
 inline void FiberManager::runEagerFiber(Fiber* fiber) {
+  loopController_->runEagerFiber(fiber);
+}
+
+inline void FiberManager::runEagerFiberImpl(Fiber* fiber) {
   runInMainContext([&] {
     auto prevCurrentFiber = std::exchange(currentFiber_, fiber);
     SCOPE_EXIT {
@@ -511,7 +521,7 @@ void FiberManager::addTaskFinallyEager(F&& func, G&& finally) {
 template <typename F>
 invoke_result_t<F> FiberManager::runInMainContext(F&& func) {
   if (UNLIKELY(activeFiber_ == nullptr)) {
-    return func();
+    return runNoInline(std::forward<F>(func));
   }
 
   typedef invoke_result_t<F> Result;
@@ -528,12 +538,12 @@ invoke_result_t<F> FiberManager::runInMainContext(F&& func) {
 }
 
 inline FiberManager& FiberManager::getFiberManager() {
-  assert(currentFiberManager_ != nullptr);
-  return *currentFiberManager_;
+  assert(getCurrentFiberManager() != nullptr);
+  return *getCurrentFiberManager();
 }
 
 inline FiberManager* FiberManager::getFiberManagerUnsafe() {
-  return currentFiberManager_;
+  return getCurrentFiberManager();
 }
 
 inline bool FiberManager::hasActiveFiber() const {
@@ -541,7 +551,7 @@ inline bool FiberManager::hasActiveFiber() const {
 }
 
 inline void FiberManager::yield() {
-  assert(currentFiberManager_ == this);
+  assert(getCurrentFiberManager() == this);
   assert(activeFiber_ != nullptr);
   assert(activeFiber_->state_ == Fiber::RUNNING);
   activeFiber_->preempt(Fiber::YIELDED);
@@ -606,5 +616,15 @@ typename FirstArgOf<F>::type::value_type inline await(F&& func) {
 
   return Promise<Result, BatonT>::await(std::forward<F>(func));
 }
+
+template <typename F>
+invoke_result_t<F> inline runInMainContext(F&& func) {
+  auto fm = FiberManager::getFiberManagerUnsafe();
+  if (UNLIKELY(fm == nullptr)) {
+    return runNoInline(std::forward<F>(func));
+  }
+  return fm->runInMainContext(std::forward<F>(func));
+}
+
 } // namespace fibers
 } // namespace folly

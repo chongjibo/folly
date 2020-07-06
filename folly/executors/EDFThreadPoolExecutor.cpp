@@ -1,11 +1,11 @@
 /*
- * Copyright 2019-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -30,6 +30,9 @@
 #include <folly/executors/EDFThreadPoolExecutor.h>
 
 namespace folly {
+namespace {
+constexpr folly::StringPiece executorName = "EDFThreadPoolExecutor";
+}
 
 class EDFThreadPoolExecutor::Task {
  public:
@@ -75,7 +78,6 @@ class EDFThreadPoolExecutor::Task {
   std::atomic<int> iter_{0};
   int total_;
   uint64_t deadline_;
-  TaskStats stats_;
   std::shared_ptr<RequestContext> context_ = RequestContext::saveContext();
   std::chrono::steady_clock::time_point enqueueTime_ =
       std::chrono::steady_clock::now();
@@ -248,9 +250,11 @@ EDFThreadPoolExecutor::EDFThreadPoolExecutor(
     : ThreadPoolExecutor(numThreads, numThreads, std::move(threadFactory)),
       taskQueue_(std::make_unique<TaskQueue>()) {
   setNumThreads(numThreads);
+  registerThreadPoolExecutor(this);
 }
 
 EDFThreadPoolExecutor::~EDFThreadPoolExecutor() {
+  deregisterThreadPoolExecutor(this);
   stop();
 }
 
@@ -338,6 +342,7 @@ folly::Executor::KeepAlive<> EDFThreadPoolExecutor::deadlineExecutor(
 
 void EDFThreadPoolExecutor::threadRun(ThreadPtr thread) {
   this->threadPoolHook_.registerThread();
+  ExecutorBlockingGuard guard{ExecutorBlockingGuard::ForbidTag{}, executorName};
 
   thread->startupBaton.post();
   for (;;) {
@@ -361,9 +366,15 @@ void EDFThreadPoolExecutor::threadRun(ThreadPtr thread) {
       continue;
     }
 
-    thread->idle = false;
+    thread->idle.store(false, std::memory_order_relaxed);
     auto startTime = std::chrono::steady_clock::now();
-    task->stats_.waitTime = startTime - task->enqueueTime_;
+    TaskStats stats;
+    stats.enqueueTime = task->enqueueTime_;
+    if (task->context_) {
+      stats.requestId = task->context_->getRootId();
+    }
+
+    stats.waitTime = startTime - stats.enqueueTime;
     try {
       task->run(iter);
     } catch (const std::exception& e) {
@@ -373,9 +384,10 @@ void EDFThreadPoolExecutor::threadRun(ThreadPtr thread) {
       LOG(ERROR)
           << "EDFThreadPoolExecutor: func threw unhandled non-exception object";
     }
-    task->stats_.runTime = std::chrono::steady_clock::now() - startTime;
-    thread->idle = true;
-    thread->lastActiveTime = std::chrono::steady_clock::now();
+    stats.runTime = std::chrono::steady_clock::now() - startTime;
+    thread->idle.store(true, std::memory_order_relaxed);
+    thread->lastActiveTime.store(
+        std::chrono::steady_clock::now(), std::memory_order_relaxed);
     thread->taskStatsCallbacks->callbackList.withRLock([&](auto& callbacks) {
       *thread->taskStatsCallbacks->inCallback = true;
       SCOPE_EXIT {
@@ -383,7 +395,7 @@ void EDFThreadPoolExecutor::threadRun(ThreadPtr thread) {
       };
       try {
         for (auto& callback : callbacks) {
-          callback(task->stats_);
+          callback(stats);
         }
       } catch (const std::exception& e) {
         LOG(ERROR) << "EDFThreadPoolExecutor: task stats callback threw "

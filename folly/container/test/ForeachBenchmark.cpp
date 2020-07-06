@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,14 +24,12 @@
 #include <folly/init/Init.h>
 
 using namespace folly;
-using namespace folly::detail;
 
 // Benchmarks:
 // 1. Benchmark iterating through the man with FOR_EACH, and also assign
 //    iter->first and iter->second to local vars inside the FOR_EACH loop.
 // 2. Benchmark iterating through the man with FOR_EACH, but use iter->first and
 //    iter->second as is, without assigning to local variables.
-// 3. Use FOR_EACH_KV loop to iterate through the map.
 
 // For use in benchmarks below.
 std::map<int, std::string> bmMap;
@@ -303,20 +301,6 @@ BENCHMARK(ForEachKVNoMacroNoAssign, iters) {
   FOR_EACH (iter, bmMap) {
     sumKeys += iter->first;
     sumValues += iter->second;
-  }
-}
-
-BENCHMARK(ForEachKVMacro, iters) {
-  int sumKeys = 0;
-  std::string sumValues;
-
-  BENCHMARK_SUSPEND {
-    setupBenchmark(iters);
-  }
-
-  FOR_EACH_KV (k, v, bmMap) {
-    sumKeys += k;
-    sumValues += v;
   }
 }
 

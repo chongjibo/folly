@@ -36,7 +36,7 @@ In general the basic configuration syntax is convenient for controlling log
 levels, and making minor log handler setting changes (such as controlling if
 logging goes to stdout or stderr, and whether it is logged asynchronously or
 not).  However the JSON format is easier to use to describe more complicated
-settings.
+settings. Some features are not available in the basic configuration syntax.
 
 
 Basic Configuration Syntax
@@ -203,7 +203,7 @@ Example log configuration strings:
   `LoggerDB::updateConfig()`, and cannot be used with
   `LoggerDB::resetConfig()`.
 
-* `INFO; default:async=true,sync_level=WARN`  
+* `INFO; default:async=true,sync_level=WARN`
 
   Sets the root log category level to INFO, and sets the "async" property to
   true and "sync_level" property to WARN. Setting "async" property ensures that
@@ -249,6 +249,13 @@ following fields:
   log level setting.
 
   This field is optional, and defaults to true if not present.
+
+* `propagate`
+
+  This should be a  a string or positive integer value specifying the minimum
+  log level of messages that should be propagated to the parent category.
+
+  This field is optional, and defaults to the minimum log level if not present.
 
 Alternatively, the value for a log category may be a plain string or integer
 instead of a JSON object, in which case case the string or integer is treated
@@ -306,7 +313,7 @@ following fields:
 Custom Configuration Mechanisms
 -------------------------------
 
-Internally the the `LogConfig` class represents configuration settings for the
+Internally the `LogConfig` class represents configuration settings for the
 folly logging library.  Users of the logging library can also programmatically
 construct their own `LogConfig` objects and use the `LoggerDB::updateConfig()`
 and `LoggerDB::resetConfig()` APIs to apply the configuration changes.

@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -69,9 +69,15 @@ void repeat(F const& func) {
   }
 }
 
+bool asanFailuresExpected() {
+  return kIsLibrarySanitizeAddress &&
+      f14::detail::getF14IntrinsicsMode() !=
+      f14::detail::F14IntrinsicsMode::None;
+}
+
 template <typename F>
 void expectAsanFailure(F const& func) {
-  if (kIsLibrarySanitizeAddress) {
+  if (asanFailuresExpected()) {
     EXPECT_EXIT(
         repeat(func), testing::ExitedWithCode(1), ".*heap-use-after-free.*");
   }
@@ -131,7 +137,7 @@ TEST(F14AsanSupportTest, F14VectorErase) {
   auto& v = *set.begin();
   EXPECT_EQ(v, 3);
   set.erase(2);
-  if (kIsLibrarySanitizeAddress) {
+  if (asanFailuresExpected()) {
     EXPECT_NE(v, 3);
   }
 }

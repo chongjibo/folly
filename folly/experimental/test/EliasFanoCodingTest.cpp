@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -90,19 +90,30 @@ class EliasFanoCodingTest : public ::testing::Test {
     testEmpty<Reader, Encoder>();
   }
 
-  template <size_t kSkipQuantum, size_t kForwardQuantum, class SizeType>
+  template <
+      size_t kSkipQuantum,
+      size_t kForwardQuantum,
+      class ValueType,
+      bool kUpperFirst>
   void doTestAll() {
+    // SkipValueType and SizeType could both be narrower than ValueType, but
+    // testing all combinations would be slow, so assume they are all the same.
     typedef EliasFanoEncoderV2<
-        uint32_t,
-        uint32_t,
+        ValueType,
+        ValueType,
         kSkipQuantum,
-        kForwardQuantum>
+        kForwardQuantum,
+        kUpperFirst>
         Encoder;
-    using Reader =
-        EliasFanoReader<Encoder, instructions::Default, false, SizeType>;
+    using Reader = EliasFanoReader<Encoder, instructions::Default, false>;
     testAll<Reader, Encoder>({0});
     testAll<Reader, Encoder>(generateRandomList(100 * 1000, 10 * 1000 * 1000));
+    testAll<Reader, Encoder>(generateRandomList(
+        100 * 1000, 10 * 1000 * 1000, /* withDuplicates */ true));
     testAll<Reader, Encoder>(generateSeqList(1, 100000, 100));
+    // max() cannot be read, as it is assumed an invalid value.
+    // TODO(ott): It should be possible to lift this constraint.
+    testAll<Reader, Encoder>({0, 1, std::numeric_limits<uint32_t>::max() - 1});
   }
 };
 
@@ -111,23 +122,31 @@ TEST_F(EliasFanoCodingTest, Empty) {
 }
 
 TEST_F(EliasFanoCodingTest, Simple) {
-  doTestAll<0, 0, uint32_t>();
-  doTestAll<0, 0, size_t>();
+  doTestAll<0, 0, uint32_t, false>();
+  doTestAll<0, 0, uint32_t, true>();
+  doTestAll<0, 0, uint64_t, false>();
+  doTestAll<0, 0, uint64_t, true>();
 }
 
 TEST_F(EliasFanoCodingTest, SkipPointers) {
-  doTestAll<128, 0, uint32_t>();
-  doTestAll<128, 0, size_t>();
+  doTestAll<128, 0, uint32_t, false>();
+  doTestAll<128, 0, uint32_t, true>();
+  doTestAll<128, 0, uint64_t, false>();
+  doTestAll<128, 0, uint64_t, true>();
 }
 
 TEST_F(EliasFanoCodingTest, ForwardPointers) {
-  doTestAll<0, 128, uint32_t>();
-  doTestAll<0, 128, size_t>();
+  doTestAll<0, 128, uint32_t, false>();
+  doTestAll<0, 128, uint32_t, true>();
+  doTestAll<0, 128, uint64_t, false>();
+  doTestAll<0, 128, uint64_t, true>();
 }
 
 TEST_F(EliasFanoCodingTest, SkipForwardPointers) {
-  doTestAll<128, 128, uint32_t>();
-  doTestAll<128, 128, size_t>();
+  doTestAll<128, 128, uint32_t, false>();
+  doTestAll<128, 128, uint32_t, true>();
+  doTestAll<128, 128, uint64_t, false>();
+  doTestAll<128, 128, uint64_t, true>();
 }
 
 TEST_F(EliasFanoCodingTest, BugLargeGapInUpperBits) { // t16274876
@@ -158,11 +177,11 @@ namespace bm {
 
 typedef EliasFanoEncoderV2<uint32_t, uint32_t, 128, 128> Encoder;
 
-std::vector<uint32_t> data;
+std::vector<uint64_t> data;
 std::vector<size_t> order;
 
-std::vector<uint32_t> encodeSmallData;
-std::vector<uint32_t> encodeLargeData;
+std::vector<uint64_t> encodeSmallData;
+std::vector<uint64_t> encodeLargeData;
 
 std::vector<std::pair<size_t, size_t>> numLowerBitsInput;
 
@@ -291,36 +310,35 @@ BENCHMARK(slowDefaultNumLowerBits, iters) {
 }
 
 #if 0
-// Intel(R) Xeon(R) CPU E5-2678 v3 @ 2.50GHz (turbo on),
-// Using GCC 5 with --bm_min_usec 100000.
-V1008 12:29:33.646595 87744 Instructions.h:161] Will use folly::compression::instructions::Haswell
+// Intel(R) Xeon(R) CPU E5-2678 v3 @ 2.50GHz, Clang 8.0.
+// $ eliasfano_test --benchmark --bm_min_usec 200000
 ============================================================================
 folly/experimental/test/EliasFanoCodingTest.cpp relative  time/iter  iters/s
 ============================================================================
-Next                                                         2.47ns  405.58M
-Skip_ForwardQ128(1)                                          6.68ns  149.67M
-Skip_ForwardQ128(2)                                          7.67ns  130.30M
-Skip_ForwardQ128(4_pm_1)                                     9.12ns  109.65M
-Skip_ForwardQ128(16_pm_4)                                    9.95ns  100.53M
-Skip_ForwardQ128(64_pm_16)                                  12.76ns   78.40M
-Skip_ForwardQ128(256_pm_64)                                 18.09ns   55.27M
-Skip_ForwardQ128(1024_pm_256)                               19.13ns   52.28M
-Jump_ForwardQ128                                            20.27ns   49.33M
+Next                                                         2.58ns  388.22M
+Skip_ForwardQ128(1)                                          4.81ns  207.72M
+Skip_ForwardQ128(2)                                          5.96ns  167.75M
+Skip_ForwardQ128(4_pm_1)                                     7.40ns  135.16M
+Skip_ForwardQ128(16_pm_4)                                    8.20ns  121.97M
+Skip_ForwardQ128(64_pm_16)                                  12.04ns   83.06M
+Skip_ForwardQ128(256_pm_64)                                 16.84ns   59.39M
+Skip_ForwardQ128(1024_pm_256)                               17.67ns   56.61M
+Jump_ForwardQ128                                            25.37ns   39.41M
 ----------------------------------------------------------------------------
-SkipTo_SkipQ128(1)                                           8.35ns  119.76M
-SkipTo_SkipQ128(2)                                          12.37ns   80.85M
-SkipTo_SkipQ128(4_pm_1)                                     15.05ns   66.44M
-SkipTo_SkipQ128(16_pm_4)                                    22.90ns   43.66M
-SkipTo_SkipQ128(64_pm_16)                                   34.11ns   29.31M
-SkipTo_SkipQ128(256_pm_64)                                  38.68ns   25.85M
-SkipTo_SkipQ128(1024_pm_256)                                41.75ns   23.95M
-JumpTo_SkipQ128                                             44.79ns   22.33M
+SkipTo_SkipQ128(1)                                           7.27ns  137.59M
+SkipTo_SkipQ128(2)                                          10.99ns   91.01M
+SkipTo_SkipQ128(4_pm_1)                                     13.53ns   73.93M
+SkipTo_SkipQ128(16_pm_4)                                    20.58ns   48.59M
+SkipTo_SkipQ128(64_pm_16)                                   32.08ns   31.18M
+SkipTo_SkipQ128(256_pm_64)                                  38.66ns   25.87M
+SkipTo_SkipQ128(1024_pm_256)                                42.32ns   23.63M
+JumpTo_SkipQ128                                             47.95ns   20.86M
 ----------------------------------------------------------------------------
-Encode_10                                                  120.33ns    8.31M
-Encode                                                       7.61ms   131.32
+Encode_10                                                  103.99ns    9.62M
+Encode                                                       7.60ms   131.53
 ----------------------------------------------------------------------------
-defaultNumLowerBits                                          3.69ns  270.74M
-slowDefaultNumLowerBits                                     10.90ns   91.73M
+defaultNumLowerBits                                          3.59ns  278.69M
+slowDefaultNumLowerBits                                     10.88ns   91.90M
 ============================================================================
 #endif
 

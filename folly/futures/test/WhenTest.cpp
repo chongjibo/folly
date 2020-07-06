@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -30,6 +30,15 @@ TEST(When, predicateFalse) {
   auto f1 = folly::when(false, thunk);
   f1.wait();
   EXPECT_EQ(0, i);
+
+  auto sfThunk = [&] {
+    return makeSemiFuture().deferValue([&](auto&&) { i += 1; });
+  };
+
+  // false
+  auto f1s = folly::when(false, sfThunk);
+  f1s.wait();
+  EXPECT_EQ(0, i);
 }
 
 TEST(When, predicateTrue) {
@@ -40,4 +49,13 @@ TEST(When, predicateTrue) {
   auto f2 = folly::when(true, thunk);
   f2.wait();
   EXPECT_EQ(1, i);
+
+  auto sfThunk = [&] {
+    return makeSemiFuture().deferValue([&](auto&&) { i += 1; });
+  };
+
+  // true
+  auto f2s = folly::when(true, sfThunk);
+  f2s.wait();
+  EXPECT_EQ(2, i);
 }

@@ -1,11 +1,11 @@
 /*
- * Copyright 2019-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 /*
  *  This file serves as a helper for bridging folly::coro::Task and python
  *  asyncio.future.
@@ -22,17 +23,16 @@
 
 #include <Python.h>
 #include <folly/Executor.h>
+#include <folly/Portability.h>
+
+#if FOLLY_HAS_COROUTINES
+
 #include <folly/experimental/coro/Task.h>
 #include <folly/python/AsyncioExecutor.h>
-#include <folly/python/executor_api.h>
+#include <folly/python/executor.h>
 
 namespace folly {
 namespace python {
-
-inline folly::Executor* getExecutor() {
-  import_folly__executor();
-  return get_executor();
-}
 
 template <typename T>
 void bridgeCoroTask(
@@ -62,3 +62,5 @@ void bridgeCoroTask(
 
 } // namespace python
 } // namespace folly
+
+#endif

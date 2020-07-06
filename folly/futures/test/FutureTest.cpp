@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -1334,7 +1334,8 @@ TEST(Future, makePromiseContract) {
 }
 
 Future<bool> call(int depth, Executor* executor) {
-  return makeFuture().then(executor, [=] { return depth == 0; });
+  return makeFuture().thenValueInline(
+      makeAsyncTask(executor, [=](auto&&) { return depth == 0; }));
 }
 
 Future<int> recursion(Executor* executor, int depth) {
@@ -1437,6 +1438,28 @@ TEST(Future, NoThrow) {
     EXPECT_TRUE(t.hasException());
     EXPECT_EQ(t.exception().get_exception()->what(), kErrorMessage);
   }
+}
+
+TEST(Future, DetachTest) {
+  folly::Baton<> b1, b2;
+  folly::ManualExecutor exec;
+  std::atomic<int> result(0);
+
+  folly::futures::detachOn(&exec, makeSemiFuture().deferValue([&](auto&&) {
+    result++;
+    b1.post();
+  }));
+
+  folly::futures::detachOnGlobalCPUExecutor(
+      makeSemiFuture().deferValue([&](auto&&) {
+        result++;
+        b2.post();
+      }));
+
+  exec.drain();
+  b1.wait();
+  b2.wait();
+  EXPECT_TRUE(result == 2);
 }
 
 #if FOLLY_FUTURE_USING_FIBER

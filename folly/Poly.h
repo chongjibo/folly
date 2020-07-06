@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -1071,7 +1071,7 @@ using PolyValOrRef = If<std::is_reference<I>::value, PolyRef<I>, PolyVal<I>>;
  * added? Adding requires _two_ objects, both of which are type-erased. This
  * interface requires dispatching on both objects, doing the addition only
  * if the types are the same. For this we make use of the `PolySelf` template
- * alias to define an interface that takes more than one object of the the
+ * alias to define an interface that takes more than one object of the
  * erased type.
  *
  *     struct IAddable {

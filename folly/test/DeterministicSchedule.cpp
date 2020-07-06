@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,7 @@
 
 #include <folly/test/DeterministicSchedule.h>
 
-#include <assert.h>
+#include <cassert>
 
 #include <algorithm>
 #include <list>
@@ -117,8 +117,8 @@ void ThreadSyncVar::acq_rel() {
 }
 
 DeterministicSchedule::DeterministicSchedule(
-    const std::function<size_t(size_t)>& scheduler)
-    : scheduler_(scheduler), nextThreadId_(0), step_(0) {
+    std::function<size_t(size_t)> scheduler)
+    : scheduler_(std::move(scheduler)), nextThreadId_(0), step_(0) {
   auto& tls = TLState::get();
   assert(tls.sem == nullptr);
   assert(tls.sched == nullptr);
@@ -326,7 +326,7 @@ void DeterministicSchedule::beforeThreadExit() {
   }
   sems_.erase(std::find(sems_.begin(), sems_.end(), tls.sem));
   active_.erase(std::this_thread::get_id());
-  if (sems_.size() > 0) {
+  if (!sems_.empty()) {
     FOLLY_TEST_DSCHED_VLOG("exiting");
     /* Wait here so that parent thread can control when the thread
      * enters the thread local destructors. */

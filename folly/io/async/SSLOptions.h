@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -103,6 +103,21 @@ template <typename TSSLOptions>
 void setCipherSuites(SSLContext& ctx) {
   try {
     ctx.setCipherList(TSSLOptions::ciphers());
+  } catch (std::runtime_error const& e) {
+    ssl_options_detail::logDfatal(e);
+  }
+}
+
+/**
+ * Set the cipher suite of ctx to the passed in  cipherList,
+ * and print any runtime error it catches.
+ * @param ctx The SSLContext to apply the desired SSL options to.
+ * @param cipherList the list of ciphersuites to set
+ */
+template <typename Container>
+void setCipherSuites(SSLContext& ctx, const Container& cipherList) {
+  try {
+    ctx.setCipherList(cipherList);
   } catch (std::runtime_error const& e) {
     ssl_options_detail::logDfatal(e);
   }

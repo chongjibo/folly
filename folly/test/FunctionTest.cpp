@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -1090,6 +1090,31 @@ TEST(Function, asSharedProxy_args_const) {
   auto spcopy = sp;
   EXPECT_EQ(561, sp(5, 6));
   EXPECT_EQ(562, spcopy(5, 6));
+}
+
+TEST(Function, asSharedProxy_nullptr) {
+  auto sp = folly::Function<int(int, int) const>::SharedProxy(nullptr);
+  EXPECT_THROW(sp(3, 4), std::bad_function_call);
+}
+
+TEST(Function, asSharedProxy_empty) {
+  auto func = folly::Function<int(int, int) const>();
+  auto sp = std::move(func).asSharedProxy();
+  EXPECT_THROW(sp(3, 4), std::bad_function_call);
+}
+
+TEST(Function, asSharedProxy_explicit_bool_conversion) {
+  folly::Function<void(void)> f = []() {};
+  auto sp = std::move(f).asSharedProxy();
+  auto spcopy = sp;
+  EXPECT_TRUE(sp);
+  EXPECT_TRUE(spcopy);
+
+  folly::Function<void(void)> emptyF;
+  auto emptySp = std::move(emptyF).asSharedProxy();
+  auto emptySpcopy = emptySp;
+  EXPECT_FALSE(emptySp);
+  EXPECT_FALSE(emptySpcopy);
 }
 
 TEST(Function, NoAllocatedMemoryAfterMove) {

@@ -1,3 +1,17 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 cmake_minimum_required(VERSION 3.0.2 FATAL_ERROR)
 # We use the GoogleTest module if it is available (only in CMake 3.9+)
 # It requires CMP0054 and CMP0057 to be enabled.
@@ -54,6 +68,9 @@ option(BUILD_SHARED_LIBS
 mark_as_advanced(BUILD_SHARED_LIBS)
 set(FOLLY_SUPPORT_SHARED_LIBRARY "${BUILD_SHARED_LIBS}")
 
+include(FBBuildOptions)
+fb_activate_static_library_option()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   # Check target architecture
   if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -100,6 +117,19 @@ configure_file(
   ${CMAKE_CURRENT_BINARY_DIR}/folly/folly-config.h
 )
 
+# Define FOLLY_XLOG_STRIP_PREFIXES when compiling our sources so that
+# folly/logging will automatically choose the correct log category names,
+# using only the relative portion of the source file name inside the
+# folly repository.
+set_property(
+  DIRECTORY
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  APPEND
+  PROPERTY
+  COMPILE_DEFINITIONS
+  "FOLLY_XLOG_STRIP_PREFIXES=\"${CMAKE_SOURCE_DIR}:${CMAKE_BINARY_DIR}\""
+)
+
 # We currently build the main libfolly library by finding all sources
 # and header files.  We then exclude specific files below.
 #
@@ -136,13 +166,15 @@ list(REMOVE_ITEM hfiles
 )
 
 # Explicitly include utility library code from inside
-# folly/test and folly/io/async/test/
+# test subdirs
 list(APPEND files
   ${FOLLY_DIR}/io/async/test/ScopedBoundPort.cpp
   ${FOLLY_DIR}/io/async/test/SocketPair.cpp
   ${FOLLY_DIR}/io/async/test/TimeUtil.cpp
 )
 list(APPEND hfiles
+  ${FOLLY_DIR}/container/test/F14TestUtil.h
+  ${FOLLY_DIR}/container/test/TrackingTypes.h
   ${FOLLY_DIR}/io/async/test/AsyncSSLSocketTest.h
   ${FOLLY_DIR}/io/async/test/AsyncSocketTest.h
   ${FOLLY_DIR}/io/async/test/AsyncSocketTest2.h
@@ -184,6 +216,27 @@ if (NOT ${LIBAIO_FOUND})
     ${FOLLY_DIR}/experimental/io/AsyncIO.h
   )
 endif()
+if (NOT ${LIBURING_FOUND})
+  list(REMOVE_ITEM files
+    ${FOLLY_DIR}/experimental/io/IoUring.cpp
+    ${FOLLY_DIR}/experimental/io/IoUringBackend.cpp
+  )
+  list(REMOVE_ITEM hfiles
+    ${FOLLY_DIR}/experimental/io/IoUring.h
+    ${FOLLY_DIR}/experimental/io/IoUringBackend.h
+  )
+endif()
+if (NOT ${LIBAIO_FOUND} AND NOT ${LIBURING_FOUND})
+  list(REMOVE_ITEM files
+    ${FOLLY_DIR}/experimental/io/AsyncBase.cpp
+    ${FOLLY_DIR}/experimental/io/PollIoBackend.cpp
+  )
+  list(REMOVE_ITEM hfiles
+    ${FOLLY_DIR}/experimental/io/AsyncBase.h
+    ${FOLLY_DIR}/experimental/io/PollIoBackend.h
+  )
+endif()
+
 if (${LIBSODIUM_FOUND})
   string(FIND "${CMAKE_LIBRARY_ARCHITECTURE}" "x86_64" IS_X86_64_ARCH)
   if (${IS_X86_64_ARCH} STREQUAL "-1")
@@ -230,6 +283,16 @@ else()
     ${FOLLY_DIR}/experimental/crypto/detail/LtHashInternal.h
     ${FOLLY_DIR}/experimental/crypto/LtHash-inl.h
     ${FOLLY_DIR}/experimental/crypto/LtHash.h
+  )
+endif()
+if (NOT ${LIBGFLAGS_FOUND})
+  list(REMOVE_ITEM files
+    ${FOLLY_DIR}/experimental/NestedCommandLineApp.cpp
+    ${FOLLY_DIR}/experimental/ProgramOptions.cpp
+  )
+  list(REMOVE_ITEM hfiles
+    ${FOLLY_DIR}/experimental/NestedCommandLineApp.h
+    ${FOLLY_DIR}/experimental/ProgramOptions.h
   )
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -307,30 +370,16 @@ target_compile_definitions(folly_base
 
 set(FOLLY_INSTALL_TARGETS folly folly_deps)
 
-option(PYTHON_EXTENSIONS "Build Python Bindings for Folly, requires Cython" OFF)
-if (PYTHON_EXTENSIONS)
-  # Compile folly such that it can be linked in to a shared library
-  # required for linking to python extensions
-  add_library(folly_pic
-    $<TARGET_PROPERTY:folly_base,SOURCES>
-  )
-  apply_folly_compile_options_to_target(folly_pic)
-  target_include_directories(folly_pic
-    PUBLIC
-      $<TARGET_PROPERTY:folly_deps,INTERFACE_INCLUDE_DIRECTORIES>
-  )
-  target_compile_definitions(folly_pic
-    PUBLIC
-      $<TARGET_PROPERTY:folly_deps,INTERFACE_COMPILE_DEFINITIONS>
-  )
-  set_target_properties(folly_pic PROPERTIES POSITION_INDEPENDENT_CODE True)
-  list(APPEND FOLLY_INSTALL_TARGETS folly_pic)
-endif ()
+option(PYTHON_EXTENSIONS
+  "Build Python Bindings for Folly, requires Cython and (BUILD_SHARED_LIBS=ON)"
+  OFF
+)
 
 add_library(folly
   $<TARGET_OBJECTS:folly_base>
 )
 apply_folly_compile_options_to_target(folly)
+target_compile_features(folly INTERFACE cxx_generic_lambdas)
 
 target_link_libraries(folly PUBLIC folly_deps)
 
@@ -391,8 +440,13 @@ install(
 # CMake can depend on folly using pkg-config.
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/CMake/libfolly.pc.in
-  ${CMAKE_CURRENT_BINARY_DIR}/libfolly.pc
+  ${CMAKE_CURRENT_BINARY_DIR}/libfolly.pc.gen
   @ONLY
+)
+file(
+  GENERATE
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libfolly.pc
+  INPUT ${CMAKE_CURRENT_BINARY_DIR}/libfolly.pc.gen
 )
 install(
   FILES ${CMAKE_CURRENT_BINARY_DIR}/libfolly.pc
@@ -407,6 +461,7 @@ option(BUILD_SLOW_TESTS "If enabled, compile tests that take a while to run in d
 if (BUILD_TESTS)
   option(USE_CMAKE_GOOGLE_TEST_INTEGRATION "If enabled, use the google test integration included in CMake." ON)
   find_package(GMock MODULE REQUIRED)
+  find_package(GTest MODULE REQUIRED)
   if (USE_CMAKE_GOOGLE_TEST_INTEGRATION)
     include(GoogleTest OPTIONAL RESULT_VARIABLE HAVE_CMAKE_GTEST)
     enable_testing()
@@ -436,11 +491,9 @@ if (BUILD_TESTS)
     ${FOLLY_DIR}/test/SingletonTestStructs.cpp
     ${FOLLY_DIR}/test/SocketAddressTestHelper.cpp
     ${FOLLY_DIR}/test/SocketAddressTestHelper.h
+    ${FOLLY_DIR}/container/test/F14TestUtil.h
+    ${FOLLY_DIR}/container/test/TrackingTypes.h
     ${FOLLY_DIR}/experimental/test/CodingTestUtils.cpp
-    ${FOLLY_DIR}/logging/test/ConfigHelpers.cpp
-    ${FOLLY_DIR}/logging/test/ConfigHelpers.h
-    ${FOLLY_DIR}/logging/test/TestLogHandler.cpp
-    ${FOLLY_DIR}/logging/test/TestLogHandler.h
     ${FOLLY_DIR}/futures/test/TestExecutor.cpp
     ${FOLLY_DIR}/futures/test/TestExecutor.h
     ${FOLLY_DIR}/io/async/test/BlockingSocket.h
@@ -460,6 +513,10 @@ if (BUILD_TESTS)
     ${FOLLY_DIR}/io/async/test/TimeUtil.h
     ${FOLLY_DIR}/io/async/test/UndelayedDestruction.h
     ${FOLLY_DIR}/io/async/test/Util.h
+    ${FOLLY_DIR}/logging/test/ConfigHelpers.cpp
+    ${FOLLY_DIR}/logging/test/ConfigHelpers.h
+    ${FOLLY_DIR}/logging/test/TestLogHandler.cpp
+    ${FOLLY_DIR}/logging/test/TestLogHandler.h
   )
   target_compile_definitions(folly_test_support
     PUBLIC
@@ -469,6 +526,7 @@ if (BUILD_TESTS)
     SYSTEM
     PUBLIC
       ${LIBGMOCK_INCLUDE_DIR}
+      ${GTEST_INCLUDE_DIRS}
   )
   target_link_libraries(folly_test_support
     PUBLIC
@@ -502,6 +560,7 @@ if (BUILD_TESTS)
       TEST foreach_test SOURCES ForeachTest.cpp
       TEST merge_test SOURCES MergeTest.cpp
       TEST sparse_byte_set_test SOURCES SparseByteSetTest.cpp
+      TEST util_test SOURCES UtilTest.cpp
 
     DIRECTORY concurrency/test/
       TEST atomic_shared_ptr_test SOURCES AtomicSharedPtrTest.cpp
@@ -550,6 +609,7 @@ if (BUILD_TESTS)
       TEST lock_free_ring_buffer_test SOURCES LockFreeRingBufferTest.cpp
       #TEST nested_command_line_app_test SOURCES NestedCommandLineAppTest.cpp
       #TEST program_options_test SOURCES ProgramOptionsTest.cpp
+      TEST quotient_multiset_test SOURCES QuotientMultiSetTest.cpp
       # Depends on liburcu
       #TEST read_mostly_shared_ptr_test SOURCES ReadMostlySharedPtrTest.cpp
       #TEST ref_count_test SOURCES RefCountTest.cpp
@@ -698,23 +758,27 @@ if (BUILD_TESTS)
       TEST ScopedEventBaseThreadTest SOURCES ScopedEventBaseThreadTest.cpp
       TEST ssl_session_test
         CONTENT_DIR certs/
-        SOURCES
-          SSLSessionTest.cpp
+        SOURCES SSLSessionTest.cpp
       TEST writechain_test SOURCES WriteChainAsyncTransportWrapperTest.cpp
 
     DIRECTORY io/async/ssl/test/
       TEST ssl_errors_test SOURCES SSLErrorsTest.cpp
 
     DIRECTORY lang/test/
+      TEST aligned_test SOURCES AlignedTest.cpp
       TEST bits_test SOURCES BitsTest.cpp
-      TEST cold_class_test SOURCES ColdClassTest.cpp
+      TEST c_string_test SOURCES CStringTest.cpp
+      TEST cast_test SOURCES CastTest.cpp
       TEST safe_assert_test SOURCES SafeAssertTest.cpp
 
     DIRECTORY memory/test/
       TEST arena_test SOURCES ArenaTest.cpp
+      TEST reentrant_allocator_test SOURCES ReentrantAllocatorTest.cpp
       TEST thread_cached_arena_test WINDOWS_DISABLED
         SOURCES ThreadCachedArenaTest.cpp
       TEST mallctl_helper_test SOURCES MallctlHelperTest.cpp
+      TEST uninitialized_memory_hacks_test
+        SOURCES UninitializedMemoryHacksTest.cpp
 
     DIRECTORY net/detail/test/
       TEST socket_file_descriptor_map_test SOURCES SocketFileDescriptorMapTest.cpp
@@ -746,6 +810,9 @@ if (BUILD_TESTS)
       TEST rw_spin_lock_test SOURCES RWSpinLockTest.cpp
       TEST semaphore_test SOURCES SemaphoreTest.cpp
 
+    DIRECTORY synchronization/detail/test/
+      TEST hardware_test SOURCES HardwareTest.cpp
+
     DIRECTORY system/test/
       TEST memory_mapping_test SOURCES MemoryMappingTest.cpp
       TEST shell_test SOURCES ShellTest.cpp
@@ -762,14 +829,13 @@ if (BUILD_TESTS)
       TEST ahm_int_stress_test SOURCES AHMIntStressTest.cpp
       TEST arena_smartptr_test SOURCES ArenaSmartPtrTest.cpp
       TEST ascii_check_test SOURCES AsciiCaseInsensitiveTest.cpp
-      TEST atomic_bit_set_test SOURCES AtomicBitSetTest.cpp
       TEST atomic_hash_array_test SOURCES AtomicHashArrayTest.cpp
       TEST atomic_hash_map_test HANGING
         SOURCES AtomicHashMapTest.cpp
       TEST atomic_linked_list_test SOURCES AtomicLinkedListTest.cpp
       TEST atomic_unordered_map_test SOURCES AtomicUnorderedMapTest.cpp
-      TEST cacheline_padded_test SOURCES CachelinePaddedTest.cpp
       TEST clock_gettime_wrappers_test SOURCES ClockGettimeWrappersTest.cpp
+      TEST concurrent_bit_set_test SOURCES ConcurrentBitSetTest.cpp
       TEST concurrent_skip_list_test SOURCES ConcurrentSkipListTest.cpp
       TEST conv_test SOURCES ConvTest.cpp
       TEST cpu_id_test SOURCES CpuIdTest.cpp
@@ -788,8 +854,7 @@ if (BUILD_TESTS)
       TEST file_test SOURCES FileTest.cpp
       # Open-source linux build can't handle running this.
       #TEST file_lock_test SOURCES FileLockTest.cpp
-      TEST file_util_test HANGING
-        SOURCES FileUtilTest.cpp
+      TEST file_util_test SOURCES FileUtilTest.cpp
       TEST fingerprint_test SOURCES FingerprintTest.cpp
       TEST fixed_string_test SOURCES FixedStringTest.cpp
       TEST format_other_test SOURCES FormatOtherTest.cpp
@@ -810,10 +875,7 @@ if (BUILD_TESTS)
       #TEST json_test SOURCES JsonTest.cpp
       TEST json_pointer_test SOURCES json_pointer_test.cpp
       TEST json_patch_test SOURCES json_patch_test.cpp
-      TEST json_other_test
-        CONTENT_DIR json_test_data/
-        SOURCES
-          JsonOtherTest.cpp
+      TEST json_other_test SOURCES JsonOtherTest.cpp
       TEST lazy_test SOURCES LazyTest.cpp
       TEST lock_traits_test SOURCES LockTraitsTest.cpp
       TEST locks_test SOURCES SpinLockTest.cpp
@@ -877,7 +939,7 @@ if (BUILD_TESTS)
   if (${LIBAIO_FOUND})
     folly_define_tests(
       DIRECTORY experimental/io/test/
-        TEST async_io_test SOURCES AsyncIOTest.cpp
+        TEST async_io_test SOURCES AsyncIOTest.cpp AsyncBaseTestLib.cpp IoTestTempFileUtil.cpp
     )
   endif()
 

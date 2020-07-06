@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -29,6 +29,7 @@
 #include <folly/Range.h>
 #include <folly/String.h>
 #include <folly/Unicode.h>
+#include <folly/Utility.h>
 #include <folly/lang/Bits.h>
 #include <folly/portability/Constexpr.h>
 
@@ -37,7 +38,20 @@ namespace folly {
 //////////////////////////////////////////////////////////////////////
 
 namespace json {
+
 namespace {
+
+parse_error make_parse_error(
+    unsigned int line,
+    std::string const& context,
+    std::string const& expected) {
+  return parse_error(to<std::string>(
+      "json parse error on line ",
+      line,
+      !context.empty() ? to<std::string>(" near `", context, '\'') : "",
+      ": ",
+      expected));
+}
 
 struct Printer {
   explicit Printer(
@@ -51,7 +65,7 @@ struct Printer {
       case dynamic::DOUBLE:
         if (!opts_.allow_nan_inf &&
             (std::isnan(v.asDouble()) || std::isinf(v.asDouble()))) {
-          throw std::runtime_error(
+          throw json::parse_error(
               "folly::toJson: JSON object value was a "
               "NaN or INF");
         }
@@ -91,7 +105,7 @@ struct Printer {
  private:
   void printKV(const std::pair<const dynamic, dynamic>& p) const {
     if (!opts_.allow_non_string_keys && !p.first.isString()) {
-      throw std::runtime_error(
+      throw json::parse_error(
           "folly::toJson: JSON object key was not a "
           "string");
     }
@@ -121,16 +135,18 @@ struct Printer {
     newline();
     if (opts_.sort_keys || opts_.sort_keys_by) {
       using ref = std::reference_wrapper<decltype(o.items())::value_type const>;
+      auto sort_keys_by = [&](auto begin, auto end, const auto& comp) {
+        std::sort(begin, end, [&](ref a, ref b) {
+          // Only compare keys.  No ordering among identical keys.
+          return comp(a.get().first, b.get().first);
+        });
+      };
       std::vector<ref> refs(o.items().begin(), o.items().end());
-
-      using SortByRef = FunctionRef<bool(dynamic const&, dynamic const&)>;
-      auto const& sort_keys_by = opts_.sort_keys_by
-          ? SortByRef(opts_.sort_keys_by)
-          : SortByRef(std::less<dynamic>());
-      std::sort(refs.begin(), refs.end(), [&](ref a, ref b) {
-        // Only compare keys.  No ordering among identical keys.
-        return sort_keys_by(a.get().first, b.get().first);
-      });
+      if (opts_.sort_keys_by) {
+        sort_keys_by(refs.begin(), refs.end(), opts_.sort_keys_by);
+      } else {
+        sort_keys_by(refs.begin(), refs.end(), std::less<>());
+      }
       printKVPairs(refs.cbegin(), refs.cend());
     } else {
       printKVPairs(o.items().begin(), o.items().end());
@@ -190,19 +206,6 @@ struct Printer {
 };
 
 //////////////////////////////////////////////////////////////////////
-
-struct FOLLY_EXPORT ParseError : std::runtime_error {
-  explicit ParseError(
-      unsigned int line,
-      std::string const& context,
-      std::string const& expected)
-      : std::runtime_error(to<std::string>(
-            "json parse error on line ",
-            line,
-            !context.empty() ? to<std::string>(" near `", context, '\'') : "",
-            ": ",
-            expected)) {}
-};
 
 // Wraps our input buffer with some helper functions.
 struct Input {
@@ -279,7 +282,7 @@ struct Input {
 
   void expect(char c) {
     if (**this != c) {
-      throw ParseError(
+      throw json::make_parse_error(
           lineNum_, context(), to<std::string>("expected '", c, '\''));
     }
     ++*this;
@@ -321,7 +324,7 @@ struct Input {
   }
 
   dynamic error(char const* what) const {
-    throw ParseError(lineNum_, context(), what);
+    throw json::make_parse_error(lineNum_, context(), what);
   }
 
   json::serialization_opts const& getOpts() {
@@ -544,7 +547,7 @@ std::string decodeUnicodeEscape(Input& in) {
       in.error("expected 4 hex digits");
     }
 
-    uint16_t ret = uint16_t(hexVal(*in) * 4096);
+    auto ret = uint16_t(hexVal(*in) * 4096);
     ++in;
     ret += hexVal(*in) * 256;
     ++in;
@@ -555,24 +558,24 @@ std::string decodeUnicodeEscape(Input& in) {
     return ret;
   };
 
-  /*
-   * If the value encoded is in the surrogate pair range, we need to
-   * make sure there is another escape that we can use also.
-   */
-  uint32_t codePoint = readHex();
-  if (codePoint >= 0xd800 && codePoint <= 0xdbff) {
+  //  If the value encoded is in the surrogate pair range, we need to make
+  //  sure there is another escape that we can use also.
+  //
+  //  See the explanation in folly/Unicode.h.
+  uint16_t prefix = readHex();
+  char32_t codePoint = prefix;
+  if (utf16_code_unit_is_high_surrogate(prefix)) {
     if (!in.consume("\\u")) {
       in.error(
           "expected another unicode escape for second half of "
           "surrogate pair");
     }
-    uint16_t second = readHex();
-    if (second >= 0xdc00 && second <= 0xdfff) {
-      codePoint = 0x10000 + ((codePoint & 0x3ff) << 10) + (second & 0x3ff);
-    } else {
+    uint16_t suffix = readHex();
+    if (!utf16_code_unit_is_low_surrogate(suffix)) {
       in.error("second character in surrogate pair is invalid");
     }
-  } else if (codePoint >= 0xdc00 && codePoint <= 0xdfff) {
+    codePoint = unicode_code_point_from_utf16_surrogate_pair(prefix, suffix);
+  } else if (!utf16_code_unit_is_bmp(prefix)) {
     in.error("invalid unicode code point (in range [0xdc00,0xdfff])");
   }
 
@@ -756,7 +759,7 @@ void escapeStringImpl(
     // it literally into the output string.
     auto firstEsc = p;
     while (firstEsc < e) {
-      auto avail = e - firstEsc;
+      auto avail = to_unsigned(e - firstEsc);
       uint64_t word = 0;
       if (avail >= 8) {
         word = folly::loadUnaligned<uint64_t>(firstEsc);
@@ -994,6 +997,7 @@ std::string toJson(dynamic const& dyn) {
 std::string toPrettyJson(dynamic const& dyn) {
   json::serialization_opts opts;
   opts.pretty_formatting = true;
+  opts.sort_keys = true;
   return json::serialize(dyn, opts);
 }
 

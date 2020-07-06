@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,12 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/fibers/GuardPageAllocator.h>
 
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
-#include <signal.h>
+#include <csignal>
 
 #include <iostream>
 #include <mutex>
@@ -170,7 +171,7 @@ class StackCache {
   std::vector<std::pair<unsigned char*, bool>> freeList_;
 
   static size_t pagesize() {
-    static const size_t pagesize = size_t(sysconf(_SC_PAGESIZE));
+    static const auto pagesize = size_t(sysconf(_SC_PAGESIZE));
     return pagesize;
   }
 
@@ -198,7 +199,26 @@ namespace {
 
 struct sigaction oldSigsegvAction;
 
-void sigsegvSignalHandler(int signum, siginfo_t* info, void*) {
+FOLLY_NOINLINE void FOLLY_FIBERS_STACK_OVERFLOW_DETECTED(
+    int signum,
+    siginfo_t* info,
+    void* ucontext) {
+  std::cerr << "folly::fibers Fiber stack overflow detected." << std::endl;
+  // Let the old signal handler handle the signal, but make this function name
+  // present in the stack trace.
+  if (oldSigsegvAction.sa_flags & SA_SIGINFO) {
+    oldSigsegvAction.sa_sigaction(signum, info, ucontext);
+  } else {
+    oldSigsegvAction.sa_handler(signum);
+  }
+  // Prevent tail call optimization.
+  std::cerr << "";
+}
+
+void sigsegvSignalHandler(int signum, siginfo_t* info, void* ucontext) {
+  // Restore old signal handler
+  sigaction(signum, &oldSigsegvAction, nullptr);
+
   if (signum != SIGSEGV) {
     std::cerr << "GuardPageAllocator signal handler called for signal: "
               << signum;
@@ -207,11 +227,11 @@ void sigsegvSignalHandler(int signum, siginfo_t* info, void*) {
 
   if (info &&
       StackCache::isProtected(reinterpret_cast<intptr_t>(info->si_addr))) {
-    std::cerr << "folly::fibers Fiber stack overflow detected." << std::endl;
+    FOLLY_FIBERS_STACK_OVERFLOW_DETECTED(signum, info, ucontext);
+    return;
   }
 
-  // Restore old signal handler and let it handle the signal.
-  sigaction(signum, &oldSigsegvAction, nullptr);
+  // Let the old signal handler handle the signal.
   raise(signum);
 }
 
@@ -272,6 +292,7 @@ class CacheManager {
   friend class StackCacheEntry;
 
   void giveBack(std::unique_ptr<StackCache> /* stackCache_ */) {
+    std::lock_guard<folly::SpinLock> lg(lock_);
     assert(inUse_ > 0);
     --inUse_;
     /* Note: we can add a free list for each size bucket

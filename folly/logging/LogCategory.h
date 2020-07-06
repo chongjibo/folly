@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <atomic>
@@ -139,6 +140,24 @@ class LogCategory {
   void setLevel(LogLevel level, bool inherit = true);
 
   /**
+   * Set which messages processed by this category will be propagated up to the
+   * parent category
+   *
+   * The default is `LogLevel::MIN_LEVEL` meaning that all messages will be
+   * passed to the parent. You can set this to any higher log level to prevent
+   * some messages being passed to the parent. `LogLevel::MAX_LEVEL` is a good
+   * choice if you've attached a Handler to this category and you don't want
+   * any of these logs to also appear in the parent's Handler.
+   */
+  void setPropagateLevelMessagesToParent(LogLevel level);
+
+  /**
+   * Get which messages processed by this category will be processed by the
+   * parent category
+   */
+  LogLevel getPropagateLevelMessagesToParentRelaxed();
+
+  /**
    * Get the LoggerDB that this LogCategory belongs to.
    *
    * This is almost always the main LoggerDB singleton returned by
@@ -239,6 +258,15 @@ class LogCategory {
   void processMessage(const LogMessage& message) const;
   void updateEffectiveLevel(LogLevel newEffectiveLevel);
   void parentLevelUpdated(LogLevel parentEffectiveLevel);
+
+  /**
+   * Which log messages processed at this category should propagate to the
+   * parent category. The usual case is `LogLevel::MIN_LEVEL` which means all
+   * messages will be propagated. `LogLevel::MAX_LEVEL` generally means that
+   * this category and its children are directed to different destinations
+   * and the user does not want the messages duplicated.
+   */
+  std::atomic<LogLevel> propagateLevelMessagesToParent_{LogLevel::MIN_LEVEL};
 
   /**
    * The minimum log level of this category and all of its parents.

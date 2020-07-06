@@ -1,11 +1,11 @@
 /*
- * Copyright 2019-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,15 +20,14 @@
 #include <type_traits>
 
 #include <folly/Portability.h>
+#include <folly/lang/CArray.h>
 
 namespace folly {
 
 namespace detail {
 
 template <std::size_t S>
-struct pretty_carray {
-  char data[S];
-};
+using pretty_carray = c_array<char, S>;
 
 template <std::size_t S>
 static constexpr pretty_carray<S> pretty_carray_from(char const (&in)[S]) {
@@ -83,14 +82,14 @@ using pretty_default_tag = std::conditional_t< //
 
 template <typename T>
 static constexpr auto pretty_raw(pretty_tag_msc) {
-#if _MSC_VER
+#if defined(_MSC_VER)
   return pretty_carray_from(__FUNCSIG__);
 #endif
 }
 
 template <typename T>
 static constexpr auto pretty_raw(pretty_tag_gcc) {
-#if __GNUC__ || __clang__
+#if defined(__GNUC__) || defined(__clang__)
   return pretty_carray_from(__PRETTY_FUNCTION__);
 #endif
 }

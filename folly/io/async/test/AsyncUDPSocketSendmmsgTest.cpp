@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,8 +31,6 @@ using folly::AsyncTimeout;
 using folly::AsyncUDPServerSocket;
 using folly::AsyncUDPSocket;
 using folly::EventBase;
-using folly::IOBuf;
-using folly::SocketAddress;
 using namespace testing;
 
 using SizeVec = std::vector<size_t>;
@@ -104,7 +102,8 @@ class UDPAcceptor : public AsyncUDPServerSocket::Callback {
       std::shared_ptr<folly::AsyncUDPSocket> socket,
       const folly::SocketAddress& client,
       std::unique_ptr<folly::IOBuf> data,
-      bool /*unused*/) noexcept override {
+      bool /*unused*/,
+      OnDataAvailableParams /*unused*/) noexcept override {
     // send pong
     socket->write(client, data->clone());
   }
@@ -213,11 +212,7 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
   }
 
   void connect() {
-    int ret = socket_->connect(*connectAddr_);
-    if (ret != 0) {
-      throw folly::AsyncSocketException(
-          folly::AsyncSocketException::NOT_OPEN, "ConnectFail", errno);
-    }
+    socket_->connect(*connectAddr_);
     VLOG(2) << "Client connected to address=" << *connectAddr_;
   }
 
@@ -236,7 +231,8 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
   }
 
   virtual void writePing(IOBufVec& bufs) {
-    socket_->writem(server_, bufs.data(), bufs.size());
+    socket_->writem(
+        folly::range(&server_, &server_ + 1), bufs.data(), bufs.size());
   }
 
   void getReadBuffer(void** buf, size_t* len) noexcept override {
@@ -247,7 +243,8 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
   void onDataAvailable(
       const folly::SocketAddress& /*unused*/,
       size_t len,
-      bool /*unused*/) noexcept override {
+      bool /*unused*/,
+      OnDataAvailableParams /*unused*/) noexcept override {
     VLOG(0) << "Got " << len << " bytes";
     if (testData_.appendOut(buf_, len)) {
       shutdown();

@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@
 
 #include <thread>
 
+#include <folly/Singleton.h>
 #include <folly/experimental/observer/SimpleObservable.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
@@ -374,6 +375,14 @@ TEST(Observer, SetCallback) {
   EXPECT_EQ(2, callbackCallsCount);
 }
 
+TEST(Observer, CallbackMemoryLeak) {
+  folly::observer::SimpleObservable<int> observable(42);
+  auto observer = observable.getObserver();
+  auto callbackHandle = observer.addCallback([](auto) {});
+  // should not leak
+  callbackHandle = observer.addCallback([](auto) {});
+}
+
 int makeObserverRecursion(int n) {
   if (n == 0) {
     return 0;
@@ -430,4 +439,100 @@ TEST(Observer, IgnoreUpdates) {
   observable.setValue(46);
   folly::observer_detail::ObserverManager::waitForAllUpdates();
   EXPECT_EQ(3, callbackCalled);
+}
+
+TEST(Observer, GetSnapshotOnManagerThread) {
+  auto observer42 = folly::observer::makeObserver([] { return 42; });
+
+  folly::observer::SimpleObservable<int> observable(1);
+
+  folly::Baton<> startBaton;
+  folly::Baton<> finishBaton;
+  folly::Baton<> destructorBaton;
+
+  {
+    finishBaton.post();
+    auto slowObserver = folly::observer::makeObserver(
+        [guard = folly::makeGuard([observer42, &destructorBaton]() {
+           // We expect this to be called on a ObserverManager thread, but
+           // outside of processing an observer updates.
+           observer42.getSnapshot();
+           destructorBaton.post();
+         }),
+         observer = observable.getObserver(),
+         &startBaton,
+         &finishBaton] {
+          startBaton.post();
+          finishBaton.wait();
+          finishBaton.reset();
+          return **observer;
+        });
+
+    EXPECT_EQ(1, **slowObserver);
+
+    startBaton.reset();
+    finishBaton.post();
+    observable.setValue(2);
+    folly::observer_detail::ObserverManager::waitForAllUpdates();
+    EXPECT_EQ(2, **slowObserver);
+
+    startBaton.reset();
+    observable.setValue(3);
+    startBaton.wait();
+  }
+  finishBaton.post();
+  destructorBaton.wait();
+}
+
+TEST(Observer, Shutdown) {
+  folly::SingletonVault::singleton()->destroyInstances();
+  auto observer = folly::observer::makeObserver([] { return 42; });
+  EXPECT_EQ(42, **observer);
+}
+
+TEST(Observer, MakeValueObserver) {
+  struct ValueStruct {
+    ValueStruct(int value, int id) : value_(value), id_(id) {}
+    bool operator==(const ValueStruct& other) const {
+      return value_ == other.value_;
+    }
+
+    const int value_;
+    const int id_;
+  };
+
+  SimpleObservable<ValueStruct> observable(ValueStruct(1, 1));
+
+  std::vector<int> observedIds;
+  std::vector<int> observedValues;
+  std::vector<int> observedValues2;
+
+  auto ch1 = observable.getObserver().addCallback(
+      [&](auto snapshot) { observedIds.push_back(snapshot->id_); });
+  auto ch2 = makeValueObserver(observable.getObserver())
+                 .addCallback([&](auto snapshot) {
+                   observedValues.push_back(snapshot->value_);
+                 });
+  auto ch3 = makeValueObserver(
+                 [observer = observable.getObserver()] { return **observer; })
+                 .addCallback([&](auto snapshot) {
+                   observedValues2.push_back(snapshot->value_);
+                 });
+  folly::observer_detail::ObserverManager::waitForAllUpdates();
+
+  observable.setValue(ValueStruct(1, 2));
+  folly::observer_detail::ObserverManager::waitForAllUpdates();
+
+  observable.setValue(ValueStruct(2, 3));
+  folly::observer_detail::ObserverManager::waitForAllUpdates();
+
+  observable.setValue(ValueStruct(2, 4));
+  folly::observer_detail::ObserverManager::waitForAllUpdates();
+
+  observable.setValue(ValueStruct(3, 5));
+  folly::observer_detail::ObserverManager::waitForAllUpdates();
+
+  EXPECT_EQ(observedIds, std::vector<int>({1, 2, 3, 4, 5}));
+  EXPECT_EQ(observedValues, std::vector<int>({1, 2, 3}));
+  EXPECT_EQ(observedValues2, std::vector<int>({1, 2, 3}));
 }

@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -40,7 +40,7 @@ TEST(Wait, waitImmediate) {
   vector<Future<Unit>> v_f;
   v_f.push_back(makeFuture());
   v_f.push_back(makeFuture());
-  auto done_v_f = collectAllSemiFuture(v_f).toUnsafeFuture().wait().value();
+  auto done_v_f = collectAll(v_f).wait().value();
   EXPECT_EQ(2, done_v_f.size());
 
   vector<Future<bool>> v_fb;
@@ -148,7 +148,7 @@ TEST(Wait, waitWithDuration) {
     vector<Future<bool>> v_fb;
     v_fb.push_back(makeFuture(true));
     v_fb.push_back(makeFuture(false));
-    auto f = collectAll(v_fb);
+    auto f = collectAll(v_fb).toUnsafeFuture();
     f.wait(milliseconds(1));
     EXPECT_TRUE(f.isReady());
     EXPECT_EQ(2, f.value().size());
@@ -159,7 +159,7 @@ TEST(Wait, waitWithDuration) {
     Promise<bool> p2;
     v_fb.push_back(p1.getFuture());
     v_fb.push_back(p2.getFuture());
-    auto f = collectAll(v_fb);
+    auto f = collectAll(v_fb).toUnsafeFuture();
     f.wait(milliseconds(1));
     EXPECT_FALSE(f.isReady());
     p1.setValue(true);
@@ -425,4 +425,17 @@ TEST(Wait, WaitPlusThen) {
     EXPECT_EQ(continuation, 42);
     t.join();
   }
+}
+
+TEST(Wait, cancelAfterWait) {
+  folly::TestExecutor executor(1);
+  Promise<folly::Unit> p;
+  p.setInterruptHandler([&](const exception_wrapper& e) {
+    EXPECT_THROW(e.throw_exception(), FutureCancellation);
+  });
+
+  auto fut = p.getSemiFuture().within(std::chrono::seconds(1)).via(&executor);
+  fut.wait(std::chrono::milliseconds(1));
+  fut.cancel();
+  fut.wait();
 }

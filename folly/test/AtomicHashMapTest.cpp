@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -387,7 +387,7 @@ TEST(Ahm, basicErase) {
     EXPECT_TRUE(success);
     EXPECT_EQ(s->size(), numEntries);
 
-    // Delete every key in the map and verify that the key is gone and the the
+    // Delete every key in the map and verify that the key is gone and the
     // size is correct.
     success = true;
     for (size_t i = 0; i < numEntries; ++i) {
@@ -535,7 +535,7 @@ namespace {
 const int kInsertPerThread = 100000;
 int raceFinalSizeEstimate;
 
-void* raceIterateThread(void*) {
+void raceIterateThread() {
   int count = 0;
 
   AHMapT::iterator it = globalAHM->begin();
@@ -544,18 +544,16 @@ void* raceIterateThread(void*) {
     ++count;
     if (count > raceFinalSizeEstimate) {
       EXPECT_FALSE("Infinite loop in iterator.");
-      return nullptr;
+      return;
     }
   }
-  return nullptr;
 }
 
-void* raceInsertRandomThread(void*) {
+void raceInsertRandomThread() {
   for (int i = 0; i < kInsertPerThread; ++i) {
     KeyT key = rand();
     globalAHM->insert(key, genVal(key));
   }
-  return nullptr;
 }
 
 } // namespace
@@ -573,19 +571,15 @@ TEST(Ahm, race_insert_iterate_thread_test) {
 
   globalAHM = std::make_unique<AHMapT>(raceFinalSizeEstimate / 9, config);
 
-  vector<pthread_t> threadIds;
-  for (int j = 0; j < kInsertThreads + kIterateThreads; j++) {
-    pthread_t tid;
-    void* (*thread)(void*) =
-        (j < kInsertThreads ? raceInsertRandomThread : raceIterateThread);
-    if (pthread_create(&tid, nullptr, thread, nullptr) != 0) {
-      LOG(ERROR) << "Could not start thread";
-    } else {
-      threadIds.push_back(tid);
-    }
+  vector<std::thread> threads;
+  for (auto j = 0u; j < kInsertThreads; ++j) {
+    threads.emplace_back(raceInsertRandomThread);
   }
-  for (size_t i = 0; i < threadIds.size(); ++i) {
-    pthread_join(threadIds[i], nullptr);
+  for (auto j = 0u; j < kIterateThreads; ++j) {
+    threads.emplace_back(raceIterateThread);
+  }
+  for (auto& thread : threads) {
+    thread.join();
   }
   VLOG(1) << "Ended up with " << globalAHM->numSubMaps() << " submaps";
   VLOG(1) << "Final size of map " << globalAHM->size();

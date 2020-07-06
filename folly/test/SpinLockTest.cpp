@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,7 @@
 #include <thread>
 
 #include <folly/portability/Asm.h>
+#include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 
 using folly::SpinLockGuardImpl;
@@ -45,10 +46,7 @@ void spinlockTestThread(LockedVal<LOCK>* v) {
     folly::asm_volatile_pause();
     SpinLockGuardImpl<LOCK> g(v->lock);
 
-    int first = v->ar[0];
-    for (size_t j = 1; j < sizeof v->ar / sizeof j; ++j) {
-      EXPECT_EQ(first, v->ar[j]);
-    }
+    EXPECT_THAT(v->ar, testing::Each(testing::Eq(v->ar[0])));
 
     int byte = folly::Random::rand32(rng);
     memset(v->ar, char(byte), sizeof v->ar);

@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -666,9 +666,11 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
       if (netops::setsockopt(
               handler.socket_, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val)) !=
           0) {
+        auto errnoCopy = errno;
         LOG(ERROR) << "failed to set SO_REUSEPORT on async server socket "
-                   << errno;
-        folly::throwSystemError(errno, "failed to bind to async server socket");
+                   << errnoCopy;
+        folly::throwSystemErrorExplicit(
+            errnoCopy, "failed to set SO_REUSEPORT on async server socket");
       }
     }
   }
@@ -773,7 +775,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
     void start(EventBase* eventBase, uint32_t maxAtOnce, uint32_t maxInQueue);
     void stop(EventBase* eventBase, AcceptCallback* callback);
 
-    void messageAvailable(QueueMessage&& message) noexcept override;
+    void messageAvailable(QueueMessage&& msg) noexcept override;
 
     NotificationQueue<QueueMessage>* getQueue() {
       return &queue_;
@@ -802,10 +804,8 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
 
   class BackoffTimeout;
 
-  virtual void handlerReady(
-      uint16_t events,
-      NetworkSocket socket,
-      sa_family_t family) noexcept;
+  virtual void
+  handlerReady(uint16_t events, NetworkSocket fd, sa_family_t family) noexcept;
 
   NetworkSocket createSocket(int family);
   void setupSocket(NetworkSocket fd, int family);
@@ -895,6 +895,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   std::weak_ptr<ShutdownSocketSet> wShutdownSocketSet_;
   ConnectionEventCallback* connectionEventCallback_{nullptr};
   bool tosReflect_{false};
+  bool zeroCopyVal_{false};
 };
 
 } // namespace folly

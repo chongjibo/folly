@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <algorithm>
@@ -27,6 +28,7 @@
 #include <folly/executors/thread_factory/NamedThreadFactory.h>
 #include <folly/io/async/Request.h>
 #include <folly/portability/GFlags.h>
+#include <folly/synchronization/AtomicStruct.h>
 #include <folly/synchronization/Baton.h>
 
 #include <glog/logging.h>
@@ -52,6 +54,15 @@ namespace folly {
  * ensureJoined() is called on add(), such that we can join idle
  * threads that were destroyed (which can't be joined from
  * themselves).
+ *
+ * Thread pool stats accounting:
+ *
+ * Derived classes must register instances to keep stats on all thread
+ * pools by calling registerThreadPoolExecutor(this) on constructions
+ * and deregisterThreadPoolExecutor(this) on destruction.
+ *
+ * Registration must be done wherever getPendingTaskCountImpl is implemented
+ * and getPendingTaskCountImpl should be marked 'final' to avoid data races.
  */
 class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
  public:
@@ -70,6 +81,7 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
   void setThreadFactory(std::shared_ptr<ThreadFactory> threadFactory) {
     CHECK(numThreads() == 0);
     threadFactory_ = std::move(threadFactory);
+    namePrefix_ = getNameHelper();
   }
 
   std::shared_ptr<ThreadFactory> getThreadFactory() const {
@@ -112,13 +124,15 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
 
   PoolStats getPoolStats() const;
   size_t getPendingTaskCount() const;
-  std::string getName() const;
+  const std::string& getName() const;
 
   struct TaskStats {
-    TaskStats() : expired(false), waitTime(0), runTime(0) {}
+    TaskStats() : expired(false), waitTime(0), runTime(0), requestId(0) {}
     bool expired;
     std::chrono::nanoseconds waitTime;
     std::chrono::nanoseconds runTime;
+    std::chrono::steady_clock::time_point enqueueTime;
+    uint64_t requestId;
   };
 
   using TaskStatsCallback = std::function<void(TaskStats)>;
@@ -167,8 +181,10 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
 
   struct TaskStatsCallbackRegistry;
 
-  struct alignas(hardware_destructive_interference_size) Thread
-      : public ThreadHandle {
+  struct //
+      alignas(folly::cacheline_align_v) //
+      alignas(folly::AtomicStruct<std::chrono::steady_clock::time_point>) //
+      Thread : public ThreadHandle {
     explicit Thread(ThreadPoolExecutor* pool)
         : id(nextId++),
           handle(),
@@ -181,8 +197,8 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
     static std::atomic<uint64_t> nextId;
     uint64_t id;
     std::thread handle;
-    bool idle;
-    std::chrono::steady_clock::time_point lastActiveTime;
+    std::atomic<bool> idle;
+    folly::AtomicStruct<std::chrono::steady_clock::time_point> lastActiveTime;
     folly::Baton<> startupBaton;
     std::shared_ptr<TaskStatsCallbackRegistry> taskStatsCallbacks;
   };
@@ -195,14 +211,13 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
         std::chrono::milliseconds expiration,
         Func&& expireCallback);
     Func func_;
-    TaskStats stats_;
     std::chrono::steady_clock::time_point enqueueTime_;
     std::chrono::milliseconds expiration_;
     Func expireCallback_;
     std::shared_ptr<folly::RequestContext> context_;
   };
 
-  static void runTask(const ThreadPtr& thread, Task&& task);
+  void runTask(const ThreadPtr& thread, Task&& task);
 
   // The function that will be bound to pool threads. It must call
   // thread->startupBaton.post() when it's ready to consume work.
@@ -223,6 +238,9 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
   virtual ThreadPtr makeThread() {
     return std::make_shared<Thread>(this);
   }
+
+  static void registerThreadPoolExecutor(ThreadPoolExecutor* tpe);
+  static void deregisterThreadPoolExecutor(ThreadPoolExecutor* tpe);
 
   // Prerequisite: threadListLock_ readlocked or writelocked
   virtual size_t getPendingTaskCountImpl() const = 0;
@@ -285,7 +303,10 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
     std::queue<ThreadPtr> queue_;
   };
 
+  std::string getNameHelper() const;
+
   std::shared_ptr<ThreadFactory> threadFactory_;
+  std::string namePrefix_;
   const bool isWaitForAll_; // whether to wait till event base loop exits
 
   ThreadList threadList_;

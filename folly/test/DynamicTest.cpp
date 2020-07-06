@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -1252,4 +1252,36 @@ TEST(Dynamic, Math) {
           value1.asDouble() / value2.asDouble(), testValue.asDouble(), 0.0001);
     }
   }
+}
+
+dynamic buildNestedKeys(size_t depth) {
+  if (depth == 0) {
+    return dynamic(0);
+  }
+  return dynamic::object(buildNestedKeys(depth - 1), 0);
+}
+
+dynamic buildNestedValues(size_t depth) {
+  if (depth == 0) {
+    return dynamic(0);
+  }
+  return dynamic::object(0, buildNestedValues(depth - 1));
+}
+
+TEST(Dynamic, EqualNestedKeys) {
+  // This tests for exponential behavior in the depth of the keys.
+  // If it is exponential this test won't finish.
+  size_t const kDepth = 100;
+  dynamic obj1 = buildNestedKeys(kDepth);
+  dynamic obj2 = obj1;
+  EXPECT_EQ(obj1, obj2);
+}
+
+TEST(Dynamic, EqualNestedValues) {
+  // This tests for exponential behavior in the depth of the values.
+  // If it is exponential this test won't finish.
+  size_t const kDepth = 100;
+  dynamic obj1 = buildNestedValues(kDepth);
+  dynamic obj2 = obj1;
+  EXPECT_EQ(obj1, obj2);
 }

@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -50,6 +50,7 @@
 #include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
 #include <folly/Traits.h>
+#include <folly/functional/Invoke.h>
 #include <folly/lang/Assume.h>
 #include <folly/lang/Exception.h>
 #include <folly/memory/Malloc.h>
@@ -97,9 +98,8 @@ class small_vector;
 namespace detail {
 
 /*
- * Move objects in memory to the right into some uninitialized
- * memory, where the region overlaps. Then call create(size_t) for each
- * "hole" passing it the offset of the hole from first.
+ * Move objects in memory to the right into some uninitialized memory, where
+ * the region overlaps. Then call create() for each hole in reverse order.
  *
  * This doesn't just use std::move_backward because move_backward only works
  * if all the memory is initialized to type T already.
@@ -148,11 +148,11 @@ moveObjectsRightAndCreate(
     }
     for (; out > lastConstructed;) {
       --out;
-      new (out) T(create(out - first));
+      new (out) T(create());
     }
     for (; out != first;) {
       --out;
-      *out = create(out - first);
+      *out = create();
     }
     rollback.dismiss();
   }
@@ -174,7 +174,7 @@ moveObjectsRightAndCreate(
   T* const end = first - 1;
   T* out = first + (realLast - lastConstructed) - 1;
   for (; out != end; --out) {
-    *out = create(out - first);
+    *out = create();
   }
 }
 
@@ -540,7 +540,8 @@ class small_vector : public detail::small_vector_base<
     return *this;
   }
 
-  small_vector& operator=(small_vector&& o) {
+  small_vector& operator=(small_vector&& o) noexcept(
+      std::is_nothrow_move_constructible<Value>::value) {
     // TODO: optimization:
     // if both are internal, use move assignment where possible
     if (FOLLY_LIKELY(this != &o)) {
@@ -563,7 +564,7 @@ class small_vector : public detail::small_vector_base<
                                      : BaseType::policyMaxSize();
   }
 
-  allocator_type get_allocator() {
+  allocator_type get_allocator() const {
     return {};
   }
 
@@ -619,11 +620,10 @@ class small_vector : public detail::small_vector_base<
    * Usually one of the simplest functions in a Container-like class
    * but a bit more complex here.  We have to handle all combinations
    * of in-place vs. heap between this and o.
-   *
-   * Basic guarantee only.  Provides the nothrow guarantee iff our
-   * value_type has a nothrow move or copy constructor.
    */
-  void swap(small_vector& o) {
+  void swap(small_vector& o) noexcept(
+      std::is_nothrow_move_constructible<Value>::value&&
+          IsNothrowSwappable<Value>::value) {
     using std::swap; // Allow ADL on swap for our value_type.
 
     if (this->isExtern() && o.isExtern()) {
@@ -705,8 +705,8 @@ class small_vector : public detail::small_vector_base<
   }
 
   void resize(size_type sz) {
-    if (sz < size()) {
-      erase(begin() + sz, end());
+    if (sz <= size()) {
+      downsize(sz);
       return;
     }
     makeSize(sz);
@@ -765,11 +765,18 @@ class small_vector : public detail::small_vector_base<
   }
 
   size_type capacity() const {
+    struct Unreachable {
+      size_t operator()(void*) const {
+        assume_unreachable();
+      }
+    };
+    using AllocationSizeOrUnreachable =
+        conditional_t<kMustTrackHeapifiedCapacity, Unreachable, AllocationSize>;
     if (this->isExtern()) {
       if (u.hasCapacity()) {
         return u.getCapacity();
       }
-      return malloc_usable_size(u.pdata_.heap_) / sizeof(value_type);
+      return AllocationSizeOrUnreachable{}(u.pdata_.heap_) / sizeof(value_type);
     }
     return MaxInline;
   }
@@ -809,7 +816,11 @@ class small_vector : public detail::small_vector_base<
   }
 
   void pop_back() {
-    erase(end() - 1);
+    // ideally this would be implemented in terms of erase(end() - 1) to reuse
+    // the higher-level abstraction, but neither Clang or GCC are able to
+    // optimize it away. if you change this, please verify (with disassembly)
+    // that the generated code on -O3 (and ideally -O2) stays short
+    downsize(size() - 1);
   }
 
   iterator insert(const_iterator constp, value_type&& t) {
@@ -833,11 +844,7 @@ class small_vector : public detail::small_vector_base<
           data() + offset,
           data() + size(),
           data() + size() + 1,
-          [&](size_t i) -> value_type&& {
-            assert(i == 0);
-            (void)i;
-            return std::move(t);
-          });
+          [&]() mutable -> value_type&& { return std::move(t); });
       this->setSize(size() + 1);
     }
     return begin() + offset;
@@ -856,11 +863,7 @@ class small_vector : public detail::small_vector_base<
         data() + offset,
         data() + size(),
         data() + size() + n,
-        [&](size_t i) -> value_type const& {
-          assert(i < n);
-          (void)i;
-          return val;
-        });
+        [&]() mutable -> value_type const& { return val; });
     this->setSize(size() + n);
     return begin() + offset;
   }
@@ -878,9 +881,12 @@ class small_vector : public detail::small_vector_base<
   }
 
   iterator erase(const_iterator q) {
+    // ideally this would be implemented in terms of erase(q, q + 1) to reuse
+    // the higher-level abstraction, but neither Clang or GCC are able to
+    // optimize it away. if you change this, please verify (with disassembly)
+    // that the generated code on -O3 (and ideally -O2) stays short
     std::move(unconst(q) + 1, end(), unconst(q));
-    (data() + size() - 1)->~value_type();
-    this->setSize(size() - 1);
+    downsize(size() - 1);
     return unconst(q);
   }
 
@@ -889,15 +895,16 @@ class small_vector : public detail::small_vector_base<
       return unconst(q1);
     }
     std::move(unconst(q2), end(), unconst(q1));
-    for (auto it = (end() - std::distance(q1, q2)); it != end(); ++it) {
-      it->~value_type();
-    }
-    this->setSize(size() - (q2 - q1));
+    downsize(size() - std::distance(q1, q2));
     return unconst(q1);
   }
 
   void clear() {
-    erase(begin(), end());
+    // ideally this would be implemented in terms of erase(begin(), end()) to
+    // reuse the higher-level abstraction, but neither Clang or GCC are able to
+    // optimize it away. if you change this, please verify (with disassembly)
+    // that the generated code on -O3 (and ideally -O2) stays short
+    downsize(0);
   }
 
   template <class Arg>
@@ -961,6 +968,14 @@ class small_vector : public detail::small_vector_base<
     return const_cast<iterator>(it);
   }
 
+  void downsize(size_type sz) {
+    assert(sz <= size());
+    for (auto it = (begin() + sz); it != end(); ++it) {
+      it->~value_type();
+    }
+    this->setSize(sz);
+  }
+
   // The std::false_type argument is part of disambiguating the
   // iterator insert functions from integral types (see insert().)
   template <class It>
@@ -985,10 +1000,7 @@ class small_vector : public detail::small_vector_base<
         data() + offset,
         data() + size(),
         data() + size() + distance,
-        [&](size_t i) -> it_ref {
-          assert(i < size_t(distance));
-          return *(first + i);
-        });
+        [&, in = last]() mutable -> it_ref { return *--in; });
     this->setSize(size() + distance);
     return begin() + offset;
   }
@@ -1103,16 +1115,24 @@ class small_vector : public detail::small_vector_base<
 
     newSize = std::max(newSize, computeNewSize());
 
-    auto needBytes = newSize * sizeof(value_type);
+    const auto needBytes = newSize * sizeof(value_type);
     // If the capacity isn't explicitly stored inline, but the heap
     // allocation is grown to over some threshold, we should store
     // a capacity at the front of the heap allocation.
-    bool heapifyCapacity =
-        !kHasInlineCapacity && needBytes > kHeapifyCapacityThreshold;
-    if (heapifyCapacity) {
-      needBytes += kHeapifyCapacitySize;
-    }
-    auto const sizeBytes = goodMallocSize(needBytes);
+    const bool heapifyCapacity =
+        !kHasInlineCapacity && needBytes >= kHeapifyCapacityThreshold;
+    const size_t allocationExtraBytes =
+        heapifyCapacity ? kHeapifyCapacitySize : 0;
+    const size_t goodAllocationSizeBytes =
+        goodMallocSize(needBytes + allocationExtraBytes);
+    const size_t newCapacity =
+        (goodAllocationSizeBytes - allocationExtraBytes) / sizeof(value_type);
+    // Make sure that the allocation request has a size computable from the
+    // capacity, instead of using goodAllocationSizeBytes, so that we can do
+    // sized deallocation. If goodMallocSize() gives us extra bytes that are not
+    // a multiple of the value size we cannot use them anyway.
+    const size_t sizeBytes =
+        newCapacity * sizeof(value_type) + allocationExtraBytes;
     void* newh = checkedMalloc(sizeBytes);
     // We expect newh to be at least 2-aligned, because we want to
     // use its least significant bit as a flag.
@@ -1124,7 +1144,7 @@ class small_vector : public detail::small_vector_base<
 
     {
       auto rollback = makeGuard([&] { //
-        free(newh);
+        sizedFree(newh, sizeBytes);
       });
       if (insert) {
         // move and insert the new element
@@ -1143,15 +1163,13 @@ class small_vector : public detail::small_vector_base<
     if (this->isExtern()) {
       u.freeHeap();
     }
-    auto availableSizeBytes = sizeBytes;
     if (heapifyCapacity) {
       u.pdata_.heap_ = detail::pointerFlagSet(newh);
-      availableSizeBytes -= kHeapifyCapacitySize;
     } else {
       u.pdata_.heap_ = newh;
     }
     this->setExtern(true);
-    this->setCapacity(availableSizeBytes / sizeof(value_type));
+    this->setCapacity(newCapacity);
   }
 
   /*
@@ -1177,6 +1195,9 @@ class small_vector : public detail::small_vector_base<
     void setCapacity(InternalSizeType c) {
       capacity_ = c;
     }
+    size_t allocationExtraBytes() const {
+      return 0;
+    }
   } FOLLY_SV_PACK_ATTR;
 
   struct HeapPtr {
@@ -1190,6 +1211,10 @@ class small_vector : public detail::small_vector_base<
     }
     void setCapacity(InternalSizeType c) {
       *static_cast<InternalSizeType*>(detail::pointerFlagClear(heap_)) = c;
+    }
+    size_t allocationExtraBytes() const {
+      assert(detail::pointerFlagGet(heap_));
+      return kHeapifyCapacitySize;
     }
   } FOLLY_SV_PACK_ATTR;
 
@@ -1208,9 +1233,28 @@ class small_vector : public detail::small_vector_base<
       typename std::
           aligned_storage<sizeof(InternalSizeType), alignof(value_type)>::type);
 
+  struct AllocationSize {
+    auto operator()(void* ptr) const {
+      (void)ptr;
+#if defined(FOLLY_HAVE_MALLOC_USABLE_SIZE)
+      return malloc_usable_size(ptr);
+#endif
+      // it is important that this method not return a size_t if we can't call
+      // malloc_usable_size! kMustTrackHeapifiedCapacity uses the deduced return
+      // type of this function in order to decide whether small_vector must
+      // track its own capacity or not.
+    }
+  };
+
+  static bool constexpr kMustTrackHeapifiedCapacity =
+      !is_invocable_r_v<size_t, AllocationSize, void*>;
+
   // Threshold to control capacity heapifying.
   static size_t constexpr kHeapifyCapacityThreshold =
-      100 * kHeapifyCapacitySize;
+      (kMustTrackHeapifiedCapacity ? 0 : 100) * kHeapifyCapacitySize;
+
+  static bool constexpr kAlwaysHasCapacity =
+      kHasInlineCapacity || kMustTrackHeapifiedCapacity;
 
   typedef typename std::
       conditional<kHasInlineCapacity, HeapPtrWithCapacity, HeapPtr>::type
@@ -1244,7 +1288,7 @@ class small_vector : public detail::small_vector_base<
     }
 
     bool hasCapacity() const {
-      return kHasInlineCapacity || detail::pointerFlagGet(pdata_.heap_);
+      return kAlwaysHasCapacity || detail::pointerFlagGet(pdata_.heap_);
     }
     InternalSizeType getCapacity() const {
       return pdata_.getCapacity();
@@ -1255,7 +1299,14 @@ class small_vector : public detail::small_vector_base<
 
     void freeHeap() {
       auto vp = detail::pointerFlagClear(pdata_.heap_);
-      free(vp);
+      if (hasCapacity()) {
+        sizedFree(
+            vp,
+            pdata_.getCapacity() * sizeof(value_type) +
+                pdata_.allocationExtraBytes());
+      } else {
+        free(vp);
+      }
     }
   } u;
 };

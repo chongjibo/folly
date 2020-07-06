@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -114,4 +114,16 @@ TEST_F(ExceptionTest, catch_exception) {
   EXPECT_EQ(3, folly::catch_exception<int>(returner(3), identity));
   EXPECT_EQ(4, folly::catch_exception(thrower(3), returner(4)));
   EXPECT_EQ(3, folly::catch_exception<int>(thrower(3), identity));
+}
+
+TEST_F(ExceptionTest, rethrow_current_exception) {
+  EXPECT_THROW(
+      folly::invoke_noreturn_cold([] {
+        try {
+          throw std::runtime_error("bad");
+        } catch (...) {
+          folly::rethrow_current_exception();
+        }
+      }),
+      std::runtime_error);
 }

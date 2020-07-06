@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,10 +15,11 @@
  */
 
 #include <folly/Singleton.h>
-#include <folly/portability/Config.h>
 
 #ifndef _WIN32
 #include <dlfcn.h>
+#include <signal.h>
+#include <time.h>
 #endif
 
 #include <atomic>
@@ -31,12 +32,15 @@
 #include <folly/Format.h>
 #include <folly/ScopeGuard.h>
 #include <folly/detail/SingletonStackTrace.h>
+#include <folly/portability/Config.h>
 
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__)
 #define FOLLY_SINGLETON_HAVE_DLSYM 1
 #endif
 
 namespace folly {
+
+constexpr std::chrono::seconds SingletonVault::kDefaultShutdownTimeout_;
 
 #if FOLLY_SINGLETON_HAVE_DLSYM
 namespace detail {
@@ -98,13 +102,15 @@ std::string TypeDescriptor::name() const {
   auto trace = detail::getSingletonStackTrace();
   LOG(FATAL) << "Creating instance for unregistered singleton: " << type.name()
              << "\n"
-             << "Stacktrace:\n" << (trace != "" ? trace : "(not available)");
+             << "Stacktrace:\n" << (!trace.empty() ? trace : "(not available)");
+  folly::assume_unreachable();
 }
 
 [[noreturn]] void singletonWarnRegisterMockEarlyAndAbort(
     const TypeDescriptor& type) {
   LOG(FATAL) << "Registering mock before singleton was registered: "
              << type.name();
+  folly::assume_unreachable();
 }
 
 void singletonWarnDestroyInstanceLeak(
@@ -123,6 +129,7 @@ void singletonWarnDestroyInstanceLeak(
 [[noreturn]] void singletonWarnCreateCircularDependencyAndAbort(
     const TypeDescriptor& type) {
   LOG(FATAL) << "circular singleton dependency: " << type.name();
+  folly::assume_unreachable();
 }
 
 [[noreturn]] void singletonWarnCreateUnregisteredAndAbort(
@@ -130,7 +137,8 @@ void singletonWarnDestroyInstanceLeak(
   auto trace = detail::getSingletonStackTrace();
   LOG(FATAL) << "Creating instance for unregistered singleton: " << type.name()
              << "\n"
-             << "Stacktrace:\n" << (trace != "" ? trace : "(not available)");
+             << "Stacktrace:\n" << (!trace.empty() ? trace : "(not available)");
+  folly::assume_unreachable();
 }
 
 [[noreturn]] void singletonWarnCreateBeforeRegistrationCompleteAndAbort(
@@ -141,13 +149,14 @@ void singletonWarnDestroyInstanceLeak(
              << "This usually means that either main() never called "
              << "folly::init, or singleton was requested before main() "
              << "(which is not allowed).\n"
-             << "Stacktrace:\n" << (trace != "" ? trace : "(not available)");
+             << "Stacktrace:\n" << (!trace.empty() ? trace : "(not available)");
+  folly::assume_unreachable();
 }
 
 void singletonPrintDestructionStackTrace(const TypeDescriptor& type) {
   auto trace = detail::getSingletonStackTrace();
   LOG(ERROR) << "Singleton " << type.name() << " was released.\n"
-             << "Stacktrace:\n" << (trace != "" ? trace : "(not available)");
+             << "Stacktrace:\n" << (!trace.empty() ? trace : "(not available)");
 }
 
 [[noreturn]] void singletonThrowNullCreator(const std::type_info& type) {
@@ -360,7 +369,62 @@ void SingletonVault::scheduleDestroyInstances() {
   // Add a dependency on folly::ThreadLocal to make sure all its static
   // singletons are initalized first.
   threadlocal_detail::StaticMeta<void, void>::instance();
-  std::atexit([] { SingletonVault::singleton()->destroyInstances(); });
+  std::atexit([] {
+    SingletonVault::singleton()->startShutdownTimer();
+    SingletonVault::singleton()->destroyInstances();
+  });
+}
+
+void SingletonVault::addToShutdownLog(std::string message) {
+  shutdownLog_.wlock()->push_back(std::move(message));
+}
+
+#if FOLLY_HAVE_LIBRT
+namespace {
+[[noreturn]] void fireShutdownSignalHelper(sigval_t sigval) {
+  static_cast<SingletonVault*>(sigval.sival_ptr)->fireShutdownTimer();
+}
+} // namespace
+#endif
+
+void SingletonVault::startShutdownTimer() {
+#if FOLLY_HAVE_LIBRT
+  if (shutdownTimerStarted_.exchange(true)) {
+    return;
+  }
+
+  if (!shutdownTimeout_.count()) {
+    return;
+  }
+
+  struct sigevent sig;
+  sig.sigev_notify = SIGEV_THREAD;
+  sig.sigev_notify_function = fireShutdownSignalHelper;
+  sig.sigev_value.sival_ptr = this;
+  sig.sigev_notify_attributes = nullptr;
+  timer_t timerId;
+  PCHECK(timer_create(CLOCK_MONOTONIC, &sig, &timerId) == 0);
+
+  struct itimerspec newValue, oldValue;
+  newValue.it_value.tv_sec =
+      std::chrono::milliseconds(shutdownTimeout_).count() / 1000;
+  newValue.it_value.tv_nsec =
+      std::chrono::milliseconds(shutdownTimeout_).count() % 1000 * 1000000;
+  newValue.it_interval.tv_sec = 0;
+  newValue.it_interval.tv_nsec = 0;
+  PCHECK(timer_settime(timerId, 0, &newValue, &oldValue) == 0);
+#endif
+}
+
+[[noreturn]] void SingletonVault::fireShutdownTimer() {
+  std::string shutdownLog;
+  for (auto& logMessage : shutdownLog_.copy()) {
+    shutdownLog += logMessage + "\n";
+  }
+  LOG(FATAL) << "Failed to complete shutdown within "
+             << std::chrono::milliseconds(shutdownTimeout_).count()
+             << "ms. Shutdown log:\n"
+             << shutdownLog;
 }
 
 } // namespace folly

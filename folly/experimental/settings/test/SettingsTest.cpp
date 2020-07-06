@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/experimental/settings/Settings.h>
 #include <folly/Format.h>
 #include <folly/portability/GTest.h>
@@ -97,7 +98,7 @@ TEST(Settings, user_defined) {
   {
     folly::settings::Snapshot sn;
     auto info = sn.getAsString("follytest_user_defined");
-    EXPECT_TRUE(info.hasValue());
+    EXPECT_TRUE(info.has_value());
     EXPECT_EQ(info->first, "a_out");
     EXPECT_EQ(info->second, "test");
   }
@@ -112,7 +113,7 @@ TEST(Settings, user_defined) {
   {
     folly::settings::Snapshot sn;
     auto info = sn.getAsString("follytest_user_defined");
-    EXPECT_TRUE(info.hasValue());
+    EXPECT_TRUE(info.has_value());
     EXPECT_EQ(info->first, "a_out");
     EXPECT_EQ(info->second, "test");
   }
@@ -125,7 +126,7 @@ TEST(Settings, user_defined) {
   {
     folly::settings::Snapshot sn;
     auto info = sn.getAsString("follytest_user_defined");
-    EXPECT_TRUE(info.hasValue());
+    EXPECT_TRUE(info.has_value());
     EXPECT_EQ(info->first, "b_out");
     EXPECT_EQ(info->second, "default");
   }
@@ -139,7 +140,7 @@ TEST(Settings, user_defined) {
   {
     folly::settings::Snapshot sn;
     auto info = sn.getAsString("follytest_user_defined");
-    EXPECT_TRUE(info.hasValue());
+    EXPECT_TRUE(info.has_value());
     EXPECT_EQ(info->first, "b_out");
     EXPECT_EQ(info->second, "default");
   }
@@ -160,13 +161,13 @@ TEST(Settings, basic) {
   {
     folly::settings::Snapshot sn;
     auto res = sn.getAsString("follytest_public_flag_to_a");
-    EXPECT_TRUE(res.hasValue());
+    EXPECT_TRUE(res.has_value());
     EXPECT_EQ(res->first, "200");
     EXPECT_EQ(res->second, "remote_set");
   }
   {
     auto meta = folly::settings::getSettingsMeta("follytest_public_flag_to_a");
-    EXPECT_TRUE(meta.hasValue());
+    EXPECT_TRUE(meta.has_value());
     const auto& md = meta.value();
     EXPECT_EQ(md.project, "follytest");
     EXPECT_EQ(md.name, "public_flag_to_a");
@@ -175,7 +176,7 @@ TEST(Settings, basic) {
   }
   {
     auto meta = folly::settings::getSettingsMeta("follytest_some_flag");
-    EXPECT_TRUE(meta.hasValue());
+    EXPECT_TRUE(meta.has_value());
     const auto& md = meta.value();
     EXPECT_EQ(md.project, "follytest");
     EXPECT_EQ(md.name, "some_flag");
@@ -185,7 +186,7 @@ TEST(Settings, basic) {
   {
     folly::settings::Snapshot sn;
     auto res = sn.getAsString("follytest_nonexisting");
-    EXPECT_FALSE(res.hasValue());
+    EXPECT_FALSE(res.has_value());
   }
   {
     folly::settings::Snapshot sn;
@@ -198,7 +199,7 @@ TEST(Settings, basic) {
   {
     folly::settings::Snapshot sn;
     auto res = sn.getAsString("follytest_public_flag_to_a");
-    EXPECT_TRUE(res.hasValue());
+    EXPECT_TRUE(res.has_value());
     EXPECT_EQ(res->first, "300");
     EXPECT_EQ(res->second, "from_string");
   }

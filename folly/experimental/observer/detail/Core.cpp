@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,7 +23,7 @@ namespace folly {
 namespace observer_detail {
 
 Core::VersionedData Core::getData() {
-  if (!ObserverManager::inManagerThread()) {
+  if (!ObserverManager::DependencyRecorder::isActive()) {
     return data_.copy();
   }
 
@@ -171,14 +171,9 @@ void Core::addDependent(Core::WeakPtr dependent) {
 
 void Core::removeStaleDependents() {
   // This is inefficient, the assumption is that we won't have many dependents
-  dependents_.withWLock([](Dependents& dependents) {
-    for (size_t i = 0; i < dependents.size(); ++i) {
-      if (dependents[i].expired()) {
-        std::swap(dependents[i], dependents.back());
-        dependents.pop_back();
-        --i;
-      }
-    }
+  dependents_.withWLock([](Dependents& deps) {
+    auto const pred = [](auto const& d) { return d.expired(); };
+    deps.erase(std::remove_if(deps.begin(), deps.end(), pred), deps.end());
   });
 }
 } // namespace observer_detail

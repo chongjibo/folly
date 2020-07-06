@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <experimental/coroutine>
@@ -20,6 +21,7 @@
 
 #include <folly/Optional.h>
 #include <folly/experimental/coro/Baton.h>
+#include <folly/experimental/coro/Invoke.h>
 #include <folly/experimental/coro/Task.h>
 #include <folly/experimental/coro/Traits.h>
 #include <folly/experimental/coro/detail/Helpers.h>
@@ -37,7 +39,7 @@ timed_wait(Awaitable awaitable, Duration duration) {
       detail::lift_lvalue_reference_t<semi_await_result_t<Awaitable>>>>>
       result;
 
-  futures::sleepUnsafe(duration).setCallback_(
+  futures::sleep(duration).toUnsafeFuture().setCallback_(
       [posted, &baton, executor = co_await co_current_executor](
           auto&&, auto&&) {
         if (!posted->exchange(true, std::memory_order_relaxed)) {

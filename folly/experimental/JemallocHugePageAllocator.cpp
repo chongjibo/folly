@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,19 +16,21 @@
 
 #include <folly/experimental/JemallocHugePageAllocator.h>
 
+#include <folly/portability/Malloc.h>
 #include <folly/portability/String.h>
 #include <glog/logging.h>
 
 #include <sstream>
 
-#if defined(MADV_HUGEPAGE) && defined(FOLLY_USE_JEMALLOC) && !FOLLY_SANITIZE
-#include <jemalloc/jemalloc.h>
-#if (JEMALLOC_VERSION_MAJOR >= 5)
+#if (defined(MADV_HUGEPAGE) || defined(MAP_ALIGNED_SUPER)) && \
+    defined(FOLLY_USE_JEMALLOC) && !FOLLY_SANITIZE
+#if defined(__FreeBSD__) || (JEMALLOC_VERSION_MAJOR >= 5)
 #define FOLLY_JEMALLOC_HUGE_PAGE_ALLOCATOR_SUPPORTED 1
 bool folly::JemallocHugePageAllocator::hugePagesSupported{true};
 #endif
 
-#endif // MADV_HUGEPAGE && defined(FOLLY_USE_JEMALLOC) && !FOLLY_SANITIZE
+#endif // MADV_HUGEPAGE || MAP_ALIGNED_SUPER && defined(FOLLY_USE_JEMALLOC) &&
+       // !FOLLY_SANITIZE
 
 #ifndef FOLLY_JEMALLOC_HUGE_PAGE_ALLOCATOR_SUPPORTED
 // Some mocks when jemalloc.h is not included or version too old
@@ -61,7 +63,7 @@ bool folly::JemallocHugePageAllocator::hugePagesSupported{false};
 namespace folly {
 namespace {
 
-static void print_error(int err, const char* msg) {
+void print_error(int err, const char* msg) {
   int cur_errno = std::exchange(errno, err);
   PLOG(ERROR) << msg;
   errno = cur_errno;
@@ -69,11 +71,11 @@ static void print_error(int err, const char* msg) {
 
 class HugePageArena {
  public:
-  int init(int nr_pages, const JemallocHugePageAllocator::Options& options);
+  int init(int nr_pages);
   void* reserve(size_t size, size_t alignment);
 
   bool addressInArena(void* address) {
-    uintptr_t addr = reinterpret_cast<uintptr_t>(address);
+    auto addr = reinterpret_cast<uintptr_t>(address);
     return addr >= start_ && addr < end_;
   }
 
@@ -106,7 +108,7 @@ class HugePageArena {
 constexpr size_t kHugePageSize = 2 * 1024 * 1024;
 
 // Singleton arena instance
-static HugePageArena arena;
+HugePageArena arena;
 
 template <typename T, typename U>
 static inline T align_up(T val, U alignment) {
@@ -115,16 +117,19 @@ static inline T align_up(T val, U alignment) {
 }
 
 // mmap enough memory to hold the aligned huge pages, then use madvise
-// to get huge pages. Note that this is only a hint and is not guaranteed
-// to be honoured. Check /proc/<pid>/smaps to verify!
-static uintptr_t map_pages(size_t nr_pages) {
+// to get huge pages. This can be checked in /proc/<pid>/smaps.
+uintptr_t map_pages(size_t nr_pages) {
   // Initial mmapped area is large enough to contain the aligned huge pages
   size_t alloc_size = nr_pages * kHugePageSize;
+  int mflags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if defined(__FreeBSD__)
+  mflags |= MAP_ALIGNED_SUPER;
+#endif
   void* p = mmap(
       nullptr,
       alloc_size + kHugePageSize,
       PROT_READ | PROT_WRITE,
-      MAP_PRIVATE | MAP_ANONYMOUS,
+      mflags,
       -1,
       0);
 
@@ -135,6 +140,7 @@ static uintptr_t map_pages(size_t nr_pages) {
   // Aligned start address
   uintptr_t first_page = align_up((uintptr_t)p, kHugePageSize);
 
+#if !defined(__FreeBSD__)
   // Unmap left-over 4k pages
   munmap(p, first_page - (uintptr_t)p);
   munmap(
@@ -144,6 +150,23 @@ static uintptr_t map_pages(size_t nr_pages) {
   // Tell the kernel to please give us huge pages for this range
   madvise((void*)first_page, kHugePageSize * nr_pages, MADV_HUGEPAGE);
   LOG(INFO) << nr_pages << " huge pages at " << (void*)first_page;
+
+  // With THP set to madvise, page faults on these pages will block until a
+  // huge page is found to service it. However, if memory becomes fragmented
+  // before these pages are touched, then we end up blocking for kcompactd to
+  // make a page available. This increases pressure to the point that oomd comes
+  // in and kill us :(. So, preemptively touch these pages to get them backed
+  // as early as possible to prevent stalling due to no available huge pages.
+  //
+  // Note: this does not guarantee we won't be oomd killed here, it's just much
+  // more unlikely given this should be among the very first things an
+  // application does.
+  for (uintptr_t ptr = first_page; ptr < first_page + alloc_size;
+       ptr += kHugePageSize) {
+    memset((void*)ptr, 0, 1);
+  }
+#endif
+
   return first_page;
 }
 
@@ -174,16 +197,14 @@ void* HugePageArena::allocHook(
         extent, new_addr, size, alignment, zero, commit, arena_ind);
   } else {
     if (*zero) {
-      bzero(res, size);
+      memset(res, 0, size);
     }
     *commit = true;
   }
   return res;
 }
 
-int HugePageArena::init(
-    int nr_pages,
-    const JemallocHugePageAllocator::Options& options) {
+int HugePageArena::init(int nr_pages) {
   DCHECK(start_ == 0);
   DCHECK(usingJEMalloc());
 
@@ -246,21 +267,30 @@ int HugePageArena::init(
     return 0;
   }
 
-  if (options.noDecay) {
-    // Set decay time to 0, which will cause jemalloc to free memory
-    // back to kernel immediately.
-    ssize_t decay_ms = 0;
-    std::ostringstream dirty_decay_key;
-    dirty_decay_key << "arena." << arenaIndex_ << ".dirty_decay_ms";
-    if (auto ret = mallctl(
-            dirty_decay_key.str().c_str(),
-            nullptr,
-            nullptr,
-            &decay_ms,
-            sizeof(decay_ms))) {
-      print_error(ret, "Unable to set decay time");
-      return 0;
-    }
+  // Set dirty decay and muzzy decay time to -1, which will cause jemalloc
+  // to never free memory to kernel.
+  ssize_t decay_ms = -1;
+  std::ostringstream dirty_decay_key;
+  dirty_decay_key << "arena." << arenaIndex_ << ".dirty_decay_ms";
+  if (auto ret = mallctl(
+          dirty_decay_key.str().c_str(),
+          nullptr,
+          nullptr,
+          &decay_ms,
+          sizeof(decay_ms))) {
+    print_error(ret, "Unable to set dirty decay time");
+    return 0;
+  }
+  std::ostringstream muzzy_decay_key;
+  muzzy_decay_key << "arena." << arenaIndex_ << ".muzzy_decay_ms";
+  if (auto ret = mallctl(
+          muzzy_decay_key.str().c_str(),
+          nullptr,
+          nullptr,
+          &decay_ms,
+          sizeof(decay_ms))) {
+    print_error(ret, "Unable to set muzzy decay time");
+    return 0;
   }
 
   start_ = freePtr_ = map_pages(nr_pages);
@@ -287,14 +317,14 @@ void* HugePageArena::reserve(size_t size, size_t alignment) {
 
 int JemallocHugePageAllocator::flags_{0};
 
-bool JemallocHugePageAllocator::init(int nr_pages, const Options& options) {
+bool JemallocHugePageAllocator::init(int nr_pages) {
   if (!usingJEMalloc()) {
     LOG(ERROR) << "Not linked with jemalloc?";
     hugePagesSupported = false;
   }
   if (hugePagesSupported) {
     if (flags_ == 0) {
-      flags_ = arena.init(nr_pages, options);
+      flags_ = arena.init(nr_pages);
     } else {
       LOG(WARNING) << "Already initialized";
     }

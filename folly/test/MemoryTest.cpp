@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -41,6 +41,26 @@ TEST(allocateBytes, simple) {
   deallocateBytes(p, 10);
 }
 
+TEST(allocateBytes, zero) {
+  auto p = allocateBytes(0);
+  deallocateBytes(p, 0);
+}
+
+TEST(operatorNewDelete, zero) {
+  auto p = ::operator new(0);
+  EXPECT_TRUE(p != nullptr);
+  ::operator delete(p);
+}
+
+#if __cpp_sized_deallocation
+TEST(operatorNewDelete, sized_zero) {
+  std::size_t n = 0;
+  auto p = ::operator new(n);
+  EXPECT_TRUE(p != nullptr);
+  ::operator delete(p, n);
+}
+#endif
+
 TEST(aligned_malloc, examples) {
   auto trial = [](size_t align) {
     auto const ptr = aligned_malloc(1, align);
@@ -69,6 +89,16 @@ TEST(to_weak_ptr, example) {
   EXPECT_EQ(1, s.use_count());
   EXPECT_EQ(2, (to_weak_ptr(s).lock(), s.use_count())) << "lvalue";
   EXPECT_EQ(3, (to_weak_ptr(decltype(s)(s)).lock(), s.use_count())) << "rvalue";
+}
+
+TEST(copy_to_unique_ptr, example) {
+  std::unique_ptr<int> s = copy_to_unique_ptr(17);
+  EXPECT_EQ(17, *s);
+}
+
+TEST(copy_to_shared_ptr, example) {
+  std::shared_ptr<int> s = copy_to_shared_ptr(17);
+  EXPECT_EQ(17, *s);
 }
 
 TEST(SysAllocator, equality) {
@@ -118,6 +148,18 @@ TEST(AlignedSysAllocator, allocate_unique_fixed) {
   EXPECT_EQ(0, std::uintptr_t(ptr.get()) % 1024);
 }
 
+TEST(AlignedSysAllocator, undersized_fixed) {
+  constexpr auto align = has_extended_alignment ? 1024 : max_align_v;
+  struct alignas(align) Big {
+    float value;
+  };
+  using Alloc = AlignedSysAllocator<Big, FixedAlign<sizeof(void*)>>;
+  Alloc const alloc;
+  auto ptr = allocate_unique<Big>(alloc, Big{3.});
+  EXPECT_EQ(3., ptr->value);
+  EXPECT_EQ(0, std::uintptr_t(ptr.get()) % align);
+}
+
 TEST(AlignedSysAllocator, vector_fixed) {
   using Alloc = AlignedSysAllocator<float, FixedAlign<1024>>;
   Alloc const alloc;
@@ -152,6 +194,18 @@ TEST(AlignedSysAllocator, allocate_unique_default) {
   auto ptr = allocate_unique<float>(alloc, 3.);
   EXPECT_EQ(3., *ptr);
   EXPECT_EQ(0, std::uintptr_t(ptr.get()) % 1024);
+}
+
+TEST(AlignedSysAllocator, undersized_default) {
+  constexpr auto align = has_extended_alignment ? 1024 : max_align_v;
+  struct alignas(align) Big {
+    float value;
+  };
+  using Alloc = AlignedSysAllocator<Big, DefaultAlign>;
+  Alloc const alloc(sizeof(void*));
+  auto ptr = allocate_unique<Big>(alloc, Big{3.});
+  EXPECT_EQ(3., ptr->value);
+  EXPECT_EQ(0, std::uintptr_t(ptr.get()) % align);
 }
 
 TEST(AlignedSysAllocator, vector_default) {

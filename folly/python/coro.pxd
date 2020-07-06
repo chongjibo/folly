@@ -1,4 +1,4 @@
-# Copyright 2019-present Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 from cpython.ref cimport PyObject
 from folly cimport cFollyExecutor, cFollyTry
 
-cdef extern from "folly/experimental/coro/Task.h" namespace "folly::coro" nogil:
+cdef extern from "folly/python/coro.h" namespace "folly::coro" nogil:
     cdef cppclass cFollyCoroTask "folly::coro::Task"[T]:
         pass
 

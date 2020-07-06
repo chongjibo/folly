@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -70,10 +70,10 @@ std::unique_ptr<char*, void (*)(char**)> EnvironmentState::toPointerArray()
   }
   size_t allocationRequired =
       (totalStringLength / sizeof(char*) + 1) + env_.size() + 1;
-  char** raw = new char*[allocationRequired];
+  auto raw = new char*[allocationRequired];
   char** ptrBase = raw;
-  char* stringBase = reinterpret_cast<char*>(&raw[env_.size() + 1]);
-  char* const stringEnd = reinterpret_cast<char*>(&raw[allocationRequired]);
+  auto stringBase = reinterpret_cast<char*>(&raw[env_.size() + 1]);
+  auto const stringEnd = reinterpret_cast<char*>(&raw[allocationRequired]);
   for (auto const& pair : env_) {
     std::string const& key = pair.first;
     std::string const& value = pair.second;

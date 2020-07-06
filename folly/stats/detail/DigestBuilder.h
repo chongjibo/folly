@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,6 +18,7 @@
 
 #include <memory>
 
+#include <folly/Memory.h>
 #include <folly/SpinLock.h>
 
 namespace folly {
@@ -60,10 +61,18 @@ class DigestBuilder {
     std::unique_ptr<DigestT> digest;
   };
 
-  std::vector<CpuLocalBuffer> cpuLocalBuffers_;
+  //  cpulocalbuffer_alloc custom allocator is necessary until C++17
+  //    http://open-std.org/JTC1/SC22/WG21/docs/papers/2012/n3396.htm
+  //    https://gcc.gnu.org/bugzilla/show_bug.cgi?id=65122
+  //    https://bugs.llvm.org/show_bug.cgi?id=22634
+  using cpulocalbuffer_alloc =
+      AlignedSysAllocator<CpuLocalBuffer, FixedAlign<alignof(CpuLocalBuffer)>>;
+  std::vector<CpuLocalBuffer, cpulocalbuffer_alloc> cpuLocalBuffers_;
   size_t bufferSize_;
   size_t digestSize_;
 };
 
 } // namespace detail
 } // namespace folly
+
+#include <folly/stats/detail/DigestBuilder-inl.h>

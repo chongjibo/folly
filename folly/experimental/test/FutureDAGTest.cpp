@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,8 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/experimental/FutureDAG.h>
 #include <boost/thread/barrier.hpp>
+#include <folly/executors/GlobalExecutor.h>
 #include <folly/portability/GTest.h>
 
 using namespace folly;
@@ -86,14 +88,15 @@ struct FutureDAGTest : public testing::Test {
             test->order.push_back(handle);
             return Future<Unit>();
           }),
-          handle(test->dag->add(func)) {}
+          handle(test->dag->add(func, getGlobalCPUExecutor())) {}
 
     const FutureDAG::FutureFunc func;
     const Handle handle;
     std::set<Handle> dependencies;
   };
 
-  const std::shared_ptr<FutureDAG> dag = FutureDAG::create();
+  const std::shared_ptr<FutureDAG> dag =
+      FutureDAG::create(getGlobalCPUExecutor());
   std::map<Handle, std::unique_ptr<TestNode>> nodes;
   std::vector<Handle> order;
 };
@@ -215,15 +218,15 @@ FutureDAG::FutureFunc throwFunc = [] {
 };
 
 TEST_F(FutureDAGTest, ThrowBegin) {
-  auto h1 = dag->add(throwFunc);
-  auto h2 = dag->add(makeFutureFunc);
+  auto h1 = dag->add(throwFunc, getGlobalCPUExecutor());
+  auto h2 = dag->add(makeFutureFunc, getGlobalCPUExecutor());
   dag->dependency(h1, h2);
   EXPECT_THROW(dag->go().get(), std::runtime_error);
 }
 
 TEST_F(FutureDAGTest, ThrowEnd) {
-  auto h1 = dag->add(makeFutureFunc);
-  auto h2 = dag->add(throwFunc);
+  auto h1 = dag->add(makeFutureFunc, getGlobalCPUExecutor());
+  auto h2 = dag->add(throwFunc, getGlobalCPUExecutor());
   dag->dependency(h1, h2);
   EXPECT_THROW(dag->go().get(), std::runtime_error);
 }
@@ -256,17 +259,19 @@ TEST_F(FutureDAGTest, DestroyBeforeComplete) {
   auto barrier = std::make_shared<boost::barrier>(2);
   Future<Unit> f;
   {
-    auto localDag = FutureDAG::create();
-    auto h1 = localDag->add([barrier] {
-      auto p = std::make_shared<Promise<Unit>>();
-      std::thread t([p, barrier] {
-        barrier->wait();
-        p->setValue();
-      });
-      t.detach();
-      return p->getFuture();
-    });
-    auto h2 = localDag->add(makeFutureFunc);
+    auto localDag = FutureDAG::create(getGlobalCPUExecutor());
+    auto h1 = localDag->add(
+        [barrier] {
+          auto p = std::make_shared<Promise<Unit>>();
+          std::thread t([p, barrier] {
+            barrier->wait();
+            p->setValue();
+          });
+          t.detach();
+          return p->getFuture();
+        },
+        getGlobalCPUExecutor());
+    auto h2 = localDag->add(makeFutureFunc, getGlobalCPUExecutor());
     localDag->dependency(h1, h2);
     f = localDag->go();
   }

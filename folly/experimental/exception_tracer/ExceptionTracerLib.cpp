@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -103,7 +103,7 @@ void __cxa_throw(
     void (*destructor)(void*)) {
   static auto orig_cxa_throw =
       reinterpret_cast<decltype(&__cxa_throw)>(dlsym(RTLD_NEXT, "__cxa_throw"));
-  getCxaThrowCallbacks().invoke(thrownException, type, destructor);
+  getCxaThrowCallbacks().invoke(thrownException, type, &destructor);
   orig_cxa_throw(thrownException, type, destructor);
   __builtin_unreachable(); // orig_cxa_throw never returns
 }

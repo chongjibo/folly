@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,51 +31,13 @@
 #include <folly/experimental/symbolizer/Elf.h>
 #include <folly/experimental/symbolizer/ElfCache.h>
 #include <folly/experimental/symbolizer/StackTrace.h>
+#include <folly/experimental/symbolizer/SymbolizedFrame.h>
 #include <folly/io/IOBuf.h>
 
 namespace folly {
 namespace symbolizer {
 
 class Symbolizer;
-
-/**
- * Frame information: symbol name and location.
- */
-struct SymbolizedFrame {
-  SymbolizedFrame() {}
-
-  void set(
-      const std::shared_ptr<ElfFile>& file,
-      uintptr_t address,
-      Dwarf::LocationInfoMode mode);
-
-  void clear() {
-    *this = SymbolizedFrame();
-  }
-
-  bool found = false;
-  const char* name = nullptr;
-  Dwarf::LocationInfo location;
-
-  /**
-   * Demangle the name and return it. Not async-signal-safe; allocates memory.
-   */
-  fbstring demangledName() const {
-    return name ? demangle(name) : fbstring();
-  }
-
- private:
-  std::shared_ptr<ElfFile> file_;
-};
-
-template <size_t N>
-struct FrameArray {
-  FrameArray() {}
-
-  size_t frameCount = 0;
-  uintptr_t addresses[N];
-  SymbolizedFrame frames[N];
-};
 
 /**
  * Get stack trace into a given FrameArray, return true on success (and
@@ -115,44 +77,79 @@ inline bool getStackTraceSafe(FrameArray<N>& fa) {
   return detail::fixFrameArray(fa, getStackTraceSafe(fa.addresses, N));
 }
 
+template <size_t N>
+FOLLY_ALWAYS_INLINE bool getStackTraceHeap(FrameArray<N>& fa);
+
+template <size_t N>
+inline bool getStackTraceHeap(FrameArray<N>& fa) {
+  return detail::fixFrameArray(fa, getStackTraceHeap(fa.addresses, N));
+}
+
 class Symbolizer {
  public:
-  static constexpr Dwarf::LocationInfoMode kDefaultLocationInfoMode =
-      Dwarf::LocationInfoMode::FAST;
+  static constexpr auto kDefaultLocationInfoMode = LocationInfoMode::FAST;
 
-  explicit Symbolizer(Dwarf::LocationInfoMode mode = kDefaultLocationInfoMode)
+  static bool isAvailable();
+
+  explicit Symbolizer(LocationInfoMode mode = kDefaultLocationInfoMode)
       : Symbolizer(nullptr, mode) {}
 
   explicit Symbolizer(
       ElfCacheBase* cache,
-      Dwarf::LocationInfoMode mode = kDefaultLocationInfoMode,
+      LocationInfoMode mode = kDefaultLocationInfoMode,
       size_t symbolCacheSize = 0);
+
   /**
-   * Symbolize given addresses.
+   *  Symbolize given addresses and return the number of @frames filled:
+   *
+   * - all entries in @addrs will be symbolized (if possible, e.g. if they're
+   *   valid code addresses and if frames.size() >= addrs.size())
+   *
+   * - if `mode_ == FULL_WITH_INLINE` and `frames.size() > addrs.size()` then at
+   *   most `frames.size() - addrs.size()` additional inlined functions will
+   *   also be symbolized (at most `kMaxInlineLocationInfoPerFrame` per @addr
+   *   entry).
    */
-  void symbolize(
+  size_t symbolize(
+      folly::Range<const uintptr_t*> addrs,
+      folly::Range<SymbolizedFrame*> frames);
+
+  size_t symbolize(
       const uintptr_t* addresses,
       SymbolizedFrame* frames,
-      size_t frameCount);
+      size_t frameCount) {
+    return symbolize(
+        folly::Range<const uintptr_t*>(addresses, frameCount),
+        folly::Range<SymbolizedFrame*>(frames, frameCount));
+  }
 
   template <size_t N>
-  void symbolize(FrameArray<N>& fa) {
-    symbolize(fa.addresses, fa.frames, fa.frameCount);
+  size_t symbolize(FrameArray<N>& fa) {
+    return symbolize(
+        folly::Range<const uintptr_t*>(fa.addresses, fa.frameCount),
+        folly::Range<SymbolizedFrame*>(fa.frames, N));
   }
 
   /**
    * Shortcut to symbolize one address.
    */
   bool symbolize(uintptr_t address, SymbolizedFrame& frame) {
-    symbolize(&address, &frame, 1);
+    symbolize(
+        folly::Range<const uintptr_t*>(&address, 1),
+        folly::Range<SymbolizedFrame*>(&frame, 1));
     return frame.found;
   }
 
  private:
   ElfCacheBase* const cache_;
-  const Dwarf::LocationInfoMode mode_;
+  const LocationInfoMode mode_;
 
-  using SymbolCache = EvictingCacheMap<uintptr_t, SymbolizedFrame>;
+  // SymbolCache contains mapping between an address and its frames. The first
+  // frame is the normal function call, and the following are stacked inline
+  // function calls if any.
+  using CachedSymbolizedFrames =
+      std::array<SymbolizedFrame, 1 + Dwarf::kMaxInlineLocationInfoPerFrame>;
+  using SymbolCache = EvictingCacheMap<uintptr_t, CachedSymbolizedFrames>;
   folly::Optional<Synchronized<SymbolCache>> symbolCache_;
 };
 
@@ -180,22 +177,19 @@ class AddressFormatter {
 class SymbolizePrinter {
  public:
   /**
-   * Print one address, no ending newline.
+   * Print one frame, no ending newline.
    */
-  void print(uintptr_t address, const SymbolizedFrame& frame);
+  void print(const SymbolizedFrame& frame);
 
   /**
-   * Print one address with ending newline.
+   * Print one frame with ending newline.
    */
-  void println(uintptr_t address, const SymbolizedFrame& frame);
+  void println(const SymbolizedFrame& frame);
 
   /**
-   * Print multiple addresses on separate lines.
+   * Print multiple frames on separate lines.
    */
-  void println(
-      const uintptr_t* addresses,
-      const SymbolizedFrame* frames,
-      size_t frameCount);
+  void println(const SymbolizedFrame* frames, size_t frameCount);
 
   /**
    * Print a string, no endling newline.
@@ -205,13 +199,13 @@ class SymbolizePrinter {
   }
 
   /**
-   * Print multiple addresses on separate lines, skipping the first
+   * Print multiple frames on separate lines, skipping the first
    * skip addresses.
    */
   template <size_t N>
   void println(const FrameArray<N>& fa, size_t skip = 0) {
     if (skip < fa.frameCount) {
-      println(fa.addresses + skip, fa.frames + skip, fa.frameCount - skip);
+      println(fa.frames + skip, fa.frameCount - skip);
     }
   }
 
@@ -238,6 +232,9 @@ class SymbolizePrinter {
 
     // Skip frame address information
     NO_FRAME_ADDRESS = 1 << 4,
+
+    // Simple file and line output
+    TERSE_FILE_AND_LINE = 1 << 5,
   };
 
   // NOTE: enum values used as indexes in kColorMap.
@@ -252,7 +249,7 @@ class SymbolizePrinter {
   const bool isTty_;
 
  private:
-  void printTerse(uintptr_t address, const SymbolizedFrame& frame);
+  void printTerse(const SymbolizedFrame& frame);
   virtual void doPrint(StringPiece sp) = 0;
 
   static constexpr std::array<const char*, Color::NUM> kColorMap = {{
@@ -350,11 +347,7 @@ class StringSymbolizePrinter : public SymbolizePrinter {
  */
 class SafeStackTracePrinter {
  public:
-  static constexpr size_t kDefaultMinSignalSafeElfCacheSize = 500;
-
-  explicit SafeStackTracePrinter(
-      size_t minSignalSafeElfCacheSize = kDefaultMinSignalSafeElfCacheSize,
-      int fd = STDERR_FILENO);
+  explicit SafeStackTracePrinter(int fd = STDERR_FILENO);
 
   virtual ~SafeStackTracePrinter() {}
 
@@ -382,7 +375,6 @@ class SafeStackTracePrinter {
   static constexpr size_t kMaxStackTraceDepth = 100;
 
   int fd_;
-  SignalSafeElfCache elfCache_;
   FDSymbolizePrinter printer_;
   std::unique_ptr<FrameArray<kMaxStackTraceDepth>> addresses_;
 };
@@ -400,7 +392,6 @@ class FastStackTracePrinter {
 
   explicit FastStackTracePrinter(
       std::unique_ptr<SymbolizePrinter> printer,
-      size_t elfCacheSize = 0, // 0 means "use the default elf cache instance."
       size_t symbolCacheSize = kDefaultSymbolCacheSize);
 
   ~FastStackTracePrinter();
@@ -416,7 +407,6 @@ class FastStackTracePrinter {
  private:
   static constexpr size_t kMaxStackTraceDepth = 100;
 
-  const std::unique_ptr<ElfCache> elfCache_;
   const std::unique_ptr<SymbolizePrinter> printer_;
   Symbolizer symbolizer_;
 };

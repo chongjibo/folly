@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -72,6 +72,19 @@ using IntrusiveList = boost::intrusive::list<
  */
 using SafeIntrusiveListHook = boost::intrusive::list_member_hook<
     boost::intrusive::link_mode<boost::intrusive::safe_link>>;
+
+/**
+ * A safe intrusive list.
+ *
+ * This is like IntrusiveList but always uses the safe-link hook which ensures
+ * that the hook is initialised to an unlinked state on construction and reset
+ * an unlinked state upon removing it from a list.
+ */
+template <typename T, SafeIntrusiveListHook T::*PtrToMember>
+using SafeIntrusiveList = boost::intrusive::list<
+    T,
+    boost::intrusive::member_hook<T, SafeIntrusiveListHook, PtrToMember>,
+    boost::intrusive::constant_time_size<false>>;
 
 /**
  * An intrusive list with const-time size() method.

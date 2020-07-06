@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,8 @@
 #include <utility>
 
 #include <folly/Function.h>
+#include <folly/Optional.h>
+#include <folly/Range.h>
 #include <folly/Utility.h>
 
 namespace folly {
@@ -30,6 +32,25 @@ struct folly_pipeorigin {};
 } // namespace pushmi
 
 using Func = Function<void()>;
+
+namespace detail {
+
+class ExecutorKeepAliveBase {
+ public:
+  //  A dummy keep-alive is a keep-alive to an executor which does not support
+  //  the keep-alive mechanism.
+  static constexpr uintptr_t kDummyFlag = uintptr_t(1) << 0;
+
+  //  An alias keep-alive is a keep-alive to an executor to which there is
+  //  known to be another keep-alive whose lifetime surrounds the lifetime of
+  //  the alias.
+  static constexpr uintptr_t kAliasFlag = uintptr_t(1) << 1;
+
+  static constexpr uintptr_t kFlagMask = kDummyFlag | kAliasFlag;
+  static constexpr uintptr_t kExecutorMask = ~kFlagMask;
+};
+
+} // namespace detail
 
 /// An Executor accepts units of work with add(), which should be
 /// threadsafe.
@@ -59,7 +80,7 @@ class Executor {
    * For any Executor that supports KeepAlive functionality, Executor's
    * destructor will block until all the KeepAlive objects associated with that
    * Executor are destroyed.
-   * For Executors that don't support the KeepAlive funcionality, KeepAlive
+   * For Executors that don't support the KeepAlive functionality, KeepAlive
    * doesn't provide such protection.
    *
    * KeepAlive should *always* be used instead of Executor*. KeepAlive can be
@@ -68,8 +89,11 @@ class Executor {
    * preserve the original Executor type.
    */
   template <typename ExecutorT = Executor>
-  class KeepAlive : pushmi::folly_pipeorigin {
+  class KeepAlive : pushmi::folly_pipeorigin,
+                    private detail::ExecutorKeepAliveBase {
    public:
+    using KeepAliveFunc = Function<void(KeepAlive&&)>;
+
     KeepAlive() = default;
 
     ~KeepAlive() {
@@ -163,19 +187,18 @@ class Executor {
       return KeepAlive(storage_ | kAliasFlag);
     }
 
+    template <class KAF>
+    void add(KAF&& f) && {
+      static_assert(
+          is_invocable<KAF, KeepAlive&&>::value,
+          "Parameter to add must be void(KeepAlive&&)>");
+      auto ex = get();
+      ex->add([ka = std::move(*this), f = std::forward<KAF>(f)]() mutable {
+        f(std::move(ka));
+      });
+    }
+
    private:
-    //  A dummy keep-alive is a keep-alive to an executor which does not support
-    //  the keep-alive mechanism.
-    static constexpr uintptr_t kDummyFlag = uintptr_t(1) << 0;
-
-    //  An alias keep-alive is a keep-alive to an executor to which there is
-    //  known to be another keep-alive whose lifetime surrounds the lifetime of
-    //  the alias.
-    static constexpr uintptr_t kAliasFlag = uintptr_t(1) << 1;
-
-    static constexpr uintptr_t kFlagMask = kDummyFlag | kAliasFlag;
-    static constexpr uintptr_t kExecutorMask = ~kFlagMask;
-
     friend class Executor;
     template <typename OtherExecutor>
     friend class KeepAlive;
@@ -275,5 +298,44 @@ Executor::KeepAlive<ExecutorT> getKeepAliveToken(
     Executor::KeepAlive<ExecutorT>& ka) {
   return ka.copy();
 }
+
+struct ExecutorBlockingContext {
+  StringPiece name;
+};
+static_assert(
+    std::is_standard_layout<ExecutorBlockingContext>::value,
+    "non-standard layout");
+
+struct ExecutorBlockingList {
+  bool forbid;
+  ExecutorBlockingList* prev;
+  ExecutorBlockingContext curr;
+};
+static_assert(
+    std::is_standard_layout<ExecutorBlockingList>::value,
+    "non-standard layout");
+
+class ExecutorBlockingGuard {
+ public:
+  struct PermitTag {};
+  struct ForbidTag {};
+
+  ~ExecutorBlockingGuard();
+  ExecutorBlockingGuard() = delete;
+
+  explicit ExecutorBlockingGuard(PermitTag) noexcept;
+  explicit ExecutorBlockingGuard(ForbidTag, StringPiece name) noexcept;
+
+  ExecutorBlockingGuard(ExecutorBlockingGuard&&) = delete;
+  ExecutorBlockingGuard(ExecutorBlockingGuard const&) = delete;
+
+  ExecutorBlockingGuard& operator=(ExecutorBlockingGuard const&) = delete;
+  ExecutorBlockingGuard& operator=(ExecutorBlockingGuard&&) = delete;
+
+ private:
+  ExecutorBlockingList list_;
+};
+
+Optional<ExecutorBlockingContext> getExecutorBlockingContext() noexcept;
 
 } // namespace folly

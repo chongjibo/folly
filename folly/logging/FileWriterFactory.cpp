@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/logging/FileWriterFactory.h>
 
 #include <folly/Conv.h>
@@ -45,12 +46,12 @@ std::shared_ptr<LogWriter> FileWriterFactory::createWriter(File file) {
   // Determine whether we should use ImmediateFileWriter or AsyncFileWriter
   if (async_) {
     auto asyncWriter = make_shared<AsyncFileWriter>(std::move(file));
-    if (maxBufferSize_.hasValue()) {
+    if (maxBufferSize_.has_value()) {
       asyncWriter->setMaxBufferSize(maxBufferSize_.value());
     }
     return asyncWriter;
   } else {
-    if (maxBufferSize_.hasValue()) {
+    if (maxBufferSize_.has_value()) {
       throw std::invalid_argument(to<string>(
           "the \"max_buffer_size\" option is only valid for async file "
           "handlers"));

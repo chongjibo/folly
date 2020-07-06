@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <atomic>
@@ -50,6 +51,7 @@
 #include <folly/synchronization/CallOnce.h>
 
 namespace folly {
+class EventBaseBackendBase;
 
 using Cob = Func; // defined in folly/Executor.h
 template <typename MessageT>
@@ -82,7 +84,7 @@ class RequestEventBase : public RequestData {
  public:
   static EventBase* get() {
     auto data = dynamic_cast<RequestEventBase*>(
-        RequestContext::get()->getContextData(kContextDataName));
+        RequestContext::get()->getContextData(token()));
     if (!data) {
       return nullptr;
     }
@@ -91,8 +93,7 @@ class RequestEventBase : public RequestData {
 
   static void set(EventBase* eb) {
     RequestContext::get()->setContextData(
-        kContextDataName,
-        std::unique_ptr<RequestEventBase>(new RequestEventBase(eb)));
+        token(), std::unique_ptr<RequestEventBase>(new RequestEventBase(eb)));
   }
 
   bool hasCallback() override {
@@ -100,6 +101,11 @@ class RequestEventBase : public RequestData {
   }
 
  private:
+  FOLLY_EXPORT static RequestToken const& token() {
+    static RequestToken const token(kContextDataName);
+    return token;
+  }
+
   explicit RequestEventBase(EventBase* eb) : eb_(eb) {}
   EventBase* eb_;
   static constexpr const char* kContextDataName{"EventBase"};
@@ -131,6 +137,8 @@ class EventBase : public TimeoutManager,
                   public SequencedExecutor,
                   public ScheduledExecutor {
  public:
+  friend class ScopedEventBaseThread;
+
   using Func = folly::Function<void()>;
 
   /**
@@ -320,6 +328,9 @@ class EventBase : public TimeoutManager,
    *                              observer, max latency and avg loop time.
    */
   explicit EventBase(event_base* evb, bool enableTimeMeasurement = true);
+  explicit EventBase(
+      std::unique_ptr<EventBaseBackendBase>&& evb,
+      bool enableTimeMeasurement = true);
   ~EventBase() override;
 
   /**
@@ -664,13 +675,15 @@ class EventBase : public TimeoutManager,
     return *wheelTimer_.get();
   }
 
+  EventBaseBackendBase* getBackend() {
+    return evb_.get();
+  }
   // --------- interface to underlying libevent base ------------
   // Avoid using these functions if possible.  These functions are not
   // guaranteed to always be present if we ever provide alternative EventBase
   // implementations that do not use libevent internally.
-  event_base* getLibeventBase() const {
-    return evb_;
-  }
+  event_base* getLibeventBase() const;
+
   static const char* getLibeventVersion();
   static const char* getLibeventMethod();
 
@@ -799,6 +812,8 @@ class EventBase : public TimeoutManager,
   /// Implements the IOExecutor interface
   EventBase* getEventBase() override;
 
+  static std::unique_ptr<EventBaseBackendBase> getDefaultBackend();
+
  protected:
   bool keepAliveAcquire() override {
     if (inRunningEventBaseThread()) {
@@ -817,6 +832,8 @@ class EventBase : public TimeoutManager,
   }
 
  private:
+  folly::VirtualEventBase* tryGetVirtualEventBase();
+
   void applyLoopKeepAlive();
 
   ssize_t loopKeepAliveCount();
@@ -860,9 +877,6 @@ class EventBase : public TimeoutManager,
   // The ID of the thread running the main loop.
   // std::thread::id{} if loop is not running.
   std::atomic<std::thread::id> loopThread_;
-
-  // pointer to underlying event_base class doing the heavy lifting
-  event_base* evb_;
 
   // A notification queue for runInEventBaseThread() to use
   // to send function requests to the EventBase thread.
@@ -920,6 +934,9 @@ class EventBase : public TimeoutManager,
 
   folly::once_flag virtualEventBaseInitFlag_;
   std::unique_ptr<VirtualEventBase> virtualEventBase_;
+
+  // pointer to underlying backend class doing the heavy lifting
+  std::unique_ptr<EventBaseBackendBase> evb_;
 };
 
 template <typename T>

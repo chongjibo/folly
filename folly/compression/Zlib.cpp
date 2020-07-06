@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -109,7 +109,7 @@ class ZlibStreamCodec final : public StreamCodec {
   int level_;
   bool needReset_{true};
 };
-static constexpr uint16_t kGZIPMagicLE = 0x8B1F;
+constexpr uint16_t kGZIPMagicLE = 0x8B1F;
 
 std::vector<std::string> ZlibStreamCodec::validPrefixes() const {
   if (type() == CodecType::ZLIB) {
@@ -194,11 +194,11 @@ std::unique_ptr<StreamCodec> ZlibStreamCodec::createStream(
   return std::make_unique<ZlibStreamCodec>(options, level);
 }
 
-static bool inBounds(int value, int low, int high) {
+bool inBounds(int value, int low, int high) {
   return (value >= low) && (value <= high);
 }
 
-static int zlibConvertLevel(int level) {
+int zlibConvertLevel(int level) {
   switch (level) {
     case COMPRESSION_LEVEL_FASTEST:
       return 1;
@@ -244,11 +244,11 @@ ZlibStreamCodec::ZlibStreamCodec(Options options, int level)
 ZlibStreamCodec::~ZlibStreamCodec() {
   if (deflateStream_) {
     deflateEnd(deflateStream_.get_pointer());
-    deflateStream_.clear();
+    deflateStream_.reset();
   }
   if (inflateStream_) {
     inflateEnd(inflateStream_.get_pointer());
-    inflateStream_.clear();
+    inflateStream_.reset();
   }
 }
 
@@ -260,7 +260,7 @@ void ZlibStreamCodec::resetDeflateStream() {
   if (deflateStream_) {
     int const rc = deflateReset(deflateStream_.get_pointer());
     if (rc != Z_OK) {
-      deflateStream_.clear();
+      deflateStream_.reset();
       throw std::runtime_error(
           to<std::string>("ZlibStreamCodec: deflateReset error: ", rc));
     }
@@ -283,7 +283,7 @@ void ZlibStreamCodec::resetDeflateStream() {
       options_.memLevel,
       options_.strategy);
   if (rc != Z_OK) {
-    deflateStream_.clear();
+    deflateStream_.reset();
     throw std::runtime_error(
         to<std::string>("ZlibStreamCodec: deflateInit error: ", rc));
   }
@@ -293,7 +293,7 @@ void ZlibStreamCodec::resetInflateStream() {
   if (inflateStream_) {
     int const rc = inflateReset(inflateStream_.get_pointer());
     if (rc != Z_OK) {
-      inflateStream_.clear();
+      inflateStream_.reset();
       throw std::runtime_error(
           to<std::string>("ZlibStreamCodec: inflateReset error: ", rc));
     }
@@ -304,13 +304,13 @@ void ZlibStreamCodec::resetInflateStream() {
       inflateStream_.get_pointer(),
       getWindowBits(options_.format, options_.windowSize));
   if (rc != Z_OK) {
-    inflateStream_.clear();
+    inflateStream_.reset();
     throw std::runtime_error(
         to<std::string>("ZlibStreamCodec: inflateInit error: ", rc));
   }
 }
 
-static int zlibTranslateFlush(StreamCodec::FlushOp flush) {
+int zlibTranslateFlush(StreamCodec::FlushOp flush) {
   switch (flush) {
     case StreamCodec::FlushOp::NONE:
       return Z_NO_FLUSH;
@@ -323,7 +323,7 @@ static int zlibTranslateFlush(StreamCodec::FlushOp flush) {
   }
 }
 
-static int zlibThrowOnError(int rc) {
+int zlibThrowOnError(int rc) {
   switch (rc) {
     case Z_OK:
     case Z_BUF_ERROR:
@@ -342,7 +342,7 @@ bool ZlibStreamCodec::doCompressStream(
     resetDeflateStream();
     needReset_ = false;
   }
-  DCHECK(deflateStream_.hasValue());
+  DCHECK(deflateStream_.has_value());
   // zlib will return Z_STREAM_ERROR if output.data() is null.
   if (output.data() == nullptr) {
     return false;
@@ -377,7 +377,7 @@ bool ZlibStreamCodec::doUncompressStream(
     resetInflateStream();
     needReset_ = false;
   }
-  DCHECK(inflateStream_.hasValue());
+  DCHECK(inflateStream_.has_value());
   // zlib will return Z_STREAM_ERROR if output.data() is null.
   if (output.data() == nullptr) {
     return false;

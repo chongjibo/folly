@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -63,11 +63,11 @@ void initStateFromParams(
     const detail::Blake2xbParam& param,
     ByteRange key) {
 #ifdef __LIBSODIUM_BLAKE2B_OPAQUE__
-  _blake2b_state* state = reinterpret_cast<_blake2b_state*>(_state);
+  auto state = reinterpret_cast<_blake2b_state*>(_state);
 #else
   crypto_generichash_blake2b_state* state = _state;
 #endif
-  const uint64_t* p = reinterpret_cast<const uint64_t*>(&param);
+  auto p = reinterpret_cast<const uint64_t*>(&param);
   for (int i = 0; i < 8; ++i) {
     state->h[i] = kBlake2bIV.data()[i] ^ Endian::little(p[i]);
   }
@@ -75,7 +75,7 @@ void initStateFromParams(
       reinterpret_cast<uint8_t*>(state) + sizeof(state->h),
       0,
       sizeof(*state) - sizeof(state->h));
-  if (key.size() > 0) {
+  if (!key.empty()) {
     if (key.size() < crypto_generichash_blake2b_KEYBYTES_MIN ||
         key.size() > crypto_generichash_blake2b_KEYBYTES_MAX) {
       throw std::runtime_error("invalid key size");
@@ -129,13 +129,13 @@ void Blake2xb::init(
   param_.fanout = 1;
   param_.depth = 1;
   param_.xofLength = Endian::little(static_cast<uint32_t>(outputLength));
-  if (salt.size() > 0) {
+  if (!salt.empty()) {
     if (salt.size() != crypto_generichash_blake2b_SALTBYTES) {
       throw std::runtime_error("Invalid salt length, must be 16 bytes");
     }
     std::memcpy(param_.salt, salt.data(), sizeof(param_.salt));
   }
-  if (personalization.size() > 0) {
+  if (!personalization.empty()) {
     if (personalization.size() != crypto_generichash_blake2b_PERSONALBYTES) {
       throw std::runtime_error(
           "Invalid personalization length, must be 16 bytes");
@@ -169,7 +169,7 @@ void Blake2xb::finish(MutableByteRange out) {
   }
 
   if (outputLengthKnown_) {
-    uint32_t outLength = static_cast<uint32_t>(out.size());
+    auto outLength = static_cast<uint32_t>(out.size());
     if (outLength != Endian::little(param_.xofLength)) {
       throw std::runtime_error("out.size() must equal output length");
     }

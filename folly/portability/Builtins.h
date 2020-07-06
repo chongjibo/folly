@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -41,6 +41,7 @@ FOLLY_ALWAYS_INLINE void __builtin___clear_cache(char* begin, char* end) {
   }
 }
 
+#if !defined(_MSC_VER) || (_MSC_VER < 1923)
 FOLLY_ALWAYS_INLINE int __builtin_clz(unsigned int x) {
   unsigned long index;
   return int(_BitScanReverse(&index, (unsigned long)x) ? 31 - index : 32);
@@ -50,7 +51,7 @@ FOLLY_ALWAYS_INLINE int __builtin_clzl(unsigned long x) {
   return __builtin_clz((unsigned int)x);
 }
 
-#if defined(_M_IX86) || defined(_M_ARM)
+#if defined(_M_IX86) || defined(_M_ARM) || defined(_M_ARM64)
 FOLLY_ALWAYS_INLINE int __builtin_clzll(unsigned long long x) {
   if (x == 0) {
     return 64;
@@ -75,7 +76,7 @@ FOLLY_ALWAYS_INLINE int __builtin_ctzl(unsigned long x) {
   return __builtin_ctz((unsigned int)x);
 }
 
-#if defined(_M_IX86) || defined(_M_ARM)
+#if defined(_M_IX86) || defined(_M_ARM) || defined(_M_ARM64)
 FOLLY_ALWAYS_INLINE int __builtin_ctzll(unsigned long long x) {
   unsigned long index;
   unsigned int msb = (unsigned int)(x >> 32);
@@ -92,6 +93,7 @@ FOLLY_ALWAYS_INLINE int __builtin_ctzll(unsigned long long x) {
   return int(_BitScanForward64(&index, x) ? index : 64);
 }
 #endif
+#endif // !defined(_MSC_VER) || (_MSC_VER < 1923)
 
 FOLLY_ALWAYS_INLINE int __builtin_ffs(int x) {
   unsigned long index;
@@ -102,7 +104,7 @@ FOLLY_ALWAYS_INLINE int __builtin_ffsl(long x) {
   return __builtin_ffs(int(x));
 }
 
-#if defined(_M_IX86) || defined(_M_ARM)
+#if defined(_M_IX86) || defined(_M_ARM) || defined(_M_ARM64)
 FOLLY_ALWAYS_INLINE int __builtin_ffsll(long long x) {
   int ctzll = __builtin_ctzll((unsigned long long)x);
   return ctzll != 64 ? ctzll + 1 : 0;
@@ -117,12 +119,15 @@ FOLLY_ALWAYS_INLINE int __builtin_popcount(unsigned int x) {
   return int(__popcnt(x));
 }
 
+#if !defined(_MSC_VER) || (_MSC_VER < 1923)
 FOLLY_ALWAYS_INLINE int __builtin_popcountl(unsigned long x) {
   static_assert(sizeof(x) == 4, "");
   return int(__popcnt(x));
 }
+#endif // !defined(_MSC_VER) || (_MSC_VER < 1923)
 #endif
 
+#if !defined(_MSC_VER) || (_MSC_VER < 1923)
 #if defined(_M_IX86)
 FOLLY_ALWAYS_INLINE int __builtin_popcountll(unsigned long long x) {
   return int(__popcnt((unsigned int)(x >> 32))) +
@@ -133,6 +138,7 @@ FOLLY_ALWAYS_INLINE int __builtin_popcountll(unsigned long long x) {
   return int(__popcnt64(x));
 }
 #endif
+#endif // !defined(_MSC_VER) || (_MSC_VER < 1923)
 
 FOLLY_ALWAYS_INLINE void* __builtin_return_address(unsigned int frame) {
   // I really hope frame is zero...

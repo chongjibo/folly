@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,7 @@
 #include <folly/Executor.h>
 #include <folly/Function.h>
 #include <folly/Synchronized.h>
+#include <folly/executors/SequencedExecutor.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/synchronization/Baton.h>
 
@@ -38,7 +39,8 @@ namespace folly {
  * and all tasks scheduled through it are complete. EventBase destructor also
  * blocks until all VirtualEventBases backed by it are released.
  */
-class VirtualEventBase : public folly::Executor, public folly::TimeoutManager {
+class VirtualEventBase : public folly::TimeoutManager,
+                         public folly::SequencedExecutor {
  public:
   explicit VirtualEventBase(EventBase& evb);
 
@@ -133,10 +135,7 @@ class VirtualEventBase : public folly::Executor, public folly::TimeoutManager {
     return true;
   }
 
-  void keepAliveRelease() override {
-    if (!evb_->inRunningEventBaseThread()) {
-      return evb_->add([=] { keepAliveRelease(); });
-    }
+  void keepAliveReleaseEvb() {
     if (loopKeepAliveCountAtomic_.load()) {
       loopKeepAliveCount_ += loopKeepAliveCountAtomic_.exchange(0);
     }
@@ -144,6 +143,15 @@ class VirtualEventBase : public folly::Executor, public folly::TimeoutManager {
     if (--loopKeepAliveCount_ == 0) {
       destroyImpl();
     }
+  }
+
+  void keepAliveRelease() override {
+    if (!evb_->inRunningEventBaseThread()) {
+      evb_->add([=] { keepAliveReleaseEvb(); });
+      return;
+    }
+
+    keepAliveReleaseEvb();
   }
 
  private:

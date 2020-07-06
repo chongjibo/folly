@@ -1,11 +1,11 @@
 /*
- * Copyright 2004-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/synchronization/DistributedMutex.h>
 
 #include <folly/ConstexprMath.h>
@@ -644,7 +645,7 @@ void throwIfExceptionOccurred(Request&, Waiter& waiter, bool exception) {
   // avoid leaks.  If we don't destroy the exception_ptr in storage, the
   // refcount for the internal exception will never hit zero, thereby leaking
   // memory
-  if (UNLIKELY(!folly::is_nothrow_invocable<const F&>{} && exception)) {
+  if (UNLIKELY(!folly::is_nothrow_invocable_v<const F&> && exception)) {
     auto storage = &waiter.storage_;
     auto exc = folly::launder(reinterpret_cast<std::exception_ptr*>(storage));
     auto copy = std::move(*exc);
@@ -1097,8 +1098,8 @@ DistributedMutex<Atomic, TimePublishing>::lock() {
 }
 
 template <template <typename> class Atomic, bool TimePublishing>
-template <typename Rep, typename Period, typename Func, typename ReturnType>
-folly::Optional<ReturnType>
+template <typename Rep, typename Period, typename Func>
+folly::Optional<invoke_result_t<Func&>>
 DistributedMutex<Atomic, TimePublishing>::try_lock_combine_for(
     const std::chrono::duration<Rep, Period>& duration,
     Func func) {
@@ -1114,8 +1115,8 @@ DistributedMutex<Atomic, TimePublishing>::try_lock_combine_for(
 }
 
 template <template <typename> class Atomic, bool TimePublishing>
-template <typename Clock, typename Duration, typename Func, typename ReturnType>
-folly::Optional<ReturnType>
+template <typename Clock, typename Duration, typename Func>
+folly::Optional<invoke_result_t<Func&>>
 DistributedMutex<Atomic, TimePublishing>::try_lock_combine_until(
     const std::chrono::time_point<Clock, Duration>& deadline,
     Func func) {

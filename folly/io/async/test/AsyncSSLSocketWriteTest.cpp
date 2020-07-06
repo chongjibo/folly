@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/io/Cursor.h>
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncSocket.h>
@@ -23,7 +24,6 @@
 #include <string>
 #include <vector>
 
-using std::string;
 using namespace testing;
 
 namespace folly {
@@ -43,7 +43,7 @@ class MockAsyncSSLSocket : public AsyncSSLSocket {
   // Fake constructor sets the state to established without call to connect
   // or accept
   MockAsyncSSLSocket(const std::shared_ptr<SSLContext>& ctx, EventBase* evb)
-      : AsyncSocket(evb), AsyncSSLSocket(ctx, evb) {
+      : AsyncSSLSocket(ctx, evb) {
     state_ = AsyncSocket::StateEnum::ESTABLISHED;
     sslState_ = AsyncSSLSocket::SSLStateEnum::STATE_ESTABLISHED;
   }
@@ -285,10 +285,10 @@ TEST_F(AsyncSSLSocketWriteTest, write_with_eor1) {
   EXPECT_TRUE(sock_->isEorTrackingEnabled());
 
   EXPECT_CALL(*(sock_.get()), getRawBytesWritten())
-      // rawBytesWritten after writting initAppBytesWritten + 1500
+      // rawBytesWritten after writing initAppBytesWritten + 1500
       // + some random SSL overhead
       .WillOnce(Return(3600u))
-      // rawBytesWritten after writting last 6 bytes
+      // rawBytesWritten after writing last 6 bytes
       // + some random SSL overhead
       .WillOnce(Return(3728u));
   EXPECT_CALL(*(sock_.get()), sslWriteImpl(_, _, 1500))
@@ -329,10 +329,10 @@ TEST_F(AsyncSSLSocketWriteTest, write_with_eor2) {
   sock_->setEorTracking(true);
 
   EXPECT_CALL(*(sock_.get()), getRawBytesWritten())
-      // rawBytesWritten after writting initAppBytesWritten +  1500 bytes
+      // rawBytesWritten after writing initAppBytesWritten +  1500 bytes
       // + some random SSL overhead
       .WillOnce(Return(3600))
-      // rawBytesWritten after writting last 300 bytes
+      // rawBytesWritten after writing last 300 bytes
       // + some random SSL overhead
       .WillOnce(Return(4100));
   EXPECT_CALL(*(sock_.get()), sslWriteImpl(_, _, 1500))

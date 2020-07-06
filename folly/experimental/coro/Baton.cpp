@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,8 +19,10 @@
 #if FOLLY_HAS_COROUTINES
 
 #include <folly/experimental/coro/Baton.h>
+#include <folly/synchronization/AtomicUtil.h>
 
 #include <cassert>
+#include <utility>
 
 using namespace folly::coro;
 
@@ -55,8 +57,12 @@ bool Baton::waitImpl(WaitOperation* awaiter) const noexcept {
       return false;
     }
     awaiter->next_ = static_cast<WaitOperation*>(oldValue);
-  } while (!state_.compare_exchange_weak(
-      oldValue, awaiter, std::memory_order_release, std::memory_order_acquire));
+  } while (!folly::atomic_compare_exchange_weak_explicit(
+      &state_,
+      &oldValue,
+      static_cast<void*>(awaiter),
+      std::memory_order_release,
+      std::memory_order_acquire));
   return true;
 }
 

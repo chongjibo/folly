@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/String.h>
 #include <folly/dynamic.h>
 #include <folly/json.h>
@@ -294,6 +295,40 @@ TEST(LogConfig, parseJson) {
 
   config = parseLogConfig(R"JSON({
     "categories": {
+      ".": { "level": "INFO" },
+      "folly": { "level": "DEBUG", "inherit": false, "propagate": "WARN" },
+    }
+  })JSON");
+  {
+    LogCategoryConfig expectedFolly{LogLevel::DBG, false};
+    expectedFolly.propagateLevelMessagesToParent = LogLevel::WARN;
+    EXPECT_THAT(
+        config.getCategoryConfigs(),
+        UnorderedElementsAre(
+            Pair("", LogCategoryConfig{LogLevel::INFO, true}),
+            Pair("folly", expectedFolly)));
+  }
+  EXPECT_THAT(config.getHandlerConfigs(), UnorderedElementsAre());
+
+  config = parseLogConfig(R"JSON({
+    "categories": {
+      ".": { "level": "INFO" },
+      "folly": { "level": "DEBUG", "inherit": false, "propagate": 9 },
+    }
+  })JSON");
+  {
+    LogCategoryConfig expectedFolly{LogLevel::DBG, false};
+    expectedFolly.propagateLevelMessagesToParent = static_cast<LogLevel>(9);
+    EXPECT_THAT(
+        config.getCategoryConfigs(),
+        UnorderedElementsAre(
+            Pair("", LogCategoryConfig{LogLevel::INFO, true}),
+            Pair("folly", expectedFolly)));
+  }
+  EXPECT_THAT(config.getHandlerConfigs(), UnorderedElementsAre());
+
+  config = parseLogConfig(R"JSON({
+    "categories": {
       "my.category": { "level": "INFO", "inherit": true },
       // comments are allowed
       "my.other.stuff": { "level": 19, "inherit": false },
@@ -426,6 +461,25 @@ TEST(LogConfig, parseJsonErrors) {
       LogConfigParseError,
       R"(unexpected data type for level field of category "folly": )"
       "got array, expected a string or integer");
+  input = R"JSON({
+    "categories": {
+      "folly": { "level": "INFO", "propagate": [], },
+    }
+  })JSON";
+  EXPECT_THROW_RE(
+      parseLogConfig(input),
+      LogConfigParseError,
+      R"(unexpected data type for propagate field of category "folly": )"
+      "got array, expected a string or integer");
+  input = R"JSON({
+    "categories": {
+      "folly": { "level": "INFO", "propagate": "FOO", },
+    }
+  })JSON";
+  EXPECT_THROW_RE(
+      parseLogConfig(input),
+      LogConfigParseError,
+      R"MSG(invalid log level "FOO" for category "folly")MSG");
   input = R"JSON({
     "categories": {
       5: {}
@@ -566,16 +620,19 @@ TEST(LogConfig, toJson) {
     "" : {
       "inherit" : true,
       "level" : "ERR",
-      "handlers" : ["h1"]
+      "handlers" : ["h1"],
+      "propagate": "NONE"
     },
     "folly" : {
       "inherit" : true,
       "level" : "INFO",
-      "handlers" : []
+      "handlers" : [],
+      "propagate": "NONE"
     },
     "foo.bar" : {
       "inherit" : false,
-      "level" : "FATAL"
+      "level" : "FATAL",
+      "propagate": "NONE"
     }
   },
   "handlers" : {

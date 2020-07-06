@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,59 +35,91 @@
 namespace folly {
 namespace symbolizer {
 
+#if defined(__linux__)
 using ElfAddr = ElfW(Addr);
 using ElfEhdr = ElfW(Ehdr);
 using ElfOff = ElfW(Off);
 using ElfPhdr = ElfW(Phdr);
 using ElfShdr = ElfW(Shdr);
 using ElfSym = ElfW(Sym);
+#elif defined(__FreeBSD__)
+using ElfAddr = Elf_Addr;
+using ElfEhdr = Elf_Ehdr;
+using ElfOff = Elf_Off;
+using ElfPhdr = Elf_Phdr;
+using ElfShdr = Elf_Shdr;
+using ElfSym = Elf_Sym;
+#endif
 
 /**
  * ELF file parser.
  *
  * We handle native files only (32-bit files on a 32-bit platform, 64-bit files
- * on a 64-bit platform), and only executables (ET_EXEC) and shared objects
- * (ET_DYN).
+ * on a 64-bit platform), and only executables (ET_EXEC) shared objects
+ * (ET_DYN) and core files (ET_CORE).
  */
 class ElfFile {
  public:
+  class Options {
+   public:
+    constexpr Options() noexcept {}
+
+    constexpr bool writable() const noexcept {
+      return writable_;
+    }
+
+    constexpr Options& writable(bool const value) noexcept {
+      writable_ = value;
+      return *this;
+    }
+
+   private:
+    bool writable_ = false;
+  };
+
   ElfFile() noexcept;
 
   // Note: may throw, call openNoThrow() explicitly if you don't want to throw
-  explicit ElfFile(const char* name, bool readOnly = true);
+  explicit ElfFile(const char* name, Options const& options = Options());
 
   // Open the ELF file.
   // Returns 0 on success, kSystemError (guaranteed to be -1) (and sets errno)
   // on IO error, kInvalidElfFile (and sets errno to EINVAL) for an invalid
   // Elf file. On error, if msg is not nullptr, sets *msg to a static string
   // indicating what failed.
-  enum {
+  enum OpenResultCode : int {
     kSuccess = 0,
     kSystemError = -1,
     kInvalidElfFile = -2,
   };
+  struct OpenResult {
+    OpenResultCode code{};
+    char const* msg{};
+
+    /* implicit */ constexpr operator OpenResultCode() const noexcept {
+      return code;
+    }
+  };
   // Open the ELF file. Does not throw on error.
-  int openNoThrow(
+  OpenResult openNoThrow(
       const char* name,
-      bool readOnly = true,
-      const char** msg = nullptr) noexcept;
+      Options const& options = Options()) noexcept;
 
   // Like openNoThrow, but follow .gnu_debuglink if present
-  int openAndFollow(
+  OpenResult openAndFollow(
       const char* name,
-      bool readOnly = true,
-      const char** msg = nullptr) noexcept;
+      Options const& options = Options()) noexcept;
 
   // Open the ELF file. Throws on error.
-  void open(const char* name, bool readOnly = true);
+  void open(const char* name, Options const& options = Options());
 
   ~ElfFile();
 
   ElfFile(ElfFile&& other) noexcept;
-  ElfFile& operator=(ElfFile&& other);
+  ElfFile& operator=(ElfFile&& other) noexcept;
 
   /** Retrieve the ELF header */
-  const ElfEhdr& elfHeader() const {
+  const ElfEhdr& elfHeader() const noexcept {
     return at<ElfEhdr>(0);
   }
 
@@ -95,24 +127,25 @@ class ElfFile {
    * Get the base address, the address where the file should be loaded if
    * no relocations happened.
    */
-  uintptr_t getBaseAddress() const {
+  uintptr_t getBaseAddress() const noexcept {
     return baseAddress_;
   }
 
   /** Find a section given its name */
-  const ElfShdr* getSectionByName(const char* name) const;
+  const ElfShdr* getSectionByName(const char* name) const noexcept;
 
   /** Find a section given its index in the section header table */
-  const ElfShdr* getSectionByIndex(size_t idx) const;
+  const ElfShdr* getSectionByIndex(size_t idx) const noexcept;
 
   /** Retrieve the name of a section */
-  const char* getSectionName(const ElfShdr& section) const;
+  const char* getSectionName(const ElfShdr& section) const noexcept;
 
   /** Get the actual section body */
-  folly::StringPiece getSectionBody(const ElfShdr& section) const;
+  folly::StringPiece getSectionBody(const ElfShdr& section) const noexcept;
 
   /** Retrieve a string from a string table section */
-  const char* getString(const ElfShdr& stringTable, size_t offset) const;
+  const char* getString(const ElfShdr& stringTable, size_t offset) const
+      noexcept;
 
   /**
    * Iterate over all strings in a string table section for as long as
@@ -121,7 +154,8 @@ class ElfFile {
    * if fn returned false for all strings in the table.
    */
   template <class Fn>
-  const char* iterateStrings(const ElfShdr& stringTable, Fn fn) const;
+  const char* iterateStrings(const ElfShdr& stringTable, Fn fn) const
+      noexcept(is_nothrow_invocable_v<Fn, const char*>);
 
   /**
    * Iterate over program headers as long as fn(section) returns false.
@@ -129,7 +163,8 @@ class ElfFile {
    * true, or nullptr if fn returned false for all sections.
    */
   template <class Fn>
-  const ElfPhdr* iterateProgramHeaders(Fn fn) const;
+  const ElfPhdr* iterateProgramHeaders(Fn fn) const
+      noexcept(is_nothrow_invocable_v<Fn, ElfPhdr const&>);
 
   /**
    * Iterate over all sections for as long as fn(section) returns false.
@@ -137,14 +172,16 @@ class ElfFile {
    * true, or nullptr if fn returned false for all sections.
    */
   template <class Fn>
-  const ElfShdr* iterateSections(Fn fn) const;
+  const ElfShdr* iterateSections(Fn fn) const
+      noexcept(is_nothrow_invocable_v<Fn, ElfShdr const&>);
 
   /**
    * Iterate over all sections with a given type. Similar to
    * iterateSections(), but filtered only for sections with the given type.
    */
   template <class Fn>
-  const ElfShdr* iterateSectionsWithType(uint32_t type, Fn fn) const;
+  const ElfShdr* iterateSectionsWithType(uint32_t type, Fn fn) const
+      noexcept(is_nothrow_invocable_v<Fn, ElfShdr const&>);
 
   /**
    * Iterate over all sections with a given types. Similar to
@@ -153,7 +190,7 @@ class ElfFile {
   template <class Fn>
   const ElfShdr* iterateSectionsWithTypes(
       std::initializer_list<uint32_t> types,
-      Fn fn) const;
+      Fn fn) const noexcept(is_nothrow_invocable_v<Fn, ElfShdr const&>);
 
   /**
    * Iterate over all symbols witin a given section.
@@ -162,15 +199,17 @@ class ElfFile {
    * or nullptr if fn returned false for all symbols.
    */
   template <class Fn>
-  const ElfSym* iterateSymbols(const ElfShdr& section, Fn fn) const;
+  const ElfSym* iterateSymbols(const ElfShdr& section, Fn fn) const
+      noexcept(is_nothrow_invocable_v<Fn, ElfSym const&>);
   template <class Fn>
   const ElfSym*
-  iterateSymbolsWithType(const ElfShdr& section, uint32_t type, Fn fn) const;
+  iterateSymbolsWithType(const ElfShdr& section, uint32_t type, Fn fn) const
+      noexcept(is_nothrow_invocable_v<Fn, ElfSym const&>);
   template <class Fn>
   const ElfSym* iterateSymbolsWithTypes(
       const ElfShdr& section,
       std::initializer_list<uint32_t> types,
-      Fn fn) const;
+      Fn fn) const noexcept(is_nothrow_invocable_v<Fn, ElfSym const&>);
 
   /**
    * Find symbol definition by address.
@@ -180,7 +219,7 @@ class ElfFile {
    * Returns {nullptr, nullptr} if not found.
    */
   typedef std::pair<const ElfShdr*, const ElfSym*> Symbol;
-  Symbol getDefinitionByAddress(uintptr_t address) const;
+  Symbol getDefinitionByAddress(uintptr_t address) const noexcept;
 
   /**
    * Find symbol definition by name.
@@ -190,13 +229,13 @@ class ElfFile {
    *
    * Returns {nullptr, nullptr} if not found.
    */
-  Symbol getSymbolByName(const char* name) const;
+  Symbol getSymbolByName(const char* name) const noexcept;
 
   /**
    * Get the value of a symbol.
    */
   template <class T>
-  const T& getSymbolValue(const ElfSym* symbol) const {
+  const T& getSymbolValue(const ElfSym* symbol) const noexcept {
     const ElfShdr* section = getSectionByIndex(symbol->st_shndx);
     FOLLY_SAFE_CHECK(section, "Symbol's section index is invalid");
 
@@ -215,7 +254,7 @@ class ElfFile {
    *  const char* str = &getSymbolValue<const char>(addr);
    */
   template <class T>
-  const T& getAddressValue(const ElfAddr addr) const {
+  const T& getAddressValue(const ElfAddr addr) const noexcept {
     const ElfShdr* section = getSectionContainingAddress(addr);
     FOLLY_SAFE_CHECK(section, "Address does not refer to existing section");
 
@@ -225,22 +264,22 @@ class ElfFile {
   /**
    * Retrieve symbol name.
    */
-  const char* getSymbolName(Symbol symbol) const;
+  const char* getSymbolName(Symbol symbol) const noexcept;
 
   /** Find the section containing the given address */
-  const ElfShdr* getSectionContainingAddress(ElfAddr addr) const;
+  const ElfShdr* getSectionContainingAddress(ElfAddr addr) const noexcept;
 
  private:
-  bool init(const char** msg);
-  void reset();
+  OpenResult init() noexcept;
+  void reset() noexcept;
   ElfFile(const ElfFile&) = delete;
   ElfFile& operator=(const ElfFile&) = delete;
 
-  void validateStringTable(const ElfShdr& stringTable) const;
+  void validateStringTable(const ElfShdr& stringTable) const noexcept;
 
   template <class T>
-  const typename std::enable_if<std::is_pod<T>::value, T>::type& at(
-      ElfOff offset) const {
+  const T& at(ElfOff offset) const noexcept {
+    static_assert(std::is_pod<T>::value, "non-pod");
     if (offset + sizeof(T) > length_) {
       char msg[kFilepathMaxLen + 128];
       snprintf(
@@ -259,7 +298,7 @@ class ElfFile {
   }
 
   template <class T>
-  const T& valueAt(const ElfShdr& section, const ElfAddr addr) const {
+  const T& valueAt(const ElfShdr& section, const ElfAddr addr) const noexcept {
     // For exectuables and shared objects, st_value holds a virtual address
     // that refers to the memory owned by sections. Since we didn't map the
     // sections into the addresses that they're expecting (sh_addr), but
@@ -270,8 +309,9 @@ class ElfFile {
     //       I don't have a use-case for that right now, just assert that
     //       nobody wants this. We can always add it later.
     FOLLY_SAFE_CHECK(
-        elfHeader().e_type == ET_EXEC || elfHeader().e_type == ET_DYN,
-        "Only exectuables and shared objects are supported");
+        elfHeader().e_type == ET_EXEC || elfHeader().e_type == ET_DYN ||
+            elfHeader().e_type == ET_CORE,
+        "Only exectuables, shared objects and cores are supported");
     FOLLY_SAFE_CHECK(
         addr >= section.sh_addr &&
             (addr + sizeof(T)) <= (section.sh_addr + section.sh_size),

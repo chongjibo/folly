@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -145,6 +145,24 @@ TEST(Arena, Vector) {
   for (size_t i = 0; i < 1000; i++) {
     EXPECT_EQ(i, vec[i]);
   }
+}
+
+TEST(Arena, DefaultConstructible) {
+  std::vector<size_t, SysArenaAllocator<size_t>> vec;
+  EXPECT_THROW(vec.push_back(42), std::bad_alloc);
+}
+
+TEST(Arena, Compare) {
+  SysArena arena1;
+  SysArenaAllocator<size_t> alloc1(arena1);
+  SysArenaAllocator<size_t> alloc2(arena1);
+
+  EXPECT_EQ(alloc1, alloc2);
+
+  SysArena arena2;
+  SysArenaAllocator<size_t> alloc3(arena2);
+
+  EXPECT_NE(alloc1, alloc3);
 }
 
 TEST(Arena, SizeLimit) {

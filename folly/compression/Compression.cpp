@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -68,76 +68,8 @@ using folly::io::compression::detail::prefixToStringLE;
 namespace folly {
 namespace io {
 
-Codec::Codec(
-    CodecType type,
-    Optional<int> level,
-    StringPiece name,
-    bool counters)
-    : type_(type) {
-  if (counters) {
-    bytesBeforeCompression_ = {type,
-                               name,
-                               level,
-                               CompressionCounterKey::BYTES_BEFORE_COMPRESSION,
-                               CompressionCounterType::SUM};
-    bytesAfterCompression_ = {type,
-                              name,
-                              level,
-                              CompressionCounterKey::BYTES_AFTER_COMPRESSION,
-                              CompressionCounterType::SUM};
-    bytesBeforeDecompression_ = {
-        type,
-        name,
-        level,
-        CompressionCounterKey::BYTES_BEFORE_DECOMPRESSION,
-        CompressionCounterType::SUM};
-    bytesAfterDecompression_ = {
-        type,
-        name,
-        level,
-        CompressionCounterKey::BYTES_AFTER_DECOMPRESSION,
-        CompressionCounterType::SUM};
-    compressions_ = {type,
-                     name,
-                     level,
-                     CompressionCounterKey::COMPRESSIONS,
-                     CompressionCounterType::SUM};
-    decompressions_ = {type,
-                       name,
-                       level,
-                       CompressionCounterKey::DECOMPRESSIONS,
-                       CompressionCounterType::SUM};
-    compressionMilliseconds_ = {type,
-                                name,
-                                level,
-                                CompressionCounterKey::COMPRESSION_MILLISECONDS,
-                                CompressionCounterType::SUM};
-    decompressionMilliseconds_ = {
-        type,
-        name,
-        level,
-        CompressionCounterKey::DECOMPRESSION_MILLISECONDS,
-        CompressionCounterType::SUM};
-  }
-}
-
-namespace {
-constexpr uint32_t kLoggingRate = 50;
-
-class Timer {
- public:
-  explicit Timer(folly::detail::CompressionCounter& counter)
-      : counter_(&counter) {}
-
-  ~Timer() {
-    *counter_ += timer_.elapsed().count();
-  }
-
- private:
-  folly::detail::CompressionCounter* counter_;
-  stop_watch<std::chrono::milliseconds> timer_;
-};
-} // namespace
+Codec::Codec(CodecType type, Optional<int> /* level */, StringPiece /* name */)
+    : type_(type) {}
 
 // Ensure consistent behavior in the nullptr case
 std::unique_ptr<IOBuf> Codec::compress(const IOBuf* data) {
@@ -148,16 +80,7 @@ std::unique_ptr<IOBuf> Codec::compress(const IOBuf* data) {
   if (len > maxUncompressedLength()) {
     throw std::runtime_error("Codec: uncompressed length too large");
   }
-  bool const logging = folly::Random::oneIn(kLoggingRate);
-  folly::Optional<Timer> const timer =
-      logging ? Timer(compressionMilliseconds_) : folly::Optional<Timer>();
-  auto result = doCompress(data);
-  if (logging) {
-    compressions_++;
-    bytesBeforeCompression_ += len;
-    bytesAfterCompression_ += result->computeChainDataLength();
-  }
-  return result;
+  return doCompress(data);
 }
 
 std::string Codec::compress(const StringPiece data) {
@@ -165,16 +88,7 @@ std::string Codec::compress(const StringPiece data) {
   if (len > maxUncompressedLength()) {
     throw std::runtime_error("Codec: uncompressed length too large");
   }
-  bool const logging = folly::Random::oneIn(kLoggingRate);
-  folly::Optional<Timer> const timer =
-      logging ? Timer(compressionMilliseconds_) : folly::Optional<Timer>();
-  auto result = doCompressString(data);
-  if (logging) {
-    compressions_++;
-    bytesBeforeCompression_ += len;
-    bytesAfterCompression_ += result.size();
-  }
-  return result;
+  return doCompressString(data);
 }
 
 std::unique_ptr<IOBuf> Codec::uncompress(
@@ -198,16 +112,7 @@ std::unique_ptr<IOBuf> Codec::uncompress(
     return IOBuf::create(0);
   }
 
-  bool const logging = folly::Random::oneIn(kLoggingRate);
-  folly::Optional<Timer> const timer =
-      logging ? Timer(decompressionMilliseconds_) : folly::Optional<Timer>();
-  auto result = doUncompress(data, uncompressedLength);
-  if (logging) {
-    decompressions_++;
-    bytesBeforeDecompression_ += data->computeChainDataLength();
-    bytesAfterDecompression_ += result->computeChainDataLength();
-  }
-  return result;
+  return doUncompress(data, uncompressedLength);
 }
 
 std::string Codec::uncompress(
@@ -228,16 +133,7 @@ std::string Codec::uncompress(
     return "";
   }
 
-  bool const logging = folly::Random::oneIn(kLoggingRate);
-  folly::Optional<Timer> const timer =
-      logging ? Timer(decompressionMilliseconds_) : folly::Optional<Timer>();
-  auto result = doUncompressString(data, uncompressedLength);
-  if (logging) {
-    decompressions_++;
-    bytesBeforeDecompression_ += data.size();
-    bytesAfterDecompression_ += result.size();
-  }
-  return result;
+  return doUncompressString(data, uncompressedLength);
 }
 
 bool Codec::needsUncompressedLength() const {
@@ -262,6 +158,13 @@ std::vector<std::string> Codec::validPrefixes() const {
 
 bool Codec::canUncompress(const IOBuf*, Optional<uint64_t>) const {
   return false;
+}
+
+bool Codec::canUncompress(
+    StringPiece data,
+    Optional<uint64_t> uncompressedLength) const {
+  auto buf = IOBuf::wrapBufferAsValue(data.data(), data.size());
+  return canUncompress(&buf, uncompressedLength);
 }
 
 std::string Codec::doCompressString(const StringPiece data) {
@@ -303,6 +206,13 @@ Optional<uint64_t> Codec::getUncompressedLength(
     return 0;
   }
   return doGetUncompressedLength(data, uncompressedLength);
+}
+
+Optional<uint64_t> Codec::getUncompressedLength(
+    StringPiece data,
+    Optional<uint64_t> uncompressedLength) const {
+  auto buf = IOBuf::wrapBufferAsValue(data.data(), data.size());
+  return getUncompressedLength(&buf, uncompressedLength);
 }
 
 Optional<uint64_t> Codec::doGetUncompressedLength(
@@ -402,10 +312,7 @@ bool StreamCodec::uncompressStream(
     MutableByteRange& output,
     StreamCodec::FlushOp flushOp) {
   if (state_ == State::RESET && input.empty()) {
-    if (uncompressedLength().value_or(0) == 0) {
-      return true;
-    }
-    return false;
+    return uncompressedLength().value_or(0) == 0;
   }
   // Handle input state transitions
   if (state_ == State::RESET) {
@@ -600,8 +507,6 @@ std::unique_ptr<IOBuf> NoCompressionCodec::doUncompress(
 
 #if (FOLLY_HAVE_LIBLZ4 || FOLLY_HAVE_LIBLZMA)
 
-namespace {
-
 void encodeVarintToIOBuf(uint64_t val, folly::IOBuf* out) {
   DCHECK_GE(out->tailroom(), kMaxVarintLength64);
   out->append(encodeVarint(val, out->writableTail()));
@@ -623,8 +528,6 @@ inline uint64_t decodeVarintFromCursor(folly::io::Cursor& cursor) {
   return val;
 }
 
-} // namespace
-
 #endif // FOLLY_HAVE_LIBLZ4 || FOLLY_HAVE_LIBLZMA
 
 #if FOLLY_HAVE_LIBLZ4
@@ -635,7 +538,6 @@ inline uint64_t decodeVarintFromCursor(folly::io::Cursor& cursor) {
 #endif
 
 #ifdef FOLLY_USE_LZ4_FAST_RESET
-namespace {
 void lz4_stream_t_deleter(LZ4_stream_t* ctx) {
   LZ4_freeStream(ctx);
 }
@@ -643,7 +545,6 @@ void lz4_stream_t_deleter(LZ4_stream_t* ctx) {
 void lz4_streamhc_t_deleter(LZ4_streamHC_t* ctx) {
   LZ4_freeStreamHC(ctx);
 }
-} // namespace
 #endif
 
 /**
@@ -686,7 +587,7 @@ std::unique_ptr<Codec> LZ4Codec::create(int level, CodecType type) {
   return std::make_unique<LZ4Codec>(level, type);
 }
 
-static int lz4ConvertLevel(int level) {
+int lz4ConvertLevel(int level) {
   switch (level) {
     case 1:
     case COMPRESSION_LEVEL_FASTEST:
@@ -799,7 +700,7 @@ std::unique_ptr<IOBuf> LZ4Codec::doUncompress(
     }
   } else {
     // Invariants
-    DCHECK(uncompressedLength.hasValue());
+    DCHECK(uncompressedLength.has_value());
     DCHECK(*uncompressedLength <= maxUncompressedLength());
     actualUncompressedLength = *uncompressedLength;
   }
@@ -857,7 +758,7 @@ class LZ4FrameCodec final : public Codec {
   return std::make_unique<LZ4FrameCodec>(level, type);
 }
 
-static constexpr uint32_t kLZ4FrameMagicLE = 0x184D2204;
+constexpr uint32_t kLZ4FrameMagicLE = 0x184D2204;
 
 std::vector<std::string> LZ4FrameCodec::validPrefixes() const {
   return {prefixToStringLE(kLZ4FrameMagicLE)};
@@ -875,7 +776,7 @@ uint64_t LZ4FrameCodec::doMaxCompressedLength(
   return LZ4F_compressFrameBound(uncompressedLength, &prefs);
 }
 
-static size_t lz4FrameThrowOnError(size_t code) {
+size_t lz4FrameThrowOnError(size_t code) {
   if (LZ4F_isError(code)) {
     throw std::runtime_error(
         to<std::string>("LZ4Frame error: ", LZ4F_getErrorName(code)));
@@ -894,7 +795,7 @@ void LZ4FrameCodec::resetDCtx() {
   dirty_ = false;
 }
 
-static int lz4fConvertLevel(int level) {
+int lz4fConvertLevel(int level) {
   switch (level) {
     case COMPRESSION_LEVEL_FASTEST:
     case COMPRESSION_LEVEL_DEFAULT:
@@ -1210,8 +1111,8 @@ class LZMA2StreamCodec final : public StreamCodec {
   bool needDecodeSize_{false};
 };
 
-static constexpr uint64_t kLZMA2MagicLE = 0x005A587A37FD;
-static constexpr unsigned kLZMA2MagicBytes = 6;
+constexpr uint64_t kLZMA2MagicLE = 0x005A587A37FD;
+constexpr unsigned kLZMA2MagicBytes = 6;
 
 std::vector<std::string> LZMA2StreamCodec::validPrefixes() const {
   if (type() == CodecType::LZMA2_VARINT_SIZE) {
@@ -1270,11 +1171,11 @@ LZMA2StreamCodec::LZMA2StreamCodec(int level, CodecType type)
 LZMA2StreamCodec::~LZMA2StreamCodec() {
   if (cstream_) {
     lzma_end(cstream_.get_pointer());
-    cstream_.clear();
+    cstream_.reset();
   }
   if (dstream_) {
     lzma_end(dstream_.get_pointer());
-    dstream_.clear();
+    dstream_.reset();
   }
 }
 
@@ -1317,19 +1218,28 @@ void LZMA2StreamCodec::resetDStream() {
   }
 }
 
-static lzma_ret lzmaThrowOnError(lzma_ret const rc) {
+lzma_ret lzmaThrowOnError(lzma_ret const rc) {
   switch (rc) {
     case LZMA_OK:
     case LZMA_STREAM_END:
     case LZMA_BUF_ERROR: // not fatal: returned if no progress was made twice
       return rc;
+    case LZMA_NO_CHECK:
+    case LZMA_UNSUPPORTED_CHECK:
+    case LZMA_GET_CHECK:
+    case LZMA_MEM_ERROR:
+    case LZMA_MEMLIMIT_ERROR:
+    case LZMA_FORMAT_ERROR:
+    case LZMA_OPTIONS_ERROR:
+    case LZMA_DATA_ERROR:
+    case LZMA_PROG_ERROR:
     default:
       throw std::runtime_error(
           to<std::string>("LZMA2StreamCodec: error: ", rc));
   }
 }
 
-static lzma_action lzmaTranslateFlush(StreamCodec::FlushOp flush) {
+lzma_action lzmaTranslateFlush(StreamCodec::FlushOp flush) {
   switch (flush) {
     case StreamCodec::FlushOp::NONE:
       return LZMA_RUN;
@@ -1493,7 +1403,7 @@ bool LZMA2StreamCodec::doUncompressStream(
 
 #if FOLLY_HAVE_LIBZSTD
 
-static int zstdConvertLevel(int level) {
+int zstdConvertLevel(int level) {
   switch (level) {
     case COMPRESSION_LEVEL_FASTEST:
       return 1;
@@ -1509,7 +1419,7 @@ static int zstdConvertLevel(int level) {
   return level;
 }
 
-static int zstdFastConvertLevel(int level) {
+int zstdFastConvertLevel(int level) {
   switch (level) {
     case COMPRESSION_LEVEL_FASTEST:
       return -5;
@@ -1617,8 +1527,8 @@ Bzip2StreamCodec::Bzip2StreamCodec(int level, CodecType type)
   level_ = level;
 }
 
-static uint32_t constexpr kBzip2MagicLE = 0x685a42;
-static uint64_t constexpr kBzip2MagicBytes = 3;
+uint32_t constexpr kBzip2MagicLE = 0x685a42;
+uint64_t constexpr kBzip2MagicBytes = 3;
 
 std::vector<std::string> Bzip2StreamCodec::validPrefixes() const {
   return {prefixToStringLE(kBzip2MagicLE, kBzip2MagicBytes)};
@@ -1638,7 +1548,7 @@ uint64_t Bzip2StreamCodec::doMaxCompressedLength(
   return uncompressedLength + uncompressedLength / 100 + 600;
 }
 
-static bz_stream createBzStream() {
+bz_stream createBzStream() {
   bz_stream stream;
   stream.bzalloc = nullptr;
   stream.bzfree = nullptr;
@@ -1649,7 +1559,7 @@ static bz_stream createBzStream() {
 }
 
 // Throws on error condition, otherwise returns the code.
-static int bzCheck(int const rc) {
+int bzCheck(int const rc) {
   switch (rc) {
     case BZ_OK:
     case BZ_RUN_OK:
@@ -1668,11 +1578,11 @@ static int bzCheck(int const rc) {
 Bzip2StreamCodec::~Bzip2StreamCodec() {
   if (cstream_) {
     BZ2_bzCompressEnd(cstream_.get_pointer());
-    cstream_.clear();
+    cstream_.reset();
   }
   if (dstream_) {
     BZ2_bzDecompressEnd(dstream_.get_pointer());
-    dstream_.clear();
+    dstream_.reset();
   }
 }
 
@@ -1731,7 +1641,7 @@ bool Bzip2StreamCodec::doCompressStream(
     case StreamCodec::FlushOp::FLUSH:
       if (rc == BZ_RUN_OK) {
         DCHECK_EQ(cstream_->avail_in, 0);
-        DCHECK(input.size() == 0 || cstream_->avail_out != output.size());
+        DCHECK(input.empty() || cstream_->avail_out != output.size());
         return true;
       }
       return false;
@@ -2088,7 +1998,7 @@ constexpr Factory
 };
 
 Factory const& getFactory(CodecType type) {
-  size_t const idx = static_cast<size_t>(type);
+  auto const idx = static_cast<size_t>(type);
   if (idx >= static_cast<size_t>(CodecType::NUM_CODEC_TYPES)) {
     throw std::invalid_argument(
         to<std::string>("Compression type ", idx, " invalid"));

@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +27,13 @@
 #include <folly/detail/Singleton.h>
 #include <folly/detail/UniqueInstance.h>
 #include <folly/functional/Invoke.h>
+
+// we do not want to use FOLLY_TLS here for mobile
+#if !FOLLY_MOBILE && defined(FOLLY_TLS)
+#define FOLLY_STL_USE_FOLLY_TLS 1
+#else
+#undef FOLLY_STL_USE_FOLLY_TLS
+#endif
 
 namespace folly {
 
@@ -141,7 +149,7 @@ class SingletonThreadLocal {
     return *getWrapperTL();
   }
 
-#ifdef FOLLY_TLS
+#ifdef FOLLY_STL_USE_FOLLY_TLS
   FOLLY_NOINLINE static Wrapper& getSlow(LocalCache& cache) {
     if (threadlocal_detail::StaticMetaBase::dying()) {
       return getWrapper();
@@ -154,7 +162,7 @@ class SingletonThreadLocal {
 
  public:
   FOLLY_EXPORT FOLLY_ALWAYS_INLINE static T& get() {
-#ifdef FOLLY_TLS
+#ifdef FOLLY_STL_USE_FOLLY_TLS
     static thread_local LocalCache cache;
     return FOLLY_LIKELY(!!cache.cache) ? *cache.cache : getSlow(cache);
 #else
@@ -188,6 +196,14 @@ class SingletonThreadLocal {
 
       T& dereference() const {
         return const_cast<Iterator*>(this)->base()->object;
+      }
+
+      std::thread::id getThreadId() const {
+        return this->base().getThreadId();
+      }
+
+      uint64_t getOSThreadId() const {
+        return this->base().getOSThreadId();
       }
     };
 

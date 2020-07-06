@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -41,6 +41,7 @@
 #pragma once
 
 #include <iterator>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -60,13 +61,18 @@ class ThreadLocal {
  public:
   constexpr ThreadLocal() : constructor_([]() { return new T(); }) {}
 
-  template <typename F, std::enable_if_t<is_invocable_r<T*, F>::value, int> = 0>
+  template <typename F, std::enable_if_t<is_invocable_r_v<T*, F>, int> = 0>
   explicit ThreadLocal(F&& constructor)
       : constructor_(std::forward<F>(constructor)) {}
 
-  FOLLY_ALWAYS_INLINE FOLLY_ATTR_VISIBILITY_HIDDEN T* get() const {
+  FOLLY_ERASE T* get() const {
     auto const ptr = tlp_.get();
     return FOLLY_LIKELY(!!ptr) ? ptr : makeTlp();
+  }
+
+  // may return null
+  FOLLY_ERASE T* getIfExist() const {
+    return tlp_.get();
   }
 
   T* operator->() const {
@@ -367,6 +373,14 @@ class ThreadLocalPtr {
 
       bool operator!=(Iterator const& rhs) const {
         return !equal(rhs);
+      }
+
+      std::thread::id getThreadId() const {
+        return e_->getThreadEntry()->tid();
+      }
+
+      uint64_t getOSThreadId() const {
+        return e_->getThreadEntry()->tid_os;
       }
     };
 

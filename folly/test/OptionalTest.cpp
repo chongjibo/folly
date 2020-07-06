@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -80,7 +80,7 @@ TEST(Optional, NoDefault) {
   EXPECT_FALSE(x);
   x.emplace(4, 5);
   EXPECT_TRUE(bool(x));
-  x.clear();
+  x.reset();
   EXPECT_FALSE(x);
 }
 
@@ -121,7 +121,7 @@ TEST(Optional, Const) {
     EXPECT_EQ(*opt, 4);
     opt.emplace(5);
     EXPECT_EQ(*opt, 5);
-    opt.clear();
+    opt.reset();
     EXPECT_FALSE(bool(opt));
   }
   { // copy-constructed
@@ -147,7 +147,7 @@ TEST(Optional, Simple) {
   EXPECT_EQ(4, opt.value_or(42));
   opt = 5;
   EXPECT_EQ(5, *opt);
-  opt.clear();
+  opt.reset();
   EXPECT_FALSE(bool(opt));
 }
 
@@ -260,14 +260,14 @@ TEST(Optional, InPlaceNestedConstruct) {
 TEST(Optional, Unique) {
   Optional<unique_ptr<int>> opt;
 
-  opt.clear();
+  opt.reset();
   EXPECT_FALSE(bool(opt));
   // empty->emplaced
   opt.emplace(new int(5));
   EXPECT_TRUE(bool(opt));
   EXPECT_EQ(5, **opt);
 
-  opt.clear();
+  opt.reset();
   // empty->moved
   opt = std::make_unique<int>(6);
   EXPECT_EQ(6, **opt);
@@ -298,13 +298,13 @@ TEST(Optional, Shared) {
   ptr = opt.value();
   EXPECT_EQ(ptr.get(), opt->get());
   EXPECT_EQ(2, ptr.use_count());
-  opt.clear();
+  opt.reset();
   EXPECT_EQ(1, ptr.use_count());
   // full->copied
   opt = ptr;
   EXPECT_EQ(2, ptr.use_count());
   EXPECT_EQ(ptr.get(), opt->get());
-  opt.clear();
+  opt.reset();
   EXPECT_EQ(1, ptr.use_count());
   // full->moved
   opt = std::move(ptr);
@@ -346,26 +346,26 @@ TEST(Optional, Swap) {
   Optional<std::string> b;
 
   swap(a, b);
-  EXPECT_FALSE(a.hasValue());
-  EXPECT_FALSE(b.hasValue());
+  EXPECT_FALSE(a.has_value());
+  EXPECT_FALSE(b.has_value());
 
   a = "hello";
-  EXPECT_TRUE(a.hasValue());
-  EXPECT_FALSE(b.hasValue());
+  EXPECT_TRUE(a.has_value());
+  EXPECT_FALSE(b.has_value());
   EXPECT_EQ("hello", a.value());
 
   swap(a, b);
-  EXPECT_FALSE(a.hasValue());
-  EXPECT_TRUE(b.hasValue());
+  EXPECT_FALSE(a.has_value());
+  EXPECT_TRUE(b.has_value());
   EXPECT_EQ("hello", b.value());
 
   a = "bye";
-  EXPECT_TRUE(a.hasValue());
+  EXPECT_TRUE(a.has_value());
   EXPECT_EQ("bye", a.value());
 
   swap(a, b);
-  EXPECT_TRUE(a.hasValue());
-  EXPECT_TRUE(b.hasValue());
+  EXPECT_TRUE(a.has_value());
+  EXPECT_TRUE(b.has_value());
   EXPECT_EQ("hello", a.value());
   EXPECT_EQ("bye", b.value());
 }
@@ -600,8 +600,9 @@ class ConstructibleWithArgsOnly {
 
 class ConstructibleWithInitializerListAndArgsOnly {
  public:
-  ConstructibleWithInitializerListAndArgsOnly(std::initializer_list<int>, int) {
-  }
+  ConstructibleWithInitializerListAndArgsOnly(
+      std::initializer_list<int>,
+      double) {}
 
   ConstructibleWithInitializerListAndArgsOnly() = delete;
   ConstructibleWithInitializerListAndArgsOnly(
@@ -619,7 +620,7 @@ TEST(Optional, MakeOptional) {
   // const L-value version
   const std::string s("abc");
   auto optStr = folly::make_optional(s);
-  ASSERT_TRUE(optStr.hasValue());
+  ASSERT_TRUE(optStr.has_value());
   EXPECT_EQ(*optStr, "abc");
   *optStr = "cde";
   EXPECT_EQ(s, "abc");
@@ -628,7 +629,7 @@ TEST(Optional, MakeOptional) {
   // L-value version
   std::string s2("abc");
   auto optStr2 = folly::make_optional(s2);
-  ASSERT_TRUE(optStr2.hasValue());
+  ASSERT_TRUE(optStr2.has_value());
   EXPECT_EQ(*optStr2, "abc");
   *optStr2 = "cde";
   // it's vital to check that s2 wasn't clobbered
@@ -637,7 +638,7 @@ TEST(Optional, MakeOptional) {
   // L-value reference version
   std::string& s3(s2);
   auto optStr3 = folly::make_optional(s3);
-  ASSERT_TRUE(optStr3.hasValue());
+  ASSERT_TRUE(optStr3.has_value());
   EXPECT_EQ(*optStr3, "abc");
   *optStr3 = "cde";
   EXPECT_EQ(s3, "abc");
@@ -646,7 +647,7 @@ TEST(Optional, MakeOptional) {
   unique_ptr<int> pInt(new int(3));
   auto optIntPtr = folly::make_optional(std::move(pInt));
   EXPECT_TRUE(pInt.get() == nullptr);
-  ASSERT_TRUE(optIntPtr.hasValue());
+  ASSERT_TRUE(optIntPtr.has_value());
   EXPECT_EQ(**optIntPtr, 3);
 
   // variadic version
@@ -681,11 +682,11 @@ TEST(Optional, TestDisambiguationMakeOptionalVariants) {
 TEST(Optional, SelfAssignment) {
   Optional<int> a = 42;
   a = static_cast<decltype(a)&>(a); // suppress self-assign warning
-  ASSERT_TRUE(a.hasValue() && a.value() == 42);
+  ASSERT_TRUE(a.has_value() && a.value() == 42);
 
   Optional<int> b = 23333333;
   b = static_cast<decltype(b)&&>(b); // suppress self-move warning
-  ASSERT_TRUE(b.hasValue() && b.value() == 23333333);
+  ASSERT_TRUE(b.has_value() && b.value() == 23333333);
 }
 
 namespace {
@@ -695,7 +696,7 @@ class ContainsOptional {
   ContainsOptional() {}
   explicit ContainsOptional(int x) : opt_(x) {}
   bool hasValue() const {
-    return opt_.hasValue();
+    return opt_.has_value();
   }
   int value() const {
     return opt_.value();
@@ -714,8 +715,6 @@ class ContainsOptional {
 
 /**
  * Test that a class containing an Optional can be copy and move assigned.
- * This was broken under gcc 4.7 until assignment operators were explicitly
- * defined.
  */
 TEST(Optional, AssignmentContained) {
   {

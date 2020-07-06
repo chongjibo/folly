@@ -1,16 +1,12 @@
-#!/usr/bin/env python
-# Copyright (c) 2019-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree. An additional grant
-# of patent rights can be found in the PATENTS file in the same directory.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 from __future__ import absolute_import, division, print_function, unicode_literals
 
+import sys
 import unittest
-
-import pkg_resources
 
 from ..load import load_all_manifests, patch_loader
 from ..manifest import ManifestParser
@@ -40,10 +36,10 @@ class ManifestTest(unittest.TestCase):
             "test",
             """
 [manifest]
-name = foo
+name = test
 """,
         )
-        self.assertEqual(p.name, "foo")
+        self.assertEqual(p.name, "test")
         self.assertEqual(p.fbsource_path, None)
 
     def test_minimal_with_fbsource_path(self):
@@ -51,11 +47,11 @@ name = foo
             "test",
             """
 [manifest]
-name = foo
+name = test
 fbsource_path = fbcode/wat
 """,
         )
-        self.assertEqual(p.name, "foo")
+        self.assertEqual(p.name, "test")
         self.assertEqual(p.fbsource_path, "fbcode/wat")
 
     def test_unknown_field(self):
@@ -70,7 +66,7 @@ fbsource_path = fbcode/wat
                 "test",
                 """
 [manifest]
-name = foo
+name = test
 invalid.field = woot
 """,
             )
@@ -83,7 +79,7 @@ invalid.field = woot
                 "test",
                 """
 [manifest]
-name = foo
+name = test
 
 [invalid.section]
 foo = bar
@@ -103,7 +99,7 @@ foo = bar
                 "test",
                 """
 [manifest]
-name = foo
+name = test
 
 [dependencies]
 foo = bar
@@ -123,7 +119,7 @@ foo = bar
                 "test",
                 """
 [manifest]
-name = foo
+name = test
 
 [dependencies.=]
 """,
@@ -134,23 +130,23 @@ name = foo
             "test",
             """
 [manifest]
-name = foo
+name = test
 
 [dependencies]
 a
 b
 c
 
-[dependencies.foo=bar]
+[dependencies.test=on]
 foo
 """,
         )
         self.assertEqual(p.get_section_as_args("dependencies"), ["a", "b", "c"])
         self.assertEqual(
-            p.get_section_as_args("dependencies", {"foo": "not-bar"}), ["a", "b", "c"]
+            p.get_section_as_args("dependencies", {"test": "off"}), ["a", "b", "c"]
         )
         self.assertEqual(
-            p.get_section_as_args("dependencies", {"foo": "bar"}),
+            p.get_section_as_args("dependencies", {"test": "on"}),
             ["a", "b", "c", "foo"],
         )
 
@@ -158,7 +154,7 @@ foo
             "test",
             """
 [manifest]
-name = foo
+name = test
 
 [autoconf.args]
 --prefix=/foo
@@ -174,27 +170,27 @@ name = foo
             "test",
             """
 [manifest]
-name = foo
+name = test
 
 [cmake.defines]
 foo = bar
 
-[cmake.defines.bar=baz]
+[cmake.defines.test=on]
 foo = baz
 """,
         )
         self.assertEqual(p.get_section_as_dict("cmake.defines"), {"foo": "bar"})
         self.assertEqual(
-            p.get_section_as_dict("cmake.defines", {"bar": "baz"}), {"foo": "baz"}
+            p.get_section_as_dict("cmake.defines", {"test": "on"}), {"foo": "baz"}
         )
 
         p2 = ManifestParser(
             "test",
             """
 [manifest]
-name = foo
+name = test
 
-[cmake.defines.bar=baz]
+[cmake.defines.test=on]
 foo = baz
 
 [cmake.defines]
@@ -202,7 +198,7 @@ foo = bar
 """,
         )
         self.assertEqual(
-            p2.get_section_as_dict("cmake.defines", {"bar": "baz"}),
+            p2.get_section_as_dict("cmake.defines", {"test": "on"}),
             {"foo": "bar"},
             msg="sections cascade in the order they appear in the manifest",
         )
@@ -211,3 +207,27 @@ foo = bar
         patch_loader(__name__)
         manifests = load_all_manifests(None)
         self.assertNotEqual(0, len(manifests), msg="parsed some number of manifests")
+
+    def test_mismatch_name(self):
+        with self.assertRaisesRegex(
+            Exception,
+            "filename of the manifest 'foo' does not match the manifest name 'bar'",
+        ):
+            ManifestParser(
+                "foo",
+                """
+[manifest]
+name = bar
+""",
+            )
+
+    def test_duplicate_manifest(self):
+        patch_loader(__name__, "fixtures/duplicate")
+
+        with self.assertRaisesRegex(Exception, "found duplicate manifest 'foo'"):
+            load_all_manifests(None)
+
+    if sys.version_info < (3, 2):
+
+        def assertRaisesRegex(self, *args, **kwargs):
+            return self.assertRaisesRegexp(*args, **kwargs)

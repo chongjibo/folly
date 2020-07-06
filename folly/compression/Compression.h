@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,7 +24,6 @@
 
 #include <folly/Optional.h>
 #include <folly/Range.h>
-#include <folly/compression/Counters.h>
 #include <folly/io/IOBuf.h>
 
 /**
@@ -210,12 +209,18 @@ class Codec {
       const folly::IOBuf* data,
       folly::Optional<uint64_t> uncompressedLength = folly::none) const;
 
+  /**
+   * Helper wrapper around getUncompressedLength(IOBuf)
+   */
+  folly::Optional<uint64_t> getUncompressedLength(
+      folly::StringPiece data,
+      folly::Optional<uint64_t> uncompressedLength = folly::none) const;
+
  protected:
   Codec(
       CodecType type,
       folly::Optional<int> level = folly::none,
-      folly::StringPiece name = {},
-      bool counters = true);
+      folly::StringPiece name = {});
 
  public:
   /**
@@ -234,6 +239,13 @@ class Codec {
    */
   virtual bool canUncompress(
       const folly::IOBuf* data,
+      folly::Optional<uint64_t> uncompressedLength = folly::none) const;
+
+  /**
+   * Helper wrapper around canUncompress(IOBuf)
+   */
+  bool canUncompress(
+      folly::StringPiece data,
       folly::Optional<uint64_t> uncompressedLength = folly::none) const;
 
  private:
@@ -261,14 +273,6 @@ class Codec {
       folly::Optional<uint64_t> uncompressedLength) const;
 
   CodecType type_;
-  folly::detail::CompressionCounter bytesBeforeCompression_;
-  folly::detail::CompressionCounter bytesAfterCompression_;
-  folly::detail::CompressionCounter bytesBeforeDecompression_;
-  folly::detail::CompressionCounter bytesAfterDecompression_;
-  folly::detail::CompressionCounter compressions_;
-  folly::detail::CompressionCounter decompressions_;
-  folly::detail::CompressionCounter compressionMilliseconds_;
-  folly::detail::CompressionCounter decompressionMilliseconds_;
 };
 
 class StreamCodec : public Codec {
@@ -392,9 +396,8 @@ class StreamCodec : public Codec {
   StreamCodec(
       CodecType type,
       folly::Optional<int> level = folly::none,
-      folly::StringPiece name = {},
-      bool counters = true)
-      : Codec(type, std::move(level), name, counters) {}
+      folly::StringPiece name = {})
+      : Codec(type, std::move(level), name) {}
 
   // Returns the uncompressed length last passed to resetStream() or none if it
   // hasn't been called yet.
@@ -532,5 +535,12 @@ bool hasCodec(CodecType type);
  * Check if a specified codec is supported and supports streaming.
  */
 bool hasStreamCodec(CodecType type);
+
+/**
+ * Added here so users of folly can figure out whether the header
+ * folly/compression/CompressionContextPoolSingletons.h is present, and
+ * therefore whether it can be included.
+ */
+#define FOLLY_COMPRESSION_HAS_CONTEXT_POOL_SINGLETONS
 } // namespace io
 } // namespace folly

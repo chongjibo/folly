@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -107,11 +107,18 @@ constexpr bool kHasUnalignedAccess = false;
 #define FOLLY_PPC64 0
 #endif
 
+#if defined(__s390x__)
+#define FOLLY_S390X 1
+#else
+#define FOLLY_S390X 0
+#endif
+
 namespace folly {
 constexpr bool kIsArchArm = FOLLY_ARM == 1;
 constexpr bool kIsArchAmd64 = FOLLY_X64 == 1;
 constexpr bool kIsArchAArch64 = FOLLY_AARCH64 == 1;
 constexpr bool kIsArchPPC64 = FOLLY_PPC64 == 1;
+constexpr bool kIsArchS390X = FOLLY_S390X == 1;
 } // namespace folly
 
 namespace folly {
@@ -163,16 +170,7 @@ constexpr bool kIsSanitize = false;
 #endif
 
 // Generalize warning push/pop.
-#if defined(_MSC_VER)
-#define FOLLY_PUSH_WARNING __pragma(warning(push))
-#define FOLLY_POP_WARNING __pragma(warning(pop))
-// Disable the GCC warnings.
-#define FOLLY_GNU_DISABLE_WARNING(warningName)
-#define FOLLY_GCC_DISABLE_WARNING(warningName)
-#define FOLLY_CLANG_DISABLE_WARNING(warningName)
-#define FOLLY_MSVC_DISABLE_WARNING(warningNumber) \
-  __pragma(warning(disable : warningNumber))
-#elif defined(__GNUC__)
+#if defined(__GNUC__) || defined(__clang__)
 // Clang & GCC
 #define FOLLY_PUSH_WARNING _Pragma("GCC diagnostic push")
 #define FOLLY_POP_WARNING _Pragma("GCC diagnostic pop")
@@ -190,6 +188,15 @@ constexpr bool kIsSanitize = false;
   FOLLY_GNU_DISABLE_WARNING(warningName)
 #endif
 #define FOLLY_MSVC_DISABLE_WARNING(warningNumber)
+#elif defined(_MSC_VER)
+#define FOLLY_PUSH_WARNING __pragma(warning(push))
+#define FOLLY_POP_WARNING __pragma(warning(pop))
+// Disable the GCC warnings.
+#define FOLLY_GNU_DISABLE_WARNING(warningName)
+#define FOLLY_GCC_DISABLE_WARNING(warningName)
+#define FOLLY_CLANG_DISABLE_WARNING(warningName)
+#define FOLLY_MSVC_DISABLE_WARNING(warningNumber) \
+  __pragma(warning(disable : warningNumber))
 #else
 #define FOLLY_PUSH_WARNING
 #define FOLLY_POP_WARNING
@@ -222,8 +229,11 @@ constexpr bool kIsSanitize = false;
 #error cannot define platform specific thread local storage
 #endif
 
-#if FOLLY_MOBILE
+// disable FOLLY_TLS on 32 bit Apple/iOS
+#if defined(__APPLE__) && FOLLY_MOBILE
+#if (__SIZEOF_POINTER__ == 4)
 #undef FOLLY_TLS
+#endif
 #endif
 
 // It turns out that GNU libstdc++ and LLVM libc++ differ on how they implement
@@ -254,10 +264,6 @@ constexpr bool kIsSanitize = false;
 #ifdef _MSC_VER
 #include <folly/portability/SysTypes.h>
 
-// compiler specific to compiler specific
-// nolint
-#define __PRETTY_FUNCTION__ __FUNCSIG__
-
 // Hide a GCC specific thing that breaks MSVC if left alone.
 #define __extension__
 
@@ -269,6 +275,9 @@ constexpr bool kIsSanitize = false;
 // So cannot unconditionally define __SSE4_2__ in clang.
 #ifndef __clang__
 #define __SSE4_2__ 1
+// compiler specific to compiler specific
+// nolint
+#define __PRETTY_FUNCTION__ __FUNCSIG__
 #endif
 
 #endif
@@ -347,6 +356,14 @@ constexpr auto kIsBigEndian = !kIsLittleEndian;
 #else
 #define FOLLY_SSE 0
 #define FOLLY_SSE_MINOR 0
+#endif
+#endif
+
+#ifndef FOLLY_SSSE
+#if defined(__SSSE3__)
+#define FOLLY_SSSE 3
+#else
+#define FOLLY_SSSE 0
 #endif
 #endif
 
@@ -448,6 +465,12 @@ constexpr auto kMscVer = _MSC_VER;
 constexpr auto kMscVer = 0;
 #endif
 
+#if __GNUC__
+constexpr auto kGnuc = __GNUC__;
+#else
+constexpr auto kGnuc = 0;
+#endif
+
 #if __clang__
 constexpr auto kIsClang = true;
 #else
@@ -496,13 +519,26 @@ constexpr auto kCpplibVer = 0;
 #elif _MSC_VER && _RESUMABLE_FUNCTIONS_SUPPORTED
 // NOTE: MSVC 2017 does not currently support the full Coroutines TS since it
 // does not yet support symmetric-transfer.
+#define FOLLY_HAS_COROUTINES 0
+#else
+#define FOLLY_HAS_COROUTINES 0
 #endif
+#else
+#define FOLLY_HAS_COROUTINES 0
 #endif // __cplusplus >= 201703L
 
 // MSVC 2017.5 && C++17
 #if __cpp_noexcept_function_type >= 201510 || \
     (_MSC_FULL_VER >= 191225816 && _MSVC_LANG > 201402)
 #define FOLLY_HAVE_NOEXCEPT_FUNCTION_TYPE 1
+#endif
+
+#if __cpp_inline_variables >= 201606L
+#define FOLLY_HAS_INLINE_VARIABLES 1
+#define FOLLY_INLINE_VARIABLE inline
+#else
+#define FOLLY_HAS_INLINE_VARIABLES 0
+#define FOLLY_INLINE_VARIABLE
 #endif
 
 // feature test __cpp_lib_string_view is defined in <string>, which is
@@ -521,3 +557,13 @@ constexpr auto kCpplibVer = 0;
 #define FOLLY_HAS_STRING_VIEW 0
 #endif
 #endif // __has_include
+
+#if defined(__linux__)
+#define FOLLY_ELF_NATIVE_CLASS __ELF_NATIVE_CLASS
+#elif defined(__FreeBSD__)
+#if defined(__LP64__)
+#define FOLLY_ELF_NATIVE_CLASS 64
+#else // __linux__
+#define FOLLY_ELF_NATIVE_CLASS 32
+#endif
+#endif // __linux__

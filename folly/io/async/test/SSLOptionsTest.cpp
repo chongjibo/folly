@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,8 +19,9 @@
 #include <folly/portability/GTest.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
 
+#include <folly/io/async/test/SSLUtil.h>
+
 using namespace std;
-using namespace testing;
 
 namespace folly {
 
@@ -30,11 +31,22 @@ TEST_F(SSLOptionsTest, TestSetCommonCipherList) {
   SSLContext ctx;
   ssl::setCipherSuites<ssl::SSLCommonOptions>(ctx);
 
-  int i = 0;
+  const auto& commonOptionCiphers = ssl::SSLCommonOptions::ciphers();
+  std::vector<std::string> commonOptionCiphersVec(
+      begin(commonOptionCiphers), end(commonOptionCiphers));
+
   ssl::SSLUniquePtr ssl(ctx.createSSL());
-  for (auto& cipher : ssl::SSLCommonOptions::ciphers()) {
-    ASSERT_STREQ(cipher, SSL_get_cipher_list(ssl.get(), i++));
-  }
-  ASSERT_EQ(nullptr, SSL_get_cipher_list(ssl.get(), i));
+  EXPECT_EQ(commonOptionCiphersVec, test::getNonTLS13CipherList(ssl.get()));
 }
+
+TEST_F(SSLOptionsTest, TestSetCipherListWithVector) {
+  SSLContext ctx;
+  auto ciphers = ssl::SSLCommonOptions::ciphers();
+  ssl::setCipherSuites(ctx, ciphers);
+
+  ssl::SSLUniquePtr ssl(ctx.createSSL());
+  std::vector<std::string> expectedCiphers(begin(ciphers), end(ciphers));
+  EXPECT_EQ(expectedCiphers, test::getNonTLS13CipherList(ssl.get()));
+}
+
 } // namespace folly

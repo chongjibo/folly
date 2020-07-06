@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/portability/OpenSSL.h>
 #include <folly/ssl/detail/OpenSSLThreading.h>
 
@@ -489,11 +490,18 @@ const ASN1_TIME* X509_REVOKED_get0_revocationDate(const X509_REVOKED* r) {
 }
 
 uint32_t X509_get_extension_flags(X509* x) {
+  // Tells OpenSSL to load flags
+  X509_check_purpose(x, -1, -1);
   return x->ex_flags;
 }
 
 uint32_t X509_get_key_usage(X509* x) {
-  return x->ex_kusage;
+  // Call get_extension_flags rather than accessing directly to force loading
+  // of flags
+  if ((X509_get_extension_flags(x) & EXFLAG_KUSAGE) == EXFLAG_KUSAGE) {
+    return x->ex_kusage;
+  }
+  return UINT32_MAX;
 }
 
 uint32_t X509_get_extended_key_usage(X509* x) {

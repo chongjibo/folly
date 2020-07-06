@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/io/async/test/AsyncSSLSocketTest.h>
 #include <functional>
 
@@ -97,6 +98,43 @@ TEST(SSLContextInitializationTest, SSLContextLocksSetAfterInitIgnored) {
       ::testing::ExitedWithCode(0),
       "SSLContextLocksSetAfterInitIgnored passed");
 }
+
+TEST(SSLContextInitializationTest, SSLContext_SSL_CTX_constructor) {
+  folly::ssl::init();
+
+  // Used to determine when SSL_CTX is freed.
+  auto onFree = [](void*, void* arg, CRYPTO_EX_DATA*, int, long, void*) {
+    bool* freed = static_cast<bool*>(arg);
+    *freed = true;
+  };
+  static int idx = SSL_CTX_get_ex_new_index(
+      0 /*argl */,
+      nullptr /*argp*/,
+      nullptr /*new_func*/,
+      nullptr /*dup_func*/,
+      onFree /*free_func*/);
+
+  bool freed = false;
+  SSL_CTX* ctx = SSL_CTX_new(TLS_method());
+  EXPECT_NE(ctx, nullptr) << "SSL_CTX* creation for test failed";
+
+  (void)SSL_CTX_set_ex_data(ctx, idx, &freed);
+
+  {
+    // SSLContext takes "ownership" (read: increments the ref count), and will
+    // free ctx on destruction.
+    folly::SSLContext sslContext(ctx);
+  }
+  // Shouldn't be fully freed because SSLContext should've added to the
+  // refcount. up_ref should succed
+  EXPECT_EQ(freed, false);
+
+  // Last reference, ctx should no longer be valid. Should trigger the ex_data
+  // free func.
+  SSL_CTX_free(ctx);
+  EXPECT_EQ(freed, true);
+}
+
 } // namespace folly
 
 int main(int argc, char* argv[]) {

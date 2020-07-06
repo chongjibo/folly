@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -69,11 +69,11 @@ namespace bm {
 
 typedef BitVectorEncoder<uint32_t, uint32_t, 128, 128> Encoder;
 
-std::vector<uint32_t> data;
+std::vector<uint64_t> data;
 std::vector<size_t> order;
 
-std::vector<uint32_t> encodeSmallData;
-std::vector<uint32_t> encodeLargeData;
+std::vector<uint64_t> encodeSmallData;
+std::vector<uint64_t> encodeLargeData;
 
 typename Encoder::MutableCompressedList list;
 

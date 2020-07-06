@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/logging/LoggerDB.h>
 
 #include <set>
@@ -81,7 +82,7 @@ LoggerDB::LoggerDB() {
 
 LoggerDB::LoggerDB(TestConstructorArg) : LoggerDB() {}
 
-LoggerDB::~LoggerDB() {}
+LoggerDB::~LoggerDB() = default;
 
 LogCategory* LoggerDB::getCategory(StringPiece name) {
   return getOrCreateCategoryLocked(*loggersByName_.wlock(), name);
@@ -177,6 +178,8 @@ LogConfig LoggerDB::getConfigImpl(bool includeAllCategories) const {
 
       LogCategoryConfig categoryConfig(
           levelInfo.first, levelInfo.second, handlerNames);
+      categoryConfig.propagateLevelMessagesToParent =
+          category->getPropagateLevelMessagesToParentRelaxed();
       categoryConfigs.emplace(category->getName(), std::move(categoryConfig));
     }
   }
@@ -214,7 +217,7 @@ void LoggerDB::startConfigUpdate(
 
     LogHandlerConfig updatedConfig;
     const LogHandlerConfig* handlerConfig;
-    if (entry.second.type.hasValue()) {
+    if (entry.second.type.has_value()) {
       handlerConfig = &entry.second;
     } else {
       // This configuration is intended to update an existing LogHandler
@@ -224,7 +227,7 @@ void LoggerDB::startConfigUpdate(
       }
 
       updatedConfig = oldHandler->getConfig();
-      if (!updatedConfig.type.hasValue()) {
+      if (!updatedConfig.type.has_value()) {
         // This normally should not happen unless someone improperly manually
         // constructed a LogHandler object.  All existing LogHandler objects
         // should indicate their type.
@@ -257,7 +260,7 @@ void LoggerDB::startConfigUpdate(
         handler = factory->createHandler(handlerConfig->options);
       }
     } catch (const std::exception& ex) {
-      // Errors creating or updating the the log handler are generally due to
+      // Errors creating or updating the log handler are generally due to
       // bad configuration options.  It is useful to update the exception
       // message to include the name of the log handler we were trying to
       // update or create.
@@ -276,7 +279,7 @@ void LoggerDB::startConfigUpdate(
   // Before we start making any LogCategory changes, confirm that all handlers
   // named in the category configs are known handlers.
   for (const auto& entry : config.getCategoryConfigs()) {
-    if (!entry.second.handlers.hasValue()) {
+    if (!entry.second.handlers.has_value()) {
       continue;
     }
     for (const auto& handlerName : entry.second.handlers.value()) {
@@ -371,7 +374,7 @@ void LoggerDB::updateConfig(const LogConfig& config) {
         getOrCreateCategoryLocked(*loggersByName, entry.first);
 
     // Update the log handlers
-    if (entry.second.handlers.hasValue()) {
+    if (entry.second.handlers.has_value()) {
       auto catHandlers = buildCategoryHandlerList(
           handlers, entry.first, entry.second.handlers.value());
       category->replaceHandlers(std::move(catHandlers));
@@ -380,6 +383,10 @@ void LoggerDB::updateConfig(const LogConfig& config) {
     // Update the level settings
     category->setLevelLocked(
         entry.second.level, entry.second.inheritParentLevel);
+
+    // Update the propagation settings
+    category->setPropagateLevelMessagesToParent(
+        entry.second.propagateLevelMessagesToParent);
   }
 
   finishConfigUpdate(handlerInfo, &handlers, &oldToNewHandlerMap);
@@ -435,7 +442,7 @@ void LoggerDB::resetConfig(const LogConfig& config) {
       // If the handler list is not set in the config, clear out any existing
       // handlers rather than leaving it as-is.
       std::vector<std::shared_ptr<LogHandler>> catHandlers;
-      if (catConfig.handlers.hasValue()) {
+      if (catConfig.handlers.has_value()) {
         catHandlers = buildCategoryHandlerList(
             handlers, entry.first, catConfig.handlers.value());
       }

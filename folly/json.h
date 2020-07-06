@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -165,6 +165,11 @@ void escapeString(
  * Strip all C99-like comments (i.e. // and / * ... * /)
  */
 std::string stripComments(StringPiece jsonC);
+
+class FOLLY_EXPORT parse_error : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
 
 // may be extened in future to include offset, col, etc.
 struct parse_location {

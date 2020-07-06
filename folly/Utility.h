@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -247,25 +247,27 @@ struct transparent : T {
  * Example:
  *
  *   int i = 42;
- *   int &j = Identity()(i);
+ *   int &j = identity(i);
  *   assert(&i == &j);
  *
- * Warning: passing a prvalue through Identity turns it into an xvalue,
+ * Warning: passing a prvalue through identity turns it into an xvalue,
  * which can effect whether lifetime extension occurs or not. For instance:
  *
  *   auto&& x = std::make_unique<int>(42);
  *   cout << *x ; // OK, x refers to a valid unique_ptr.
  *
- *   auto&& y = Identity()(std::make_unique<int>(42));
+ *   auto&& y = identity(std::make_unique<int>(42));
  *   cout << *y ; // ERROR: y did not lifetime-extend the unique_ptr. It
  *                // is no longer valid
  */
-struct Identity {
+struct identity_fn {
   template <class T>
   constexpr T&& operator()(T&& x) const noexcept {
     return static_cast<T&&>(x);
   }
 };
+using Identity = identity_fn;
+FOLLY_INLINE_VARIABLE constexpr identity_fn identity;
 
 namespace moveonly_ { // Protection from unintended ADL.
 
@@ -305,10 +307,97 @@ constexpr auto to_unsigned(T const& t) -> typename std::make_unsigned<T>::type {
   return static_cast<U>(t);
 }
 
+template <typename Src>
+class to_narrow_convertible {
+ public:
+  static_assert(std::is_integral<Src>::value, "not an integer");
+
+  explicit constexpr to_narrow_convertible(Src const& value) noexcept
+      : value_(value) {}
+#if __cplusplus >= 201703L
+  explicit to_narrow_convertible(to_narrow_convertible const&) = default;
+  explicit to_narrow_convertible(to_narrow_convertible&&) = default;
+#else
+  to_narrow_convertible(to_narrow_convertible const&) = default;
+  to_narrow_convertible(to_narrow_convertible&&) = default;
+#endif
+  to_narrow_convertible& operator=(to_narrow_convertible const&) = default;
+  to_narrow_convertible& operator=(to_narrow_convertible&&) = default;
+
+  template <
+      typename Dst,
+      std::enable_if_t<
+          std::is_integral<Dst>::value &&
+              std::is_signed<Dst>::value == std::is_signed<Src>::value,
+          int> = 0>
+  /* implicit */ constexpr operator Dst() const noexcept {
+    FOLLY_PUSH_WARNING
+    FOLLY_MSVC_DISABLE_WARNING(4244) // lossy conversion: arguments
+    FOLLY_MSVC_DISABLE_WARNING(4267) // lossy conversion: variables
+    FOLLY_GNU_DISABLE_WARNING("-Wconversion")
+    return value_;
+    FOLLY_POP_WARNING
+  }
+
+ private:
+  Src value_;
+};
+
+//  to_narrow
+//
+//  A utility for performing explicit possibly-narrowing integral conversion
+//  without specifying the destination type. Does not permit changing signs.
+//  Sometimes preferable to static_cast<Dst>(src) to document the intended
+//  semantics of the cast.
+//
+//  Models explicit conversion with an elided destination type. Sits in between
+//  a stricter explicit conversion with a named destination type and a more
+//  lenient implicit conversion. Implemented with implicit conversion in order
+//  to take advantage of the undefined-behavior sanitizer's inspection of all
+//  implicit conversions - it checks for truncation, with suppressions in place
+//  for warnings which guard against narrowing implicit conversions.
+template <typename Src>
+constexpr auto to_narrow(Src const& src) -> to_narrow_convertible<Src> {
+  return to_narrow_convertible<Src>{src};
+}
+
 template <class E>
 constexpr std::underlying_type_t<E> to_underlying(E e) noexcept {
   static_assert(std::is_enum<E>::value, "not an enum type");
   return static_cast<std::underlying_type_t<E>>(e);
 }
+
+/*
+ * FOLLY_DECLVAL(T)
+ *
+ * This macro works like std::declval<T>() but does the same thing in a way
+ * that does not require instantiating a function template.
+ *
+ * Use this macro instead of std::declval<T>() in places that are widely
+ * instantiated to reduce compile-time overhead of instantiating function
+ * templates.
+ *
+ * Note that, like std::declval<T>(), this macro can only be used in
+ * unevaluated contexts.
+ *
+ * There are some small differences between this macro and std::declval<T>().
+ * - This macro results in a value of type 'T' instead of 'T&&'.
+ * - This macro requires the type T to be a complete type at the
+ *   point of use.
+ *   If this is a problem then use FOLLY_DECLVAL(T&&) instead, or if T might
+ *   be 'void', then use FOLLY_DECLVAL(std::add_rvalue_reference_t<T>).
+ */
+#if __cplusplus >= 201703L
+#define FOLLY_DECLVAL(...) static_cast<__VA_ARGS__ (*)() noexcept>(nullptr)()
+#else
+// Don't have noexcept-qualified function types prior to C++17
+// so just fall back to a function-template.
+namespace detail {
+template <typename T>
+T declval() noexcept;
+} // namespace detail
+
+#define FOLLY_DECLVAL(...) ::folly::detail::declval<__VA_ARGS__>()
+#endif
 
 } // namespace folly

@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,9 +26,9 @@
 #include <google/base/spinlock.h>
 
 #include <folly/Benchmark.h>
-#include <folly/CachelinePadded.h>
 #include <folly/SharedMutex.h>
 #include <folly/experimental/flat_combining/FlatCombining.h>
+#include <folly/lang/Aligned.h>
 #include <folly/synchronization/DistributedMutex.h>
 #include <folly/synchronization/SmallLocks.h>
 #include <folly/synchronization/Utility.h>
@@ -185,7 +185,7 @@ void initialize(std::uint64_t& value) {
 
 class alignas(folly::hardware_destructive_interference_size) Ints {
  public:
-  std::array<folly::CachelinePadded<std::uint64_t>, 5> ints_;
+  std::array<folly::cacheline_aligned<std::uint64_t>, 5> ints_;
 };
 std::uint64_t write(Ints& vec) {
   auto sum = std::uint64_t{0};
@@ -198,7 +198,7 @@ void initialize(Ints&) {}
 
 class alignas(folly::hardware_destructive_interference_size) AtomicsAdd {
  public:
-  std::array<folly::CachelinePadded<std::atomic<std::uint64_t>>, 5> ints_;
+  std::array<folly::cacheline_aligned<std::atomic<std::uint64_t>>, 5> ints_;
 };
 std::uint64_t write(AtomicsAdd& atomics) {
   auto sum = 0;

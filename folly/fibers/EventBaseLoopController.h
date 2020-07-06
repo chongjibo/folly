@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,10 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
+#include <folly/CancellationToken.h>
+#include <folly/fibers/ExecutorBasedLoopController.h>
 #include <folly/fibers/FiberManagerInternal.h>
-#include <folly/fibers/LoopController.h>
 #include <folly/io/async/VirtualEventBase.h>
 #include <atomic>
 #include <memory>
@@ -24,7 +26,7 @@
 namespace folly {
 namespace fibers {
 
-class EventBaseLoopController : public LoopController {
+class EventBaseLoopController : public ExecutorBasedLoopController {
  public:
   explicit EventBaseLoopController();
   ~EventBaseLoopController() override;
@@ -43,6 +45,10 @@ class EventBaseLoopController : public LoopController {
     loopRunner_ = loopRunner;
   }
 
+  folly::Executor* executor() const override {
+    return eventBase_;
+  }
+
  private:
   class ControllerCallback : public folly::EventBase::LoopCallback {
    public:
@@ -57,6 +63,8 @@ class EventBaseLoopController : public LoopController {
     EventBaseLoopController& controller_;
   };
 
+  folly::CancellationToken eventBaseShutdownToken_;
+
   bool awaitingScheduling_{false};
   VirtualEventBase* eventBase_{nullptr};
   Executor::KeepAlive<VirtualEventBase> eventBaseKeepAlive_;
@@ -70,8 +78,9 @@ class EventBaseLoopController : public LoopController {
   void setFiberManager(FiberManager* fm) override;
   void schedule() override;
   void runLoop() override;
+  void runEagerFiber(Fiber*) override;
   void scheduleThreadSafe() override;
-  HHWheelTimer& timer() override;
+  HHWheelTimer* timer() override;
 
   friend class FiberManager;
 };

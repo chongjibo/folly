@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -53,14 +53,14 @@ class IOBufQueue {
 
     WritableRangeCacheData(WritableRangeCacheData&& other)
         : cachedRange(other.cachedRange), attached(other.attached) {
-      other.cachedRange = {};
+      other.cachedRange = {nullptr, nullptr};
       other.attached = false;
     }
     WritableRangeCacheData& operator=(WritableRangeCacheData&& other) {
       cachedRange = other.cachedRange;
       attached = other.attached;
 
-      other.cachedRange = {};
+      other.cachedRange = {nullptr, nullptr};
       other.attached = false;
 
       return *this;
@@ -349,10 +349,10 @@ class IOBufQueue {
    * @return The starting address of the block and the length in bytes.
    *
    * @note The point of the preallocate()/postallocate() mechanism is
-   *       to support I/O APIs such as Thrift's TAsyncSocket::ReadCallback
-   *       that request a buffer from the application and then, in a later
-   *       callback, tell the application how much of the buffer they've
-   *       filled with data.
+   *       to support I/O APIs such as AsyncSocket::ReadCallback that
+   *       request a buffer from the application and then, in a later
+   *       callback, tell the application how much of the buffer they
+   *       have filled with data.
    */
   std::pair<void*, std::size_t> preallocate(
       std::size_t min,
@@ -462,6 +462,10 @@ class IOBufQueue {
     std::unique_ptr<folly::IOBuf> res = std::move(head_);
     chainLength_ = 0;
     return res;
+  }
+
+  folly::IOBuf moveAsValue() {
+    return std::move(*move());
   }
 
   /**

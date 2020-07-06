@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/io/async/AsyncTransport.h>
@@ -20,31 +21,30 @@
 namespace folly {
 
 /**
- * Convenience class so that AsyncTransportWrapper can be decorated without
+ * Convenience class so that AsyncTransport can be decorated without
  * having to redefine every single method.
  */
 template <class T>
-class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
+class DecoratedAsyncTransportWrapper : public folly::AsyncTransport {
  public:
   explicit DecoratedAsyncTransportWrapper(typename T::UniquePtr transport)
       : transport_(std::move(transport)) {}
 
-  const AsyncTransportWrapper* getWrappedTransport() const override {
+  const AsyncTransport* getWrappedTransport() const override {
     return transport_.get();
   }
 
-  // folly::AsyncTransportWrapper
+  // folly::AsyncTransport
   ReadCallback* getReadCallback() const override {
     return transport_->getReadCallback();
   }
 
-  void setReadCB(
-      folly::AsyncTransportWrapper::ReadCallback* callback) override {
+  void setReadCB(folly::AsyncTransport::ReadCallback* callback) override {
     transport_->setReadCB(callback);
   }
 
   void write(
-      folly::AsyncTransportWrapper::WriteCallback* callback,
+      folly::AsyncTransport::WriteCallback* callback,
       const void* buf,
       size_t bytes,
       folly::WriteFlags flags = folly::WriteFlags::NONE) override {
@@ -52,14 +52,14 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
   }
 
   void writeChain(
-      folly::AsyncTransportWrapper::WriteCallback* callback,
+      folly::AsyncTransport::WriteCallback* callback,
       std::unique_ptr<folly::IOBuf>&& buf,
       folly::WriteFlags flags = folly::WriteFlags::NONE) override {
     transport_->writeChain(callback, std::move(buf), flags);
   }
 
   void writev(
-      folly::AsyncTransportWrapper::WriteCallback* callback,
+      folly::AsyncTransport::WriteCallback* callback,
       const iovec* vec,
       size_t bytes,
       folly::WriteFlags flags = folly::WriteFlags::NONE) override {
@@ -191,6 +191,18 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
 
   const AsyncTransportCertificate* getSelfCertificate() const override {
     return transport_->getSelfCertificate();
+  }
+
+  bool setZeroCopy(bool enable) override {
+    return transport_->setZeroCopy(enable);
+  }
+
+  bool getZeroCopy() const override {
+    return transport_->getZeroCopy();
+  }
+
+  void setZeroCopyEnableFunc(ZeroCopyEnableFunc func) override {
+    transport_->setZeroCopyEnableFunc(func);
   }
 
  protected:

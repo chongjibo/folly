@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/Unicode.h>
 
 #include <initializer_list>
@@ -22,6 +23,53 @@
 #include <folly/portability/GTest.h>
 
 using folly::utf8ToCodePoint;
+
+class UnicodeTest : public testing::Test {};
+
+TEST_F(UnicodeTest, utf16_code_unit_is_bmp) {
+  EXPECT_TRUE(folly::utf16_code_unit_is_bmp(0x0000));
+  EXPECT_TRUE(folly::utf16_code_unit_is_bmp(0x0041));
+  EXPECT_TRUE(folly::utf16_code_unit_is_bmp(0xd7ff));
+  EXPECT_FALSE(folly::utf16_code_unit_is_bmp(0xd800));
+  EXPECT_FALSE(folly::utf16_code_unit_is_bmp(0xdbff));
+  EXPECT_FALSE(folly::utf16_code_unit_is_bmp(0xdc00));
+  EXPECT_FALSE(folly::utf16_code_unit_is_bmp(0xdfff));
+  EXPECT_TRUE(folly::utf16_code_unit_is_bmp(0xe000));
+  EXPECT_TRUE(folly::utf16_code_unit_is_bmp(0xffff));
+}
+
+TEST_F(UnicodeTest, utf16_code_unit_is_high_surrogate) {
+  EXPECT_FALSE(folly::utf16_code_unit_is_high_surrogate(0x0000));
+  EXPECT_FALSE(folly::utf16_code_unit_is_high_surrogate(0x0041));
+  EXPECT_FALSE(folly::utf16_code_unit_is_high_surrogate(0xd7ff));
+  EXPECT_TRUE(folly::utf16_code_unit_is_high_surrogate(0xd800));
+  EXPECT_TRUE(folly::utf16_code_unit_is_high_surrogate(0xdbff));
+  EXPECT_FALSE(folly::utf16_code_unit_is_high_surrogate(0xdc00));
+  EXPECT_FALSE(folly::utf16_code_unit_is_high_surrogate(0xdfff));
+  EXPECT_FALSE(folly::utf16_code_unit_is_high_surrogate(0xe000));
+  EXPECT_FALSE(folly::utf16_code_unit_is_high_surrogate(0xffff));
+}
+
+TEST_F(UnicodeTest, utf16_code_unit_is_low_surrogate) {
+  EXPECT_FALSE(folly::utf16_code_unit_is_low_surrogate(0x0000));
+  EXPECT_FALSE(folly::utf16_code_unit_is_low_surrogate(0x0041));
+  EXPECT_FALSE(folly::utf16_code_unit_is_low_surrogate(0xd7ff));
+  EXPECT_FALSE(folly::utf16_code_unit_is_low_surrogate(0xd800));
+  EXPECT_FALSE(folly::utf16_code_unit_is_low_surrogate(0xdbff));
+  EXPECT_TRUE(folly::utf16_code_unit_is_low_surrogate(0xdc00));
+  EXPECT_TRUE(folly::utf16_code_unit_is_low_surrogate(0xdfff));
+  EXPECT_FALSE(folly::utf16_code_unit_is_low_surrogate(0xe000));
+  EXPECT_FALSE(folly::utf16_code_unit_is_low_surrogate(0xffff));
+}
+
+TEST_F(UnicodeTest, codePointCombineUtf16SurrogatePair) {
+  EXPECT_THROW(
+      folly::unicode_code_point_from_utf16_surrogate_pair(0x0041, 0x0041),
+      folly::unicode_error);
+  EXPECT_EQ(
+      0x1CC33,
+      folly::unicode_code_point_from_utf16_surrogate_pair(0xd833, 0xdc33));
+}
 
 void testValid(std::initializer_list<unsigned char> data, char32_t expected) {
   {

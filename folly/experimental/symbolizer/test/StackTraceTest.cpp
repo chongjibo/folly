@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,9 @@
 #include <folly/experimental/TestUtil.h>
 #include <folly/experimental/symbolizer/StackTrace.h>
 #include <folly/experimental/symbolizer/Symbolizer.h>
+#include <folly/test/TestUtils.h>
+
+#include <boost/regex.hpp>
 
 #include <glog/logging.h>
 
@@ -38,7 +41,11 @@ void verifyStackTraces() {
   FrameArray<kMaxAddresses> faSafe;
   CHECK(getStackTraceSafe(faSafe));
 
+  FrameArray<kMaxAddresses> faHeap;
+  CHECK(getStackTraceHeap(faHeap));
+
   CHECK_EQ(fa.frameCount, faSafe.frameCount);
+  CHECK_EQ(fa.frameCount, faHeap.frameCount);
 
   if (VLOG_IS_ON(1)) {
     Symbolizer symbolizer;
@@ -51,14 +58,19 @@ void verifyStackTraces() {
     symbolizer.symbolize(faSafe);
     VLOG(1) << "getStackTraceSafe\n";
     printer.println(faSafe);
+
+    symbolizer.symbolize(faHeap);
+    VLOG(1) << "getStackTraceHeap\n";
+    printer.println(faHeap);
   }
 
   // Other than the top 2 frames (this one and getStackTrace /
   // getStackTraceSafe), the stack traces should be identical
   for (size_t i = 2; i < fa.frameCount; ++i) {
     LOG(INFO) << "i=" << i << " " << std::hex << "0x" << fa.addresses[i]
-              << " 0x" << faSafe.addresses[i];
+              << " 0x" << faSafe.addresses[i] << " 0x" << faHeap.addresses[i];
     EXPECT_EQ(fa.addresses[i], faSafe.addresses[i]);
+    EXPECT_EQ(fa.addresses[i], faHeap.addresses[i]);
   }
 }
 
@@ -150,7 +162,7 @@ void testStackTracePrinter(StackTracePrinter& printer, int fd) {
 TEST(StackTraceTest, SafeStackTracePrinter) {
   test::TemporaryFile file;
 
-  SafeStackTracePrinter printer{10, file.fd()};
+  SafeStackTracePrinter printer{file.fd()};
 
   testStackTracePrinter<SafeStackTracePrinter>(printer, file.fd());
 }
@@ -162,4 +174,58 @@ TEST(StackTraceTest, FastStackTracePrinter) {
       std::make_unique<FDSymbolizePrinter>(file.fd())};
 
   testStackTracePrinter<FastStackTracePrinter>(printer, file.fd());
+}
+
+TEST(StackTraceTest, TerseStackTracePrinter) {
+  test::TemporaryFile file;
+
+  FastStackTracePrinter printer{
+      std::make_unique<FDSymbolizePrinter>(file.fd(), SymbolizePrinter::TERSE)};
+
+  testStackTracePrinter<FastStackTracePrinter>(printer, file.fd());
+}
+
+TEST(StackTraceTest, TerseFileAndLineStackTracePrinter) {
+  test::TemporaryFile file;
+
+  FastStackTracePrinter printer{std::make_unique<FDSymbolizePrinter>(
+      file.fd(), SymbolizePrinter::TERSE_FILE_AND_LINE)};
+
+  testStackTracePrinter<FastStackTracePrinter>(printer, file.fd());
+}
+
+namespace {
+constexpr int frames = 5;
+FOLLY_NOINLINE void foo(FrameArray<frames>& addresses) {
+  getStackTraceSafe(addresses);
+}
+
+FOLLY_NOINLINE void bar(FrameArray<frames>& addresses) {
+  foo(addresses);
+}
+
+FOLLY_NOINLINE void baz(FrameArray<frames>& addresses) {
+  bar(addresses);
+}
+} // namespace
+
+TEST(StackTraceTest, TerseFileAndLineStackTracePrinterOutput) {
+  SKIP_IF(!Symbolizer::isAvailable());
+
+  Symbolizer symbolizer(LocationInfoMode::FULL);
+  FrameArray<frames> addresses;
+  StringSymbolizePrinter printer(SymbolizePrinter::TERSE_FILE_AND_LINE);
+  baz(addresses);
+  symbolizer.symbolize(addresses);
+  printer.println(addresses, 0);
+
+  // Match a sequence of file+line results that should appear as:
+  // ./folly/experimental/symbolizer/test/StackTraceTest.cpp:202
+  // or:
+  // (unknown)
+  boost::regex regex("((([^:]*:[0-9]*)|(\\(unknown\\)))\n)+");
+  auto match = boost::regex_match(
+      printer.str(), regex, boost::regex_constants::match_not_dot_newline);
+
+  ASSERT_TRUE(match);
 }

@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/synchronization/DistributedMutex.h>
 #include <folly/MapUtil.h>
 #include <folly/Synchronized.h>
@@ -588,8 +589,6 @@ TEST(DistributedMutex, BasicTryLock) {
 }
 
 TEST(DistributedMutex, TestSingleElementContentionChain) {
-  using namespace folly::detail;
-
   // Acquire the mutex once, let another thread form a contention chain on the
   // mutex, and then release it.  Observe the other thread grab the lock
   auto&& schedule = test::ManualSchedule{};
@@ -620,8 +619,6 @@ TEST(DistributedMutex, TestSingleElementContentionChain) {
 }
 
 TEST(DistributedMutex, TestTwoElementContentionChain) {
-  using namespace folly::detail;
-
   // Acquire the mutex once, let another thread form a contention chain on the
   // mutex, and then release it.  Observe the other thread grab the lock
   auto&& schedule = test::ManualSchedule{};
@@ -668,8 +665,6 @@ TEST(DistributedMutex, TestTwoElementContentionChain) {
 }
 
 TEST(DistributedMutex, TestTwoContentionChains) {
-  using namespace folly::detail;
-
   auto&& schedule = test::ManualSchedule{};
   auto&& mutex = test::TestDistributedMutex<test::ManualAtomic>{};
 
@@ -1793,6 +1788,12 @@ template <template <typename> class Atom = std::atomic>
 void concurrentExceptionPropagationStress(
     int numThreads,
     std::chrono::milliseconds t) {
+  // this test passes normally and under recent or Clang TSAN, but inexplicably
+  // TSAN-aborts under some older non-Clang TSAN versions
+  if (folly::kIsSanitizeThread && !folly::kIsClang) {
+    return;
+  }
+
   TestConstruction::reset();
   auto&& mutex = detail::distributed_mutex::DistributedMutex<Atom>{};
   auto&& threads = std::vector<std::thread>{};

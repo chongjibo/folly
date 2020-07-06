@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/Benchmark.h>
 #include <folly/Function.h>
 #include <folly/Random.h>
@@ -64,7 +65,7 @@ void runSmallInvokeBenchmark(std::size_t iters, MakeFunction make) {
   auto func = make(lambda);
   folly::makeUnpredictable(func);
 
-  for (auto i = std::size_t{iters}; --i;) {
+  for (auto i = iters; --i;) {
     folly::doNotOptimizeAway(func(i));
   }
 }
@@ -77,7 +78,7 @@ void runSmallCreateAndInvokeBenchmark(std::size_t iters, MakeFunction make) {
   };
   folly::makeUnpredictable(lambda);
 
-  for (auto i = std::size_t{iters}; --i;) {
+  for (auto i = iters; --i;) {
     auto func = make(lambda);
     folly::makeUnpredictable(func);
     folly::doNotOptimizeAway(func(i));
@@ -100,7 +101,7 @@ void runBigAndInvokeBenchmark(std::size_t iters, MakeFunction make) {
   folly::makeUnpredictable(func);
 
   suspender.dismissing([&] {
-    for (auto i = std::size_t{iters}; --i;) {
+    for (auto i = iters; --i;) {
       folly::doNotOptimizeAway(func(i));
     }
   });
@@ -120,7 +121,7 @@ void runBigCreateAndInvokeBenchmark(std::size_t iters, MakeFunction make) {
   folly::makeUnpredictable(lambda);
 
   suspender.dismissing([&] {
-    for (auto i = std::size_t{iters}; --i;) {
+    for (auto i = iters; --i;) {
       auto func = make(lambda);
       folly::makeUnpredictable(func);
       folly::doNotOptimizeAway(func(i));

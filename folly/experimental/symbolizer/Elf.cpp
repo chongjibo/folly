@@ -1,11 +1,11 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/experimental/symbolizer/Elf.h>
 
 #include <fcntl.h>
@@ -42,77 +43,65 @@ ElfFile::ElfFile() noexcept
       length_(0),
       baseAddress_(0) {}
 
-ElfFile::ElfFile(const char* name, bool readOnly)
+ElfFile::ElfFile(const char* name, Options const& options)
     : fd_(-1),
       file_(static_cast<char*>(MAP_FAILED)),
       length_(0),
       baseAddress_(0) {
-  open(name, readOnly);
+  open(name, options);
 }
 
-void ElfFile::open(const char* name, bool readOnly) {
-  const char* msg = "";
-  int r = openNoThrow(name, readOnly, &msg);
+void ElfFile::open(const char* name, Options const& options) {
+  auto r = openNoThrow(name, options);
   if (r == kSystemError) {
-    throwSystemError(msg);
+    throwSystemError(r.msg);
   } else {
-    CHECK_EQ(r, kSuccess) << msg;
+    CHECK_EQ(r, kSuccess) << r.msg;
   }
 }
 
-int ElfFile::openNoThrow(
+ElfFile::OpenResult ElfFile::openNoThrow(
     const char* name,
-    bool readOnly,
-    const char** msg) noexcept {
+    Options const& options) noexcept {
   FOLLY_SAFE_CHECK(fd_ == -1, "File already open");
   // Always close fd and unmap in case of failure along the way to avoid
   // check failure above if we leave fd != -1 and the object is recycled
-  // like it is inside SignalSafeElfCache
   auto guard = makeGuard([&] { reset(); });
   strncat(filepath_, name, kFilepathMaxLen - 1);
-  fd_ = ::open(name, readOnly ? O_RDONLY : O_RDWR);
+  fd_ = ::open(name, options.writable() ? O_RDWR : O_RDONLY);
   if (fd_ == -1) {
-    if (msg) {
-      *msg = "open";
-    }
-    return kSystemError;
+    return {kSystemError, "open"};
   }
   struct stat st;
   int r = fstat(fd_, &st);
   if (r == -1) {
-    if (msg) {
-      *msg = "fstat";
-    }
-    return kSystemError;
+    return {kSystemError, "fstat"};
   }
 
   length_ = st.st_size;
   int prot = PROT_READ;
-  if (!readOnly) {
+  if (options.writable()) {
     prot |= PROT_WRITE;
   }
   file_ = static_cast<char*>(mmap(nullptr, length_, prot, MAP_SHARED, fd_, 0));
   if (file_ == MAP_FAILED) {
-    if (msg) {
-      *msg = "mmap";
-    }
-    return kSystemError;
+    return {kSystemError, "mmap"};
   }
-  if (!init(msg)) {
+  auto const initOpenResult = init();
+  if (initOpenResult != kSuccess) {
     reset();
     errno = EINVAL;
-    return kInvalidElfFile;
+    return initOpenResult;
   }
   guard.dismiss();
-  return kSuccess;
+  return {kSuccess, nullptr};
 }
 
-int ElfFile::openAndFollow(
+ElfFile::OpenResult ElfFile::openAndFollow(
     const char* name,
-    bool readOnly,
-    const char** msg) noexcept {
-  auto result = openNoThrow(name, readOnly, msg);
-  if (!readOnly || result != kSuccess) {
+    Options const& options) noexcept {
+  auto result = openNoThrow(name, options);
+  if (options.writable() || result != kSuccess) {
     return result;
   }
 
@@ -144,11 +133,11 @@ int ElfFile::openAndFollow(
   memcpy(linkname, name, dirlen);
   memcpy(linkname + dirlen, debugFileName.begin(), debugFileLen + 1);
   reset();
-  result = openNoThrow(linkname, readOnly, msg);
+  result = openNoThrow(linkname, options);
   if (result == kSuccess) {
     return result;
   }
-  return openNoThrow(name, readOnly, msg);
+  return openNoThrow(name, options);
 }
 
 ElfFile::~ElfFile() {
@@ -169,7 +158,7 @@ ElfFile::ElfFile(ElfFile&& other) noexcept
   other.baseAddress_ = 0;
 }
 
-ElfFile& ElfFile::operator=(ElfFile&& other) {
+ElfFile& ElfFile::operator=(ElfFile&& other) noexcept {
   assert(this != &other);
   reset();
 
@@ -189,7 +178,7 @@ ElfFile& ElfFile::operator=(ElfFile&& other) {
   return *this;
 }
 
-void ElfFile::reset() {
+void ElfFile::reset() noexcept {
   filepath_[0] = 0;
 
   if (file_ != MAP_FAILED) {
@@ -203,45 +192,31 @@ void ElfFile::reset() {
   }
 }
 
-bool ElfFile::init(const char** msg) {
+ElfFile::OpenResult ElfFile::init() noexcept {
   if (length_ < 4) {
-    if (msg) {
-      *msg = "not an ELF file (too short)";
-    }
-    return false;
+    return {kInvalidElfFile, "not an ELF file (too short)"};
   }
 
   std::array<char, 5> elfMagBuf = {{0, 0, 0, 0, 0}};
   if (::lseek(fd_, 0, SEEK_SET) != 0 || ::read(fd_, elfMagBuf.data(), 4) != 4) {
-    if (msg) {
-      *msg = "unable to read ELF file for magic number";
-    }
-    return false;
+    return {kInvalidElfFile, "unable to read ELF file for magic number"};
   }
   if (std::strncmp(elfMagBuf.data(), ELFMAG, sizeof(ELFMAG)) != 0) {
-    if (msg) {
-      *msg = "invalid ELF magic";
-    }
-    return false;
+    return {kInvalidElfFile, "invalid ELF magic"};
   }
   if (::lseek(fd_, 0, SEEK_SET) != 0) {
-    if (msg) {
-      *msg = "unable to reset file descriptor after reading ELF magic number";
-    }
-    return false;
+    return {kInvalidElfFile,
+            "unable to reset file descriptor after reading ELF magic number"};
   }
 
   auto& elfHeader = this->elfHeader();
 
-#define EXPECTED_CLASS P1(ELFCLASS, __ELF_NATIVE_CLASS)
+#define EXPECTED_CLASS P1(ELFCLASS, FOLLY_ELF_NATIVE_CLASS)
 #define P1(a, b) P2(a, b)
 #define P2(a, b) a##b
   // Validate ELF class (32/64 bits)
   if (elfHeader.e_ident[EI_CLASS] != EXPECTED_CLASS) {
-    if (msg) {
-      *msg = "invalid ELF class";
-    }
-    return false;
+    return {kInvalidElfFile, "invalid ELF class"};
   }
 #undef P1
 #undef P2
@@ -251,46 +226,32 @@ bool ElfFile::init(const char** msg) {
   static constexpr auto kExpectedEncoding =
       kIsLittleEndian ? ELFDATA2LSB : ELFDATA2MSB;
   if (elfHeader.e_ident[EI_DATA] != kExpectedEncoding) {
-    if (msg) {
-      *msg = "invalid ELF encoding";
-    }
-    return false;
+    return {kInvalidElfFile, "invalid ELF encoding"};
   }
 
   // Validate ELF version (1)
   if (elfHeader.e_ident[EI_VERSION] != EV_CURRENT ||
       elfHeader.e_version != EV_CURRENT) {
-    if (msg) {
-      *msg = "invalid ELF version";
-    }
-    return false;
+    return {kInvalidElfFile, "invalid ELF version"};
   }
 
   // We only support executable and shared object files
-  if (elfHeader.e_type != ET_EXEC && elfHeader.e_type != ET_DYN) {
-    if (msg) {
-      *msg = "invalid ELF file type";
-    }
-    return false;
+  if (elfHeader.e_type != ET_EXEC && elfHeader.e_type != ET_DYN &&
+      elfHeader.e_type != ET_CORE) {
+    return {kInvalidElfFile, "invalid ELF file type"};
   }
 
   if (elfHeader.e_phnum == 0) {
-    if (msg) {
-      *msg = "no program header!";
-    }
-    return false;
+    return {kInvalidElfFile, "no program header!"};
   }
 
   if (elfHeader.e_phentsize != sizeof(ElfPhdr)) {
-    if (msg) {
-      *msg = "invalid program header entry size";
-    }
-    return false;
+    return {kInvalidElfFile, "invalid program header entry size"};
   }
 
   if (elfHeader.e_shentsize != sizeof(ElfShdr)) {
-    if (msg) {
-      *msg = "invalid section header entry size";
+    if (elfHeader.e_shentsize != 0 || elfHeader.e_type != ET_CORE) {
+      return {kInvalidElfFile, "invalid section header entry size"};
     }
   }
 
@@ -300,26 +261,24 @@ bool ElfFile::init(const char** msg) {
       iterateProgramHeaders([](auto& h) { return h.p_type == PT_LOAD; });
 
   if (!programHeader) {
-    if (msg) {
-      *msg = "could not find base address";
-    }
-    return false;
+    return {kInvalidElfFile, "could not find base address"};
   }
   baseAddress_ = programHeader->p_vaddr;
 
-  return true;
+  return {kSuccess, nullptr};
 }
 
-const ElfShdr* ElfFile::getSectionByIndex(size_t idx) const {
+const ElfShdr* ElfFile::getSectionByIndex(size_t idx) const noexcept {
   FOLLY_SAFE_CHECK(idx < elfHeader().e_shnum, "invalid section index");
   return &at<ElfShdr>(elfHeader().e_shoff + idx * sizeof(ElfShdr));
 }
 
-folly::StringPiece ElfFile::getSectionBody(const ElfShdr& section) const {
+folly::StringPiece ElfFile::getSectionBody(const ElfShdr& section) const
+    noexcept {
   return folly::StringPiece(file_ + section.sh_offset, section.sh_size);
 }
 
-void ElfFile::validateStringTable(const ElfShdr& stringTable) const {
+void ElfFile::validateStringTable(const ElfShdr& stringTable) const noexcept {
   FOLLY_SAFE_CHECK(
       stringTable.sh_type == SHT_STRTAB, "invalid type for string table");
 
@@ -331,8 +290,8 @@ void ElfFile::validateStringTable(const ElfShdr& stringTable) const {
       "invalid string table");
 }
 
-const char* ElfFile::getString(const ElfShdr& stringTable, size_t offset)
-    const {
+const char* ElfFile::getString(const ElfShdr& stringTable, size_t offset) const
+    noexcept {
   validateStringTable(stringTable);
   FOLLY_SAFE_CHECK(
       offset < stringTable.sh_size, "invalid offset in string table");
@@ -340,7 +299,7 @@ const char* ElfFile::getString(const ElfShdr& stringTable, size_t offset)
   return file_ + stringTable.sh_offset + offset;
 }
 
-const char* ElfFile::getSectionName(const ElfShdr& section) const {
+const char* ElfFile::getSectionName(const ElfShdr& section) const noexcept {
   if (elfHeader().e_shstrndx == SHN_UNDEF) {
     return nullptr; // no section name string table
   }
@@ -349,7 +308,7 @@ const char* ElfFile::getSectionName(const ElfShdr& section) const {
   return getString(sectionNames, section.sh_name);
 }
 
-const ElfShdr* ElfFile::getSectionByName(const char* name) const {
+const ElfShdr* ElfFile::getSectionByName(const char* name) const noexcept {
   if (elfHeader().e_shstrndx == SHN_UNDEF) {
     return nullptr; // no section name string table
   }
@@ -367,7 +326,8 @@ const ElfShdr* ElfFile::getSectionByName(const char* name) const {
   return foundSection;
 }
 
-ElfFile::Symbol ElfFile::getDefinitionByAddress(uintptr_t address) const {
+ElfFile::Symbol ElfFile::getDefinitionByAddress(uintptr_t address) const
+    noexcept {
   Symbol foundSymbol{nullptr, nullptr};
 
   auto findSection = [&](const ElfShdr& section) {
@@ -395,7 +355,7 @@ ElfFile::Symbol ElfFile::getDefinitionByAddress(uintptr_t address) const {
   return foundSymbol;
 }
 
-ElfFile::Symbol ElfFile::getSymbolByName(const char* name) const {
+ElfFile::Symbol ElfFile::getSymbolByName(const char* name) const noexcept {
   Symbol foundSymbol{nullptr, nullptr};
 
   auto findSection = [&](const ElfShdr& section) -> bool {
@@ -434,13 +394,14 @@ ElfFile::Symbol ElfFile::getSymbolByName(const char* name) const {
   return foundSymbol;
 }
 
-const ElfShdr* ElfFile::getSectionContainingAddress(ElfAddr addr) const {
+const ElfShdr* ElfFile::getSectionContainingAddress(ElfAddr addr) const
+    noexcept {
   return iterateSections([&](const ElfShdr& sh) -> bool {
     return (addr >= sh.sh_addr) && (addr < (sh.sh_addr + sh.sh_size));
   });
 }
 
-const char* ElfFile::getSymbolName(Symbol symbol) const {
+const char* ElfFile::getSymbolName(Symbol symbol) const noexcept {
   if (!symbol.first || !symbol.second) {
     return nullptr;
   }

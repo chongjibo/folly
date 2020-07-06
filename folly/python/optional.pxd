@@ -1,4 +1,4 @@
-# Copyright 2019-present Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ cdef extern from "folly/Optional.h" namespace "folly" nogil:
         cOptional(T val)
         bint has_value()
         T value()
+        T value_or(T&& altValue)
         T* get_pointer()
         void reset()
         void assign(T&& newValue)

@@ -1,11 +1,11 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -81,8 +81,7 @@ class StaticSingletonManagerWithRtti {
   }
 
   template <bool Noexcept>
-  FOLLY_ATTR_VISIBILITY_HIDDEN FOLLY_ALWAYS_INLINE static void* create_(
-      Arg& arg) noexcept(Noexcept) {
+  FOLLY_ERASE static void* create_(Arg& arg) noexcept(Noexcept) {
     return create_(arg);
   }
   FOLLY_NOINLINE static void* create_(Arg& arg);
@@ -94,7 +93,7 @@ using StaticSingletonManager = std::conditional_t<
     StaticSingletonManagerSansRtti>;
 
 template <typename T, typename Tag>
-FOLLY_ALWAYS_INLINE FOLLY_ATTR_VISIBILITY_HIDDEN T& createGlobal() {
+FOLLY_ERASE T& createGlobal() {
   return StaticSingletonManager::create<T, Tag>();
 }
 

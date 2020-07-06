@@ -1,11 +1,11 @@
 /*
- * Copyright 2019-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,11 +21,14 @@
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/Collect.h>
 #include <folly/experimental/coro/CurrentExecutor.h>
+#include <folly/experimental/coro/Invoke.h>
 #include <folly/experimental/coro/Task.h>
 
 #include <folly/portability/GTest.h>
 
-TEST(Task, CoRescheduleOnCurrentExecutor) {
+class CoRescheduleOnCurrentExecutorTest : public testing::Test {};
+
+TEST_F(CoRescheduleOnCurrentExecutorTest, example) {
   std::vector<int> results;
   folly::coro::blockingWait(folly::coro::collectAll(
       folly::coro::co_invoke([&]() -> folly::coro::Task<void> {

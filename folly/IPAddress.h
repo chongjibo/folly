@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -178,7 +178,7 @@ class IPAddress {
 
   /**
    * Return a string representation of a CIDR block created with createNetwork.
-   * @param [in] network, pair of address and cidr
+   * @param [in] network pair of address and cidr
    *
    * @return string representing the netblock
    */
@@ -234,7 +234,7 @@ class IPAddress {
    *
    * @throws IPAddressFormatException
    */
-  explicit IPAddress(StringPiece ip);
+  explicit IPAddress(StringPiece str);
 
   /**
    * Create an IPAddress from a sockaddr.
@@ -251,10 +251,10 @@ class IPAddress {
   /* implicit */ IPAddress(const in6_addr& addr) noexcept;
 
   // Assign from V4 address
-  IPAddress& operator=(const IPAddressV4& ipV4Addr) noexcept;
+  IPAddress& operator=(const IPAddressV4& ipv4_addr) noexcept;
 
   // Assign from V6 address
-  IPAddress& operator=(const IPAddressV6& ipV6Addr) noexcept;
+  IPAddress& operator=(const IPAddressV6& ipv6_addr) noexcept;
 
   /**
    * Converts an IPAddress to an IPAddressV4 instance.
@@ -289,7 +289,7 @@ class IPAddress {
   // Populate sockaddr_storage with an appropriate value
   int toSockaddrStorage(sockaddr_storage* dest, uint16_t port = 0) const {
     if (dest == nullptr) {
-      throw IPAddressFormatException("dest must not be null");
+      throw_exception<IPAddressFormatException>("dest must not be null");
     }
     memset(dest, 0, sizeof(sockaddr_storage));
     dest->ss_family = family();
@@ -312,7 +312,7 @@ class IPAddress {
 #endif
       return sizeof(*sin);
     } else {
-      throw InvalidAddressFamilyException(family());
+      throw_exception<InvalidAddressFamilyException>(family());
     }
   }
 
@@ -326,11 +326,11 @@ class IPAddress {
    *
    * @note This is slower than the below counterparts. If perf is important use
    *       one of the two argument variations below.
-   * @param [in] ipSlashCidr address in "192.168.1.0/24" format
+   * @param [in] cidrNetwork address in "192.168.1.0/24" format
    * @throws IPAddressFormatException if no /mask
    * @return true if address is part of specified subnet with cidr
    */
-  bool inSubnet(StringPiece ipSlashCidr) const;
+  bool inSubnet(StringPiece cidrNetwork) const;
 
   /**
    * Check if an IPAddress belongs to a subnet.

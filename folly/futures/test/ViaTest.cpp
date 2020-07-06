@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -219,12 +219,11 @@ TEST(Via, priority) {
 
 TEST(Via, then2) {
   ManualExecutor x1, x2;
-  bool a = false, b = false, c = false, d = false;
+  bool a = false, b = false, c = false;
   via(&x1)
       .thenValue([&](auto&&) { a = true; })
-      .then(&x2, [&](auto&&) { b = true; })
-      .thenValue([&](auto&&) { c = true; })
-      .thenValueInline(folly::makeAsyncTask(&x2, [&](auto&&) { d = true; }));
+      .thenValue([&](auto&&) { b = true; })
+      .thenValueInline(folly::makeAsyncTask(&x2, [&](auto&&) { c = true; }));
 
   EXPECT_FALSE(a);
   EXPECT_FALSE(b);
@@ -234,22 +233,19 @@ TEST(Via, then2) {
   EXPECT_FALSE(b);
   EXPECT_FALSE(c);
 
-  x2.run();
+  x1.run();
   EXPECT_TRUE(b);
   EXPECT_FALSE(c);
 
-  x1.run();
-  EXPECT_TRUE(c);
-  EXPECT_FALSE(d);
-
   x2.run();
-  EXPECT_TRUE(d);
+  EXPECT_TRUE(c);
 }
 
 TEST(Via, allowInline) {
   ManualExecutor x1, x2;
   bool a = false, b = false, c = false, d = false, e = false, f = false,
-       g = false, h = false, i = false, j = false;
+       g = false, h = false, i = false, j = false, k = false, l = false,
+       m = false, n = false, o = false, p = false, q = false, r = false;
   via(&x1)
       .thenValue([&](auto&&) { a = true; })
       .thenTryInline([&](auto&&) { b = true; })
@@ -265,7 +261,23 @@ TEST(Via, allowInline) {
         h = true;
         return via(&x1).thenValue([&](auto&&) { i = true; });
       })
-      .thenValueInline([&](auto&&) { j = true; });
+      .thenValueInline([&](auto&&) { j = true; })
+      .semi()
+      .deferValue([&](auto&&) { k = true; })
+      .via(&x2)
+      .thenValueInline([&](auto&&) { l = true; })
+      .semi()
+      .deferValue([&](auto&&) { m = true; })
+      .via(&x1)
+      .thenValue([&](auto&&) { n = true; })
+      .semi()
+      .deferValue([&](auto&&) { o = true; })
+      .deferValue([&](auto&&) { p = true; })
+      .via(&x1)
+      .semi()
+      .deferValue([&](auto&&) { q = true; })
+      .deferValue([&](auto&&) { r = true; })
+      .via(&x2);
 
   EXPECT_FALSE(a);
   EXPECT_FALSE(b);
@@ -307,8 +319,31 @@ TEST(Via, allowInline) {
   EXPECT_TRUE(i);
   EXPECT_FALSE(j);
 
+  // Defer should run on x1 and therefore not inline
+  // Subsequent deferred work is run on x1 and hence not inlined.
   x2.run();
   EXPECT_TRUE(j);
+  EXPECT_TRUE(k);
+  EXPECT_TRUE(l);
+  EXPECT_FALSE(m);
+
+  // Complete the deferred task
+  x1.run();
+  EXPECT_TRUE(m);
+  EXPECT_FALSE(n);
+
+  // Here defer and the above thenValue are both on x1, defer should be
+  // inline
+  x1.run();
+  EXPECT_TRUE(n);
+  EXPECT_TRUE(o);
+  EXPECT_TRUE(p);
+  EXPECT_FALSE(q);
+
+  // Change of executor in deferred executor so now run x2 to complete
+  x2.run();
+  EXPECT_TRUE(q);
+  EXPECT_TRUE(r);
 }
 
 #ifndef __APPLE__ // TODO #7372389

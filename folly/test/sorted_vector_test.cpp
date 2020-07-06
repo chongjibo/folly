@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,14 +14,18 @@
  * limitations under the License.
  */
 
+#include <folly/small_vector.h>
 #include <folly/sorted_vector_types.h>
 
 #include <iterator>
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <folly/Range.h>
+#include <folly/Utility.h>
+#include <folly/memory/Malloc.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 
@@ -61,11 +65,14 @@ struct OneAtATimePolicy {
 };
 
 struct CountCopyCtor {
-  explicit CountCopyCtor() : val_(0) {}
+  explicit CountCopyCtor() : val_(0), count_(0) {}
 
   explicit CountCopyCtor(int val) : val_(val), count_(0) {}
 
-  CountCopyCtor(const CountCopyCtor& c) : val_(c.val_), count_(c.count_ + 1) {}
+  CountCopyCtor(const CountCopyCtor& c) noexcept
+      : val_(c.val_), count_(c.count_ + 1) {
+    ++gCount_;
+  }
 
   bool operator<(const CountCopyCtor& o) const {
     return val_ < o.val_;
@@ -73,28 +80,59 @@ struct CountCopyCtor {
 
   int val_;
   int count_;
+  static int gCount_;
 };
 
-struct Opaque {
-  int value;
-  friend bool operator==(Opaque a, Opaque b) {
-    return a.value == b.value;
-  }
-  friend bool operator<(Opaque a, Opaque b) {
-    return a.value < b.value;
-  }
-  struct Compare : std::less<int>, std::less<Opaque> {
-    using is_transparent = void;
-    using std::less<int>::operator();
-    using std::less<Opaque>::operator();
-    bool operator()(int a, Opaque b) const {
-      return std::less<int>::operator()(a, b.value);
+int CountCopyCtor::gCount_ = 0;
+
+struct KeyCopiedException : public std::exception {};
+/**
+ * Key that may throw on copy when throwOnCopy is set, but never on move.
+ * Use clone() to copy without throwing.
+ */
+struct KeyThatThrowsOnCopies {
+  int32_t key{};
+  bool throwOnCopy{};
+
+  KeyThatThrowsOnCopies() {}
+
+  /* implicit */ KeyThatThrowsOnCopies(int32_t key) noexcept
+      : key(key), throwOnCopy(false) {}
+  KeyThatThrowsOnCopies(int32_t key, bool throwOnCopy) noexcept
+      : key(key), throwOnCopy(throwOnCopy) {}
+
+  ~KeyThatThrowsOnCopies() noexcept {}
+
+  KeyThatThrowsOnCopies(KeyThatThrowsOnCopies const& other)
+      : key(other.key), throwOnCopy(other.throwOnCopy) {
+    if (throwOnCopy) {
+      throw KeyCopiedException{};
     }
-    bool operator()(Opaque a, int b) const {
-      return std::less<int>::operator()(a.value, b);
+  }
+
+  KeyThatThrowsOnCopies(KeyThatThrowsOnCopies&& other) noexcept = default;
+
+  KeyThatThrowsOnCopies& operator=(KeyThatThrowsOnCopies const& other) {
+    key = other.key;
+    throwOnCopy = other.throwOnCopy;
+    if (throwOnCopy) {
+      throw KeyCopiedException{};
     }
-  };
+    return *this;
+  }
+
+  KeyThatThrowsOnCopies& operator=(KeyThatThrowsOnCopies&& other) noexcept =
+      default;
+
+  bool operator<(const KeyThatThrowsOnCopies& other) const {
+    return key < other.key;
+  }
 };
+
+static_assert(
+    std::is_nothrow_move_constructible<KeyThatThrowsOnCopies>::value &&
+        std::is_nothrow_move_assignable<KeyThatThrowsOnCopies>::value,
+    "non-noexcept move-constructible or move-assignable");
 
 } // namespace
 
@@ -595,153 +633,116 @@ TEST(SortedVectorTypes, EraseTest2) {
   EXPECT_EQ(m.size(), 5);
 }
 
-std::vector<int> extractValues(sorted_vector_set<CountCopyCtor> const& in) {
-  std::vector<int> ret;
-  std::transform(
-      in.begin(),
-      in.end(),
-      std::back_inserter(ret),
-      [](const CountCopyCtor& c) { return c.val_; });
-  return ret;
-}
-
-template <typename T, typename S>
-std::vector<T> makeVectorOfWrappers(std::vector<S> ss) {
-  std::vector<T> ts;
-  ts.reserve(ss.size());
-  for (auto const& s : ss) {
-    ts.emplace_back(s);
-  }
-  return ts;
-}
-
 TEST(SortedVectorTypes, TestSetBulkInsertionSortMerge) {
-  auto s = makeVectorOfWrappers<CountCopyCtor, int>({6, 4, 8, 2});
+  auto s = std::vector<int>({6, 4, 8, 2});
 
-  sorted_vector_set<CountCopyCtor> vset(s.begin(), s.end());
+  sorted_vector_set<int> vset(s.begin(), s.end());
   check_invariant(vset);
 
   // Add an unsorted range that will have to be merged in.
-  s = makeVectorOfWrappers<CountCopyCtor, int>({10, 7, 5, 1});
+  s = std::vector<int>({10, 7, 5, 1});
 
   vset.insert(s.begin(), s.end());
   check_invariant(vset);
-  EXPECT_EQ(vset.rbegin()->count_, 1);
 
-  EXPECT_THAT(
-      extractValues(vset),
-      testing::ElementsAreArray({1, 2, 4, 5, 6, 7, 8, 10}));
+  EXPECT_THAT(vset, testing::ElementsAreArray({1, 2, 4, 5, 6, 7, 8, 10}));
 }
 
 TEST(SortedVectorTypes, TestSetBulkInsertionMiddleValuesEqualDuplication) {
-  auto s = makeVectorOfWrappers<CountCopyCtor, int>({4, 6, 8});
+  auto s = std::vector<int>({4, 6, 8});
 
-  sorted_vector_set<CountCopyCtor> vset(s.begin(), s.end());
+  sorted_vector_set<int> vset(s.begin(), s.end());
   check_invariant(vset);
 
-  s = makeVectorOfWrappers<CountCopyCtor, int>({8, 10, 12});
+  s = std::vector<int>({8, 10, 12});
 
   vset.insert(s.begin(), s.end());
   check_invariant(vset);
-  EXPECT_EQ(vset.rbegin()->count_, 1);
 
-  EXPECT_THAT(
-      extractValues(vset), testing::ElementsAreArray({4, 6, 8, 10, 12}));
+  EXPECT_THAT(vset, testing::ElementsAreArray({4, 6, 8, 10, 12}));
 }
 
 TEST(SortedVectorTypes, TestSetBulkInsertionSortMergeDups) {
-  auto s = makeVectorOfWrappers<CountCopyCtor, int>({6, 4, 8, 2});
+  auto s = std::vector<int>({6, 4, 8, 2});
 
-  sorted_vector_set<CountCopyCtor> vset(s.begin(), s.end());
+  sorted_vector_set<int> vset(s.begin(), s.end());
   check_invariant(vset);
 
   // Add an unsorted range that will have to be merged in.
-  s = makeVectorOfWrappers<CountCopyCtor, int>({10, 6, 5, 2});
+  s = std::vector<int>({10, 6, 5, 2});
 
   vset.insert(s.begin(), s.end());
   check_invariant(vset);
-  EXPECT_EQ(vset.rbegin()->count_, 1);
-  EXPECT_THAT(
-      extractValues(vset), testing::ElementsAreArray({2, 4, 5, 6, 8, 10}));
+  EXPECT_THAT(vset, testing::ElementsAreArray({2, 4, 5, 6, 8, 10}));
 }
 
 TEST(SortedVectorTypes, TestSetInsertionDupsOneByOne) {
-  auto s = makeVectorOfWrappers<CountCopyCtor, int>({6, 4, 8, 2});
+  auto s = std::vector<int>({6, 4, 8, 2});
 
-  sorted_vector_set<CountCopyCtor> vset(s.begin(), s.end());
+  sorted_vector_set<int> vset(s.begin(), s.end());
   check_invariant(vset);
 
   // Add an unsorted range that will have to be merged in.
-  s = makeVectorOfWrappers<CountCopyCtor, int>({10, 6, 5, 2});
+  s = std::vector<int>({10, 6, 5, 2});
 
   for (const auto& elem : s) {
     vset.insert(elem);
   }
   check_invariant(vset);
-  EXPECT_EQ(vset.rbegin()->count_, 2);
-  EXPECT_THAT(
-      extractValues(vset), testing::ElementsAreArray({2, 4, 5, 6, 8, 10}));
+  EXPECT_THAT(vset, testing::ElementsAreArray({2, 4, 5, 6, 8, 10}));
 }
 
 TEST(SortedVectorTypes, TestSetBulkInsertionSortNoMerge) {
-  auto s = makeVectorOfWrappers<CountCopyCtor, int>({6, 4, 8, 2});
+  auto s = std::vector<int>({6, 4, 8, 2});
 
-  sorted_vector_set<CountCopyCtor> vset(s.begin(), s.end());
+  sorted_vector_set<int> vset(s.begin(), s.end());
   check_invariant(vset);
 
   // Add an unsorted range that will not have to be merged in.
-  s = makeVectorOfWrappers<CountCopyCtor, int>({20, 15, 16, 13});
+  s = std::vector<int>({20, 15, 16, 13});
 
   vset.insert(s.begin(), s.end());
   check_invariant(vset);
-  EXPECT_EQ(vset.rbegin()->count_, 1);
-  EXPECT_THAT(
-      extractValues(vset),
-      testing::ElementsAreArray({2, 4, 6, 8, 13, 15, 16, 20}));
+  EXPECT_THAT(vset, testing::ElementsAreArray({2, 4, 6, 8, 13, 15, 16, 20}));
 }
 
 TEST(SortedVectorTypes, TestSetBulkInsertionNoSortMerge) {
-  auto s = makeVectorOfWrappers<CountCopyCtor, int>({6, 4, 8, 2});
+  auto s = std::vector<int>({6, 4, 8, 2});
 
-  sorted_vector_set<CountCopyCtor> vset(s.begin(), s.end());
+  sorted_vector_set<int> vset(s.begin(), s.end());
   check_invariant(vset);
 
   // Add a sorted range that will have to be merged in.
-  s = makeVectorOfWrappers<CountCopyCtor, int>({1, 3, 5, 9});
+  s = std::vector<int>({1, 3, 5, 9});
 
   vset.insert(s.begin(), s.end());
   check_invariant(vset);
-  EXPECT_EQ(vset.rbegin()->count_, 1);
-  EXPECT_THAT(
-      extractValues(vset), testing::ElementsAreArray({1, 2, 3, 4, 5, 6, 8, 9}));
+  EXPECT_THAT(vset, testing::ElementsAreArray({1, 2, 3, 4, 5, 6, 8, 9}));
 }
 
 TEST(SortedVectorTypes, TestSetBulkInsertionNoSortNoMerge) {
-  auto s = makeVectorOfWrappers<CountCopyCtor, int>({6, 4, 8, 2});
+  auto s = std::vector<int>({6, 4, 8, 2});
 
-  sorted_vector_set<CountCopyCtor> vset(s.begin(), s.end());
+  sorted_vector_set<int> vset(s.begin(), s.end());
   check_invariant(vset);
 
   // Add a sorted range that will not have to be merged in.
-  s = makeVectorOfWrappers<CountCopyCtor, int>({21, 22, 23, 24});
+  s = std::vector<int>({21, 22, 23, 24});
 
   vset.insert(s.begin(), s.end());
   check_invariant(vset);
-  EXPECT_EQ(vset.rbegin()->count_, 1);
-  EXPECT_THAT(
-      extractValues(vset),
-      testing::ElementsAreArray({2, 4, 6, 8, 21, 22, 23, 24}));
+  EXPECT_THAT(vset, testing::ElementsAreArray({2, 4, 6, 8, 21, 22, 23, 24}));
 }
 
 TEST(SortedVectorTypes, TestSetBulkInsertionEmptyRange) {
-  std::vector<CountCopyCtor> s;
+  std::vector<int> s;
   EXPECT_TRUE(s.empty());
 
   // insertion of empty range into empty container.
-  sorted_vector_set<CountCopyCtor> vset(s.begin(), s.end());
+  sorted_vector_set<int> vset(s.begin(), s.end());
   check_invariant(vset);
 
-  s = makeVectorOfWrappers<CountCopyCtor, int>({6, 4, 8, 2});
+  s = std::vector<int>({6, 4, 8, 2});
 
   vset.insert(s.begin(), s.end());
 
@@ -750,7 +751,7 @@ TEST(SortedVectorTypes, TestSetBulkInsertionEmptyRange) {
   vset.insert(s.begin(), s.end());
   check_invariant(vset);
 
-  EXPECT_THAT(extractValues(vset), testing::ElementsAreArray({2, 4, 6, 8}));
+  EXPECT_THAT(vset, testing::ElementsAreArray({2, 4, 6, 8}));
 }
 
 // This is a test of compilation - the behavior has already been tested
@@ -823,6 +824,43 @@ TEST(SortedVectorTypes, TestMapCreationFromVector) {
   EXPECT_EQ(contents, expected_contents);
 }
 
+TEST(SortedVectorTypes, TestSetCreationFromSmallVector) {
+  using smvec = folly::small_vector<int, 5>;
+  smvec vec = {3, 1, -1, 5, 0};
+  sorted_vector_set<
+      int,
+      std::less<int>,
+      std::allocator<std::pair<int, int>>,
+      void,
+      smvec>
+      vset(std::move(vec));
+  check_invariant(vset);
+  EXPECT_THAT(vset, testing::ElementsAreArray({-1, 0, 1, 3, 5}));
+}
+
+TEST(SortedVectorTypes, TestMapCreationFromSmallVector) {
+  using smvec = folly::small_vector<std::pair<int, int>, 5>;
+  smvec vec = {{3, 1}, {1, 5}, {-1, 2}, {5, 3}, {0, 3}};
+  sorted_vector_map<
+      int,
+      int,
+      std::less<int>,
+      std::allocator<std::pair<int, int>>,
+      void,
+      smvec>
+      vmap(std::move(vec));
+  check_invariant(vmap);
+  auto contents = std::vector<std::pair<int, int>>(vmap.begin(), vmap.end());
+  auto expected_contents = std::vector<std::pair<int, int>>({
+      {-1, 2},
+      {0, 3},
+      {1, 5},
+      {3, 1},
+      {5, 3},
+  });
+  EXPECT_EQ(contents, expected_contents);
+}
+
 TEST(SortedVectorTypes, TestBulkInsertionWithDuplicatesIntoEmptySet) {
   sorted_vector_set<int> set;
   {
@@ -845,4 +883,376 @@ TEST(SortedVectorTypes, TestDataPointsToFirstElement) {
   map[1] = 1;
   EXPECT_EQ(set.data(), &*set.begin());
   EXPECT_EQ(map.data(), &*map.begin());
+}
+
+TEST(SortedVectorTypes, TestEmplaceHint) {
+  sorted_vector_set<std::pair<int, int>> set;
+  sorted_vector_map<int, int> map;
+
+  for (size_t i = 0; i < 4; ++i) {
+    const std::pair<int, int> k00(0, 0);
+    const std::pair<int, int> k0i(0, i % 2);
+    const std::pair<int, int> k10(1, 0);
+    const std::pair<int, int> k1i(1, i % 2);
+    const std::pair<int, int> k20(2, 0);
+    const std::pair<int, int> k2i(2, i % 2);
+
+    EXPECT_EQ(*set.emplace_hint(set.begin(), 0, i % 2), k0i);
+    EXPECT_EQ(*map.emplace_hint(map.begin(), 0, i % 2), k00);
+
+    EXPECT_EQ(*set.emplace_hint(set.begin(), k1i), k1i);
+    EXPECT_EQ(*map.emplace_hint(map.begin(), k1i), k10);
+
+    EXPECT_EQ(*set.emplace_hint(set.begin(), folly::copy(k2i)), k2i);
+    EXPECT_EQ(*map.emplace_hint(map.begin(), folly::copy(k2i)), k20);
+
+    check_invariant(set);
+    check_invariant(map);
+  }
+}
+
+TEST(SortedVectorTypes, TestExceptionSafety) {
+  std::initializer_list<KeyThatThrowsOnCopies> const sortedUnique = {
+      0, 1, 4, 7, 9, 11, 15};
+  sorted_vector_set<KeyThatThrowsOnCopies> set = {sortedUnique};
+  EXPECT_EQ(set.size(), 7);
+
+  // Verify that we successfully insert when no exceptions are thrown.
+  KeyThatThrowsOnCopies key1(96, false);
+  auto hint1 = set.find(96);
+  set.insert(hint1, key1);
+  EXPECT_EQ(set.size(), 8);
+
+  // Verify that we don't add a key at the end if copying throws
+  KeyThatThrowsOnCopies key2(99, true);
+  auto hint2 = set.find(99);
+  try {
+    set.insert(hint2, key2);
+  } catch (const KeyCopiedException&) {
+    // swallow
+  }
+  EXPECT_EQ(set.size(), 8);
+
+  // Verify that we don't add a key in the middle if copying throws
+  KeyThatThrowsOnCopies key3(47, true);
+  auto hint3 = set.find(47);
+  try {
+    set.insert(hint3, key3);
+  } catch (const KeyCopiedException&) {
+    // swallow
+  }
+  EXPECT_EQ(set.size(), 8);
+}
+
+#if FOLLY_HAS_MEMORY_RESOURCE
+
+using folly::detail::std_pmr::memory_resource;
+using folly::detail::std_pmr::new_delete_resource;
+using folly::detail::std_pmr::null_memory_resource;
+using folly::detail::std_pmr::polymorphic_allocator;
+
+namespace {
+
+struct test_resource : public memory_resource {
+  void* do_allocate(size_t bytes, size_t /* alignment */) override {
+    return folly::checkedMalloc(bytes);
+  }
+
+  void do_deallocate(
+      void* p,
+      size_t /* bytes */,
+      size_t /* alignment */) noexcept override {
+    free(p);
+  }
+
+  bool do_is_equal(const memory_resource& other) const noexcept override {
+    return this == &other;
+  }
+};
+
+} // namespace
+
+TEST(SortedVectorTypes, TestPmrAllocatorSimple) {
+  namespace pmr = folly::pmr;
+
+  pmr::sorted_vector_set<std::pair<int, int>> s(null_memory_resource());
+  EXPECT_THROW(s.emplace(42, 42), std::bad_alloc);
+
+  pmr::sorted_vector_map<int, int> m(null_memory_resource());
+  EXPECT_THROW(m.emplace(42, 42), std::bad_alloc);
+}
+
+TEST(SortedVectorTypes, TestPmrCopyConstructSameAlloc) {
+  namespace pmr = folly::pmr;
+
+  set_default_resource(null_memory_resource());
+
+  test_resource r;
+  polymorphic_allocator<std::byte> a1(&r), a2(&r);
+  EXPECT_EQ(a1, a2);
+
+  {
+    pmr::sorted_vector_set<int> s1(a1);
+    s1.emplace(42);
+
+    pmr::sorted_vector_set<int> s2(s1, a2);
+    EXPECT_EQ(s1.get_allocator(), s2.get_allocator());
+    EXPECT_EQ(s2.count(42), 1);
+  }
+
+  {
+    pmr::sorted_vector_map<int, int> m1(a1);
+    m1.emplace(42, 42);
+
+    pmr::sorted_vector_map<int, int> m2(m1, a2);
+    EXPECT_EQ(m1.get_allocator(), m2.get_allocator());
+    EXPECT_EQ(m2.at(42), 42);
+  }
+}
+
+TEST(SortedVectorTypes, TestPmrCopyConstructDifferentAlloc) {
+  namespace pmr = folly::pmr;
+
+  set_default_resource(null_memory_resource());
+
+  test_resource r1, r2;
+  polymorphic_allocator<std::byte> a1(&r1), a2(&r2);
+  EXPECT_NE(a1, a2);
+
+  {
+    pmr::sorted_vector_set<int> s1(a1);
+    s1.emplace(42);
+
+    pmr::sorted_vector_set<int> s2(s1, a2);
+    EXPECT_NE(s1.get_allocator(), s2.get_allocator());
+    EXPECT_EQ(s2.count(42), 1);
+  }
+
+  {
+    pmr::sorted_vector_map<int, int> m1(a1);
+    m1.emplace(42, 42);
+
+    pmr::sorted_vector_map<int, int> m2(m1, a2);
+    EXPECT_NE(m1.get_allocator(), m2.get_allocator());
+    EXPECT_EQ(m2.at(42), 42);
+  }
+}
+
+TEST(SortedVectorTypes, TestPmrMoveConstructSameAlloc) {
+  namespace pmr = folly::pmr;
+
+  set_default_resource(null_memory_resource());
+
+  test_resource r;
+  polymorphic_allocator<std::byte> a1(&r), a2(&r);
+  EXPECT_EQ(a1, a2);
+
+  {
+    pmr::sorted_vector_set<int> s1(a1);
+    s1.emplace(42);
+    auto d = s1.data();
+
+    pmr::sorted_vector_set<int> s2(std::move(s1), a2);
+    EXPECT_EQ(s1.get_allocator(), s2.get_allocator());
+    EXPECT_EQ(s2.data(), d);
+    EXPECT_EQ(s2.count(42), 1);
+  }
+
+  {
+    pmr::sorted_vector_map<int, int> m1(a1);
+    m1.emplace(42, 42);
+    auto d = m1.data();
+
+    pmr::sorted_vector_map<int, int> m2(std::move(m1), a2);
+    EXPECT_EQ(m1.get_allocator(), m2.get_allocator());
+    EXPECT_EQ(m2.data(), d);
+    EXPECT_EQ(m2.at(42), 42);
+  }
+}
+
+TEST(SortedVectorTypes, TestPmrMoveConstructDifferentAlloc) {
+  namespace pmr = folly::pmr;
+
+  set_default_resource(null_memory_resource());
+
+  test_resource r1, r2;
+  polymorphic_allocator<std::byte> a1(&r1), a2(&r2);
+  EXPECT_NE(a1, a2);
+
+  {
+    pmr::sorted_vector_set<int> s1(a1);
+    s1.emplace(42);
+    auto d = s1.data();
+
+    pmr::sorted_vector_set<int> s2(std::move(s1), a2);
+    EXPECT_NE(s1.get_allocator(), s2.get_allocator());
+    EXPECT_NE(s2.data(), d);
+    EXPECT_EQ(s2.count(42), 1);
+  }
+
+  {
+    pmr::sorted_vector_map<int, int> m1(a1);
+    m1.emplace(42, 42);
+    auto d = m1.data();
+
+    pmr::sorted_vector_map<int, int> m2(std::move(m1), a2);
+    EXPECT_NE(m1.get_allocator(), m2.get_allocator());
+    EXPECT_NE(m2.data(), d);
+    EXPECT_EQ(m2.at(42), 42);
+  }
+}
+
+template <typename T>
+using pmr_vector =
+    std::vector<T, folly::detail::std_pmr::polymorphic_allocator<T>>;
+
+TEST(SortedVectorTypes, TestCreationFromPmrVector) {
+  namespace pmr = folly::pmr;
+
+  set_default_resource(null_memory_resource());
+  test_resource r;
+  polymorphic_allocator<std::byte> a(&r);
+
+  {
+    pmr_vector<int> c({1, 2, 3}, a);
+    auto d = c.data();
+    pmr::sorted_vector_set<int> s(std::move(c));
+    EXPECT_EQ(s.get_allocator(), a);
+    EXPECT_EQ(s.data(), d);
+  }
+
+  {
+    pmr_vector<int> c({2, 1, 3}, a);
+    auto d = c.data();
+    pmr::sorted_vector_set<int> s(std::move(c));
+    EXPECT_EQ(s.get_allocator(), a);
+    EXPECT_EQ(s.data(), d);
+  }
+
+  {
+    pmr_vector<std::pair<int, int>> c({{1, 1}, {2, 2}, {3, 3}}, a);
+    auto d = c.data();
+    pmr::sorted_vector_map<int, int> m(std::move(c));
+    EXPECT_EQ(m.get_allocator(), a);
+    EXPECT_EQ(m.data(), d);
+  }
+
+  {
+    pmr_vector<std::pair<int, int>> c({{2, 2}, {1, 1}, {3, 3}}, a);
+    auto d = c.data();
+    pmr::sorted_vector_map<int, int> m(std::move(c));
+    EXPECT_EQ(m.get_allocator(), a);
+    EXPECT_EQ(m.data(), d);
+  }
+}
+
+TEST(SortedVectorTypes, TestPmrAllocatorScoped) {
+  namespace pmr = folly::pmr;
+
+  set_default_resource(null_memory_resource());
+  polymorphic_allocator<std::byte> alloc(new_delete_resource());
+
+  {
+    pmr::sorted_vector_set<pmr_vector<int>> s(alloc);
+    s.emplace(1);
+    EXPECT_EQ(s.begin()->get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_set<pmr_vector<int>> s(alloc);
+    s.emplace_hint(s.begin(), 1);
+    EXPECT_EQ(s.begin()->get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_map<int, pmr_vector<int>> m(alloc);
+    m.emplace(1, 1);
+    EXPECT_EQ(m.begin()->second.get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_map<int, pmr_vector<int>> m(alloc);
+    m.emplace_hint(m.begin(), 1, 1);
+    EXPECT_EQ(m.begin()->second.get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_set<pmr::sorted_vector_map<int, int>> s(alloc);
+    s.emplace(std::initializer_list<std::pair<int, int>>{{42, 42}});
+    EXPECT_EQ(s.begin()->get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_set<pmr::sorted_vector_map<int, int>> s(alloc);
+    s.emplace_hint(
+        s.begin(), std::initializer_list<std::pair<int, int>>{{42, 42}});
+    EXPECT_EQ(s.begin()->get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_set<pmr::sorted_vector_set<int>> s(alloc);
+    s.emplace(std::initializer_list<int>{1});
+    EXPECT_EQ(s.begin()->get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_set<pmr::sorted_vector_set<int>> s(alloc);
+    s.emplace_hint(s.begin(), std::initializer_list<int>{1});
+    EXPECT_EQ(s.begin()->get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_map<int, pmr::sorted_vector_map<int, int>> m(alloc);
+    m.emplace(
+        std::piecewise_construct,
+        std::forward_as_tuple(42),
+        std::forward_as_tuple(
+            std::initializer_list<std::pair<int, int>>{{42, 42}}));
+    EXPECT_EQ(m.begin()->second.get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_map<int, pmr::sorted_vector_map<int, int>> m(alloc);
+    m.emplace_hint(
+        m.begin(),
+        std::piecewise_construct,
+        std::forward_as_tuple(42),
+        std::forward_as_tuple(
+            std::initializer_list<std::pair<int, int>>{{42, 42}}));
+    EXPECT_EQ(m.begin()->second.get_allocator(), alloc);
+  }
+
+  {
+    pmr::sorted_vector_map<int, pmr::sorted_vector_map<int, int>> m(alloc);
+    m[42][42] = 42;
+    EXPECT_EQ(m.begin()->second.get_allocator(), alloc);
+  }
+}
+
+#endif
+
+TEST(SortedVectorTypes, TestInsertHintCopy) {
+  sorted_vector_set<CountCopyCtor> set;
+  sorted_vector_map<CountCopyCtor, int> map;
+  CountCopyCtor skey;
+  std::pair<CountCopyCtor, int> mkey;
+
+  CountCopyCtor::gCount_ = 0;
+  set.insert(set.end(), skey);
+  map.insert(map.end(), mkey);
+  EXPECT_EQ(CountCopyCtor::gCount_, 2);
+
+  set.emplace(CountCopyCtor(1));
+  map.emplace(CountCopyCtor(1), 1);
+
+  CountCopyCtor::gCount_ = 0;
+  for (size_t i = 0; i <= set.size(); ++i) {
+    auto sit = set.begin();
+    auto mit = map.begin();
+    std::advance(sit, i);
+    std::advance(mit, i);
+    set.insert(sit, skey);
+    map.insert(mit, mkey);
+  }
+  EXPECT_EQ(CountCopyCtor::gCount_, 0);
 }

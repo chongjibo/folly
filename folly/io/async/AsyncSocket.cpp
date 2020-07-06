@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/io/async/AsyncSocket.h>
 
 #include <folly/ExceptionWrapper.h>
@@ -23,19 +24,20 @@
 #include <folly/io/Cursor.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/IOBufQueue.h>
+#include <folly/io/SocketOptionMap.h>
 #include <folly/portability/Fcntl.h>
 #include <folly/portability/Sockets.h>
 #include <folly/portability/SysUio.h>
 #include <folly/portability/Unistd.h>
 
 #include <boost/preprocessor/control/if.hpp>
-#include <errno.h>
-#include <limits.h>
 #include <sys/types.h>
+#include <cerrno>
+#include <climits>
 #include <sstream>
 #include <thread>
 
-#if __linux__
+#if defined(__linux__)
 #include <linux/sockios.h>
 #include <sys/ioctl.h>
 #endif
@@ -60,15 +62,17 @@ static constexpr bool msgErrQueueSupported =
     false;
 #endif // FOLLY_HAVE_MSG_ERRQUEUE
 
-// static members initializers
-const AsyncSocket::OptionMap AsyncSocket::emptyOptionMap;
+static AsyncSocketException const& getSocketClosedLocallyEx() {
+  static auto& ex = *new AsyncSocketException(
+      AsyncSocketException::END_OF_FILE, "socket closed locally");
+  return ex;
+}
 
-const AsyncSocketException socketClosedLocallyEx(
-    AsyncSocketException::END_OF_FILE,
-    "socket closed locally");
-const AsyncSocketException socketShutdownForWritesEx(
-    AsyncSocketException::END_OF_FILE,
-    "socket shutdown for writes");
+static AsyncSocketException const& getSocketShutdownForWritesEx() {
+  static auto& ex = *new AsyncSocketException(
+      AsyncSocketException::END_OF_FILE, "socket shutdown for writes");
+  return ex;
+}
 
 // TODO: It might help performance to provide a version of BytesWriteRequest
 // that users could derive from, so we can avoid the extra allocation for each
@@ -257,7 +261,7 @@ int AsyncSocket::SendMsgParamsCallback::getDefaultFlags(
 }
 
 namespace {
-static AsyncSocket::SendMsgParamsCallback defaultSendMsgParamsCallback;
+AsyncSocket::SendMsgParamsCallback defaultSendMsgParamsCallback;
 
 // Based on flags, signal the transparent handler to disable certain functions
 void disableTransparentFunctions(
@@ -267,7 +271,7 @@ void disableTransparentFunctions(
   (void)fd;
   (void)noTransparentTls;
   (void)noTSocks;
-#if __linux__
+#if defined(__linux__)
   if (noTransparentTls) {
     // Ignore return value, errors are ok
     VLOG(5) << "Disabling TTLS for fd " << fd;
@@ -304,8 +308,10 @@ AsyncSocket::AsyncSocket(EventBase* evb)
 AsyncSocket::AsyncSocket(
     EventBase* evb,
     const folly::SocketAddress& address,
-    uint32_t connectTimeout)
+    uint32_t connectTimeout,
+    bool useZeroCopy)
     : AsyncSocket(evb) {
+  setZeroCopy(useZeroCopy);
   connect(nullptr, address, connectTimeout);
 }
 
@@ -313,8 +319,10 @@ AsyncSocket::AsyncSocket(
     EventBase* evb,
     const std::string& ip,
     uint16_t port,
-    uint32_t connectTimeout)
+    uint32_t connectTimeout,
+    bool useZeroCopy)
     : AsyncSocket(evb) {
+  setZeroCopy(useZeroCopy);
   connect(nullptr, ip, port, connectTimeout);
 }
 
@@ -445,7 +453,7 @@ void AsyncSocket::connect(
     ConnectCallback* callback,
     const folly::SocketAddress& address,
     int timeout,
-    const OptionMap& options,
+    const SocketOptionMap& options,
     const folly::SocketAddress& bindAddr) noexcept {
   DestructorGuard dg(this);
   eventBase_->dcheckIsInEventBaseThread();
@@ -467,7 +475,7 @@ void AsyncSocket::connect(
   connectCallback_ = callback;
 
   sockaddr_storage addrStorage;
-  sockaddr* saddr = reinterpret_cast<sockaddr*>(&addrStorage);
+  auto saddr = reinterpret_cast<sockaddr*>(&addrStorage);
 
   try {
     // Create the socket
@@ -523,6 +531,9 @@ void AsyncSocket::connect(
       setZeroCopy(zeroCopyVal_);
     }
 
+    // Apply the additional PRE_BIND options if any.
+    applyOptions(options, SocketOptionKey::ApplyPos::PRE_BIND);
+
     VLOG(5) << "AsyncSocket::connect(this=" << this << ", evb=" << eventBase_
             << ", fd=" << fd_ << ", host=" << address.describe().c_str();
 
@@ -551,17 +562,8 @@ void AsyncSocket::connect(
       }
     }
 
-    // Apply the additional options if any.
-    for (const auto& opt : options) {
-      rv = opt.first.apply(fd_, opt.second);
-      if (rv != 0) {
-        auto errnoCopy = errno;
-        throw AsyncSocketException(
-            AsyncSocketException::INTERNAL_ERROR,
-            withAddr("failed to set socket option"),
-            errnoCopy);
-      }
-    }
+    // Apply the additional POST_BIND options if any.
+    applyOptions(options, SocketOptionKey::ApplyPos::POST_BIND);
 
     // Call preConnect hook if any.
     if (connectCallback_) {
@@ -656,7 +658,7 @@ void AsyncSocket::connect(
     const string& ip,
     uint16_t port,
     int timeout,
-    const OptionMap& options) noexcept {
+    const SocketOptionMap& options) noexcept {
   DestructorGuard dg(this);
   try {
     connectCallback_ = callback;
@@ -896,7 +898,7 @@ bool AsyncSocket::setZeroCopy(bool enable) {
       ret = netops::getsockopt(fd_, SOL_SOCKET, SO_ZEROCOPY, &val, &optlen);
 
       if (!ret) {
-        enable = val ? true : false;
+        enable = val != 0;
       }
     }
 
@@ -908,6 +910,10 @@ bool AsyncSocket::setZeroCopy(bool enable) {
   }
 
   return false;
+}
+
+void AsyncSocket::setZeroCopyEnableFunc(AsyncWriter::ZeroCopyEnableFunc func) {
+  zeroCopyEnableFunc_ = func;
 }
 
 void AsyncSocket::setZeroCopyReenableThreshold(size_t threshold) {
@@ -980,7 +986,7 @@ bool AsyncSocket::isZeroCopyMsg(const cmsghdr& cmsg) const {
 #ifdef FOLLY_HAVE_MSG_ERRQUEUE
   if ((cmsg.cmsg_level == SOL_IP && cmsg.cmsg_type == IP_RECVERR) ||
       (cmsg.cmsg_level == SOL_IPV6 && cmsg.cmsg_type == IPV6_RECVERR)) {
-    const struct sock_extended_err* serr =
+    auto serr =
         reinterpret_cast<const struct sock_extended_err*>(CMSG_DATA(&cmsg));
     return (
         (serr->ee_errno == 0) && (serr->ee_origin == SO_EE_ORIGIN_ZEROCOPY));
@@ -992,7 +998,7 @@ bool AsyncSocket::isZeroCopyMsg(const cmsghdr& cmsg) const {
 
 void AsyncSocket::processZeroCopyMsg(const cmsghdr& cmsg) {
 #ifdef FOLLY_HAVE_MSG_ERRQUEUE
-  const struct sock_extended_err* serr =
+  auto serr =
       reinterpret_cast<const struct sock_extended_err*>(CMSG_DATA(&cmsg));
   uint32_t hi = serr->ee_data;
   uint32_t lo = serr->ee_info;
@@ -1040,6 +1046,12 @@ void AsyncSocket::writeChain(
     unique_ptr<IOBuf>&& buf,
     WriteFlags flags) {
   adjustZeroCopyFlags(flags);
+
+  // adjustZeroCopyFlags can set zeroCopyEnabled_ to true
+  if (zeroCopyEnabled_ && !isSet(flags, WriteFlags::WRITE_MSG_ZEROCOPY) &&
+      zeroCopyEnableFunc_ && zeroCopyEnableFunc_(buf) && buf->isManaged()) {
+    flags |= WriteFlags::WRITE_MSG_ZEROCOPY;
+  }
 
   constexpr size_t kSmallSizeMax = 64;
   size_t count = buf->countChainElements();
@@ -1307,9 +1319,9 @@ void AsyncSocket::closeNow() {
         doClose();
       }
 
-      invokeConnectErr(socketClosedLocallyEx);
+      invokeConnectErr(getSocketClosedLocallyEx());
 
-      failAllWrites(socketClosedLocallyEx);
+      failAllWrites(getSocketClosedLocallyEx());
 
       if (readCallback_) {
         ReadCallback* callback = readCallback_;
@@ -1417,7 +1429,7 @@ void AsyncSocket::shutdownWriteNow() {
       netops::shutdown(fd_, SHUT_WR);
 
       // Immediately fail all write requests
-      failAllWrites(socketShutdownForWritesEx);
+      failAllWrites(getSocketShutdownForWritesEx());
       return;
     }
     case StateEnum::CONNECTING: {
@@ -1427,7 +1439,7 @@ void AsyncSocket::shutdownWriteNow() {
       shutdownFlags_ |= SHUT_WRITE_PENDING;
 
       // Immediately fail all write requests
-      failAllWrites(socketShutdownForWritesEx);
+      failAllWrites(getSocketShutdownForWritesEx());
       return;
     }
     case StateEnum::UNINIT:
@@ -1442,7 +1454,7 @@ void AsyncSocket::shutdownWriteNow() {
       // the writes, we will never try to call connect, so shut everything down
       shutdownFlags_ |= SHUT_WRITE;
       // Immediately fail all write requests
-      failAllWrites(socketShutdownForWritesEx);
+      failAllWrites(getSocketShutdownForWritesEx());
       return;
     case StateEnum::CLOSED:
     case StateEnum::ERROR:
@@ -1587,6 +1599,18 @@ void AsyncSocket::cachePeerAddress() const {
   }
 }
 
+void AsyncSocket::applyOptions(
+    const SocketOptionMap& options,
+    SocketOptionKey::ApplyPos pos) {
+  auto result = applySocketOptions(fd_, options, pos);
+  if (result != 0) {
+    throw AsyncSocketException(
+        AsyncSocketException::INTERNAL_ERROR,
+        withAddr("failed to set socket option"),
+        result);
+  }
+}
+
 bool AsyncSocket::isZeroCopyWriteInProgress() const noexcept {
   eventBase_->dcheckIsInEventBaseThread();
   return (!idZeroCopyBufPtrMap_.empty());
@@ -1716,7 +1740,7 @@ int AsyncSocket::setRecvBufSize(size_t bufsize) {
   return 0;
 }
 
-#if __linux__
+#if defined(__linux__)
 size_t AsyncSocket::getSendBufInUse() const {
   if (fd_ == NetworkSocket()) {
     std::stringstream issueString;
@@ -1790,7 +1814,7 @@ void AsyncSocket::ioReady(uint16_t events) noexcept {
   assert(events & EventHandler::READ_WRITE);
   eventBase_->dcheckIsInEventBaseThread();
 
-  uint16_t relevantEvents = uint16_t(events & EventHandler::READ_WRITE);
+  auto relevantEvents = uint16_t(events & EventHandler::READ_WRITE);
   EventBase* originalEventBase = eventBase_;
   // If we got there it means that either EventHandler::READ or
   // EventHandler::WRITE is set. Any of these flags can
@@ -1979,9 +2003,9 @@ void AsyncSocket::handleRead() noexcept {
   // AsyncSocket between threads properly.  This will be sufficient to ensure
   // that this thread sees the updated eventBase_ variable after
   // readDataAvailable() returns.)
-  uint16_t numReads = 0;
+  size_t numReads = maxReadsPerEvent_ ? maxReadsPerEvent_ : size_t(-1);
   EventBase* originalEventBase = eventBase_;
-  while (readCallback_ && eventBase_ == originalEventBase) {
+  while (readCallback_ && eventBase_ == originalEventBase && numReads--) {
     // Get the buffer to read into.
     void* buf = nullptr;
     size_t buflen = 0, offset = 0;
@@ -2004,7 +2028,7 @@ void AsyncSocket::handleRead() noexcept {
           "non-exception type");
       return failRead(__func__, ex);
     }
-    if (!isBufferMovable_ && (buf == nullptr || buflen == 0)) {
+    if (buf == nullptr || buflen == 0) {
       AsyncSocketException ex(
           AsyncSocketException::BAD_ARGS,
           "ReadCallback::getReadBuffer() returned "
@@ -2018,18 +2042,7 @@ void AsyncSocket::handleRead() noexcept {
     VLOG(4) << "this=" << this << ", AsyncSocket::handleRead() got "
             << bytesRead << " bytes";
     if (bytesRead > 0) {
-      if (!isBufferMovable_) {
-        readCallback_->readDataAvailable(size_t(bytesRead));
-      } else {
-        CHECK(kOpenSslModeMoveBufferOwnership);
-        VLOG(5) << "this=" << this << ", AsyncSocket::handleRead() got "
-                << "buf=" << buf << ", " << bytesRead << "/" << buflen
-                << ", offset=" << offset;
-        auto readBuf = folly::IOBuf::takeOwnership(buf, buflen);
-        readBuf->trimStart(offset);
-        readBuf->trimEnd(buflen - offset - bytesRead);
-        readCallback_->readBufferAvailable(std::move(readBuf));
-      }
+      readCallback_->readDataAvailable(size_t(bytesRead));
 
       // Fall through and continue around the loop if the read
       // completely filled the available buffer.
@@ -2069,14 +2082,11 @@ void AsyncSocket::handleRead() noexcept {
       callback->readEOF();
       return;
     }
-    if (maxReadsPerEvent_ && (++numReads >= maxReadsPerEvent_)) {
-      if (readCallback_ != nullptr) {
-        // We might still have data in the socket.
-        // (e.g. see comment in AsyncSSLSocket::checkForImmediateRead)
-        scheduleImmediateRead();
-      }
-      return;
-    }
+  }
+  if (readCallback_ != nullptr) {
+    // We might still have data in the socket.
+    // (e.g. see comment in AsyncSSLSocket::checkForImmediateRead)
+    scheduleImmediateRead();
   }
 }
 
@@ -2732,13 +2742,17 @@ void AsyncSocket::failWrite(
   VLOG(4) << "AsyncSocket(this=" << this << ", fd=" << fd_
           << ", state=" << state_ << " host=" << addr_.describe()
           << "): failed while writing in " << fn << "(): " << ex.what();
-  startFail();
+  if (closeOnFailedWrite_) {
+    startFail();
+  }
 
   if (callback != nullptr) {
     callback->writeErr(bytesWritten, ex);
   }
 
-  finishFail();
+  if (closeOnFailedWrite_) {
+    finishFail();
+  }
 }
 
 void AsyncSocket::failAllWrites(const AsyncSocketException& ex) {
@@ -2897,25 +2911,23 @@ std::ostream& operator<<(
   return os;
 }
 
-std::string AsyncSocket::withAddr(const std::string& s) {
+std::string AsyncSocket::withAddr(folly::StringPiece s) {
   // Don't use addr_ directly because it may not be initialized
   // e.g. if constructed from fd
   folly::SocketAddress peer, local;
   try {
     getLocalAddress(&local);
-  } catch (const std::exception&) {
-    // ignore
   } catch (...) {
     // ignore
   }
   try {
     getPeerAddress(&peer);
-  } catch (const std::exception&) {
-    // ignore
   } catch (...) {
     // ignore
   }
-  return s + " (peer=" + peer.describe() + ", local=" + local.describe() + ")";
+
+  return folly::to<std::string>(
+      s, " (peer=", peer.describe(), ", local=", local.describe(), ")");
 }
 
 void AsyncSocket::setBufferCallback(BufferCallback* cb) {

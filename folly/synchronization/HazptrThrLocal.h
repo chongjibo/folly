@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/synchronization/Hazptr-fwd.h>
@@ -112,7 +113,15 @@ class hazptr_tc {
       entry_[count_++].fill(hprec);
       return true;
     }
+    warning_tc_overflow();
     return false;
+  }
+
+  FOLLY_NOINLINE void warning_tc_overflow() {
+    static std::atomic<uint64_t> warning_count{0};
+    if ((warning_count++ % 10000) == 0) {
+      LOG(WARNING) << "Hazptr thread cache overflow " << this;
+    }
   }
 
   FOLLY_ALWAYS_INLINE uint8_t count() const noexcept {
@@ -148,10 +157,11 @@ class hazptr_tc {
   }
 }; // hazptr_tc
 
+struct hazptr_tc_tls_tag {};
 /** hazptr_tc_tls */
 template <template <typename> class Atom>
 FOLLY_ALWAYS_INLINE hazptr_tc<Atom>& hazptr_tc_tls() {
-  return folly::SingletonThreadLocal<hazptr_tc<Atom>, void>::get();
+  return folly::SingletonThreadLocal<hazptr_tc<Atom>, hazptr_tc_tls_tag>::get();
 }
 
 /**

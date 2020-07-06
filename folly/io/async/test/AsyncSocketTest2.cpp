@@ -1,11 +1,11 @@
 /*
- * Copyright 2010-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,7 @@
 #include <folly/ExceptionWrapper.h>
 #include <folly/Random.h>
 #include <folly/SocketAddress.h>
+#include <folly/io/SocketOptionMap.h>
 #include <folly/io/async/AsyncTimeout.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
@@ -40,8 +41,6 @@
 #include <memory>
 #include <thread>
 
-using std::cerr;
-using std::endl;
 using std::min;
 using std::string;
 using std::unique_ptr;
@@ -918,15 +917,13 @@ void testConnectOptWrite(size_t size1, size_t size2, bool close = false) {
 
   // Make sure the read callback received all of the data
   size_t bytesRead = 0;
-  for (vector<ReadCallback::Buffer>::const_iterator it = rcb.buffers.begin();
-       it != rcb.buffers.end();
-       ++it) {
+  for (const auto& buffer : rcb.buffers) {
     size_t start = bytesRead;
-    bytesRead += it->length;
+    bytesRead += buffer.length;
     size_t end = bytesRead;
     if (start < size1) {
       size_t cmpLen = min(size1, end) - start;
-      ASSERT_EQ(memcmp(it->buffer, buf1.get() + start, cmpLen), 0);
+      ASSERT_EQ(memcmp(buffer.buffer, buf1.get() + start, cmpLen), 0);
     }
     if (end > size1 && end <= size1 + size2) {
       size_t itOffset;
@@ -942,7 +939,7 @@ void testConnectOptWrite(size_t size1, size_t size2, bool close = false) {
         cmpLen = end - size1;
       }
       ASSERT_EQ(
-          memcmp(it->buffer + itOffset, buf2.get() + buf2Offset, cmpLen), 0);
+          memcmp(buffer.buffer + itOffset, buf2.get() + buf2Offset, cmpLen), 0);
     }
   }
   ASSERT_EQ(bytesRead, size1 + size2);
@@ -1152,7 +1149,7 @@ TEST(AsyncSocketTest, WriteErrorCallbackBytesWritten) {
 
   TestServer server(false, kSockBufSize);
 
-  AsyncSocket::OptionMap options{
+  SocketOptionMap options{
       {{SOL_SOCKET, SO_SNDBUF}, int(kSockBufSize)},
       {{SOL_SOCKET, SO_RCVBUF}, int(kSockBufSize)},
       {{IPPROTO_TCP, TCP_NODELAY}, 1},
@@ -1509,10 +1506,8 @@ TEST(AsyncSocketTest, ClosePendingWritesWhileClosing) {
   socket->closeNow();
 
   // Make sure writeError() was invoked on all of the pending write callbacks
-  for (WriteCallbackVector::const_iterator it = writeCallbacks.begin();
-       it != writeCallbacks.end();
-       ++it) {
-    ASSERT_EQ((*it)->state, STATE_FAILED);
+  for (const auto& writeCallback : writeCallbacks) {
+    ASSERT_EQ((writeCallback)->state, STATE_FAILED);
   }
 
   ASSERT_TRUE(socket->isClosedBySelf());
@@ -2336,7 +2331,7 @@ TEST(AsyncSocketTest, BufferTest) {
   TestServer server;
 
   EventBase evb;
-  AsyncSocket::OptionMap option{{{SOL_SOCKET, SO_SNDBUF}, 128}};
+  SocketOptionMap option{{{SOL_SOCKET, SO_SNDBUF}, 128}};
   std::shared_ptr<AsyncSocket> socket = AsyncSocket::newSocket(&evb);
   ConnCallback ccb;
   socket->connect(&ccb, server.getAddress(), 30, option);
@@ -2366,7 +2361,7 @@ TEST(AsyncSocketTest, BufferTestChain) {
   TestServer server;
 
   EventBase evb;
-  AsyncSocket::OptionMap option{{{SOL_SOCKET, SO_SNDBUF}, 128}};
+  SocketOptionMap option{{{SOL_SOCKET, SO_SNDBUF}, 128}};
   std::shared_ptr<AsyncSocket> socket = AsyncSocket::newSocket(&evb);
   ConnCallback ccb;
   socket->connect(&ccb, server.getAddress(), 30, option);
@@ -2405,7 +2400,7 @@ TEST(AsyncSocketTest, BufferTestChain) {
 TEST(AsyncSocketTest, BufferCallbackKill) {
   TestServer server;
   EventBase evb;
-  AsyncSocket::OptionMap option{{{SOL_SOCKET, SO_SNDBUF}, 128}};
+  SocketOptionMap option{{{SOL_SOCKET, SO_SNDBUF}, 128}};
   std::shared_ptr<AsyncSocket> socket = AsyncSocket::newSocket(&evb);
   ConnCallback ccb;
   socket->connect(&ccb, server.getAddress(), 30, option);
@@ -3205,10 +3200,10 @@ TEST_P(AsyncSocketErrMessageCallbackTest, ErrMessageCallback) {
   // set the number of error messages before socket is closed or callback reset
   const auto testParams = GetParam();
   errMsgCB.socket_ = socket.get();
-  if (testParams.resetCallbackAfter.hasValue()) {
+  if (testParams.resetCallbackAfter.has_value()) {
     errMsgCB.resetCallbackAfter_ = testParams.resetCallbackAfter.value();
   }
-  if (testParams.closeSocketAfter.hasValue()) {
+  if (testParams.closeSocketAfter.has_value()) {
     errMsgCB.closeSocketAfter_ = testParams.closeSocketAfter.value();
   }
 
@@ -3217,7 +3212,7 @@ TEST_P(AsyncSocketErrMessageCallbackTest, ErrMessageCallback) {
   int flags = SOF_TIMESTAMPING_OPT_ID | SOF_TIMESTAMPING_OPT_TSONLY |
       SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_OPT_CMSG |
       SOF_TIMESTAMPING_TX_SCHED;
-  AsyncSocket::OptionKey tstampingOpt = {SOL_SOCKET, SO_TIMESTAMPING};
+  SocketOptionKey tstampingOpt = {SOL_SOCKET, SO_TIMESTAMPING};
   EXPECT_EQ(tstampingOpt.apply(socket->getNetworkSocket(), flags), 0);
 
   // write()
@@ -3646,8 +3641,8 @@ TEST(AsyncSocketTest, V6TosReflectTest) {
                          EventBase* evb,
                          folly::SocketAddress sAddr) {
     clientSock = AsyncSocket::newSocket(evb);
-    AsyncSocket::OptionKey v6Opts = {IPPROTO_IPV6, IPV6_TCLASS};
-    AsyncSocket::OptionMap optionMap;
+    SocketOptionKey v6Opts = {IPPROTO_IPV6, IPV6_TCLASS};
+    SocketOptionMap optionMap;
     optionMap.insert({v6Opts, 0x2c});
     SocketAddress bindAddr("0.0.0.0", 0);
     clientSock->connect(ccb, sAddr, 30, optionMap, bindAddr);
@@ -3730,8 +3725,8 @@ TEST(AsyncSocketTest, V4TosReflectTest) {
                          EventBase* evb,
                          folly::SocketAddress sAddr) {
     clientSock = AsyncSocket::newSocket(evb);
-    AsyncSocket::OptionKey v4Opts = {IPPROTO_IP, IP_TOS};
-    AsyncSocket::OptionMap optionMap;
+    SocketOptionKey v4Opts = {IPPROTO_IP, IP_TOS};
+    SocketOptionMap optionMap;
     optionMap.insert({v4Opts, 0x2c});
     SocketAddress bindAddr("0.0.0.0", 0);
     clientSock->connect(ccb, sAddr, 30, optionMap, bindAddr);
@@ -3755,7 +3750,7 @@ TEST(AsyncSocketTest, V4TosReflectTest) {
 }
 #endif
 
-#if __linux__
+#if defined(__linux__)
 TEST(AsyncSocketTest, getBufInUse) {
   EventBase eventBase;
   std::shared_ptr<AsyncServerSocket> server(

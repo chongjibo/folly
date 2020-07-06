@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -277,11 +277,11 @@ TEST(RecordIOTest, validateRecordAPI) {
     buf->append(testSize);
     EXPECT_NE(buf, nullptr);
     auto wData = buf->writableData();
-    if (testSize > hdrSize) {
-      // if the testSize is more than header size, populate databytes with
-      // testChar
+    if (testSize >= hdrSize) {
+      // if the testSize is greater or equal than header size, populate buffer
+      // bytes with testChar
       buf->trimStart(hdrSize);
-      memset(wData, testChar, buf->length());
+      memset(wData, testChar, buf->capacity());
       recordio_helpers::prependHeader(buf, kTestFileId);
       buf->unshare();
       buf->coalesce();

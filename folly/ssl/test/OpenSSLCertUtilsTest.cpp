@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/ssl/OpenSSLCertUtils.h>
 
 #include <folly/Format.h>
@@ -21,6 +22,7 @@
 #include <folly/container/Enumerate.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/OpenSSL.h>
+#include <folly/portability/Time.h>
 #include <folly/ssl/Init.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
 
@@ -169,17 +171,17 @@ static void validateTestCertBundle(
     const std::vector<folly::ssl::X509UniquePtr>& certs) {
   EXPECT_EQ(certs.size(), 3);
   for (auto i : folly::enumerate(certs)) {
-    auto identity = folly::ssl::OpenSSLCertUtils::getCommonName(**i);
-    EXPECT_TRUE(identity);
-    EXPECT_EQ(*identity, folly::sformat("test cert {}", i.index + 1));
+    auto cn = folly::ssl::OpenSSLCertUtils::getCommonName(**i);
+    EXPECT_TRUE(cn);
+    EXPECT_EQ(*cn, folly::sformat("test cert {}", i.index + 1));
   }
 }
 
 // Validate parsed cert from kTestCertWithSan.
 static void validateTestCertWithSAN(X509* x509) {
   ASSERT_NE(nullptr, x509);
-  auto identity = folly::ssl::OpenSSLCertUtils::getCommonName(*x509);
-  EXPECT_EQ("127.0.0.1", identity.value());
+  auto cn = folly::ssl::OpenSSLCertUtils::getCommonName(*x509);
+  EXPECT_EQ("127.0.0.1", cn.value());
   auto altNames = folly::ssl::OpenSSLCertUtils::getSubjectAltNames(*x509);
   EXPECT_EQ(2, altNames.size());
   EXPECT_EQ("anotherexample.com", altNames[0]);
@@ -189,8 +191,8 @@ static void validateTestCertWithSAN(X509* x509) {
 TEST_P(OpenSSLCertUtilsTest, TestX509CN) {
   auto x509 = readCertFromFile(kTestCertWithoutSan);
   EXPECT_NE(x509, nullptr);
-  auto identity = folly::ssl::OpenSSLCertUtils::getCommonName(*x509);
-  EXPECT_EQ(identity.value(), "Asox Company");
+  auto cn = folly::ssl::OpenSSLCertUtils::getCommonName(*x509);
+  EXPECT_EQ(cn.value(), "Asox Company");
   auto sans = folly::ssl::OpenSSLCertUtils::getSubjectAltNames(*x509);
   EXPECT_EQ(sans.size(), 0);
 }
@@ -218,6 +220,19 @@ TEST_P(OpenSSLCertUtilsTest, TestX509Dates) {
   EXPECT_EQ(notBefore, "Feb 13 23:21:03 2017 GMT");
   auto notAfter = folly::ssl::OpenSSLCertUtils::getNotAfterTime(*x509);
   EXPECT_EQ(notAfter, "Jul  1 23:21:03 2044 GMT");
+}
+
+TEST_P(OpenSSLCertUtilsTest, TestASN1TimeToTimePoint) {
+  auto x509 = readCertFromData(kTestCertWithSan);
+  EXPECT_NE(x509, nullptr);
+  std::tm tm = {};
+  strptime("Feb 13 23:21:03 2017", "%b %d %H:%M:%S %Y", &tm);
+  auto expected = std::chrono::system_clock::from_time_t(timegm(&tm));
+  auto notBefore = X509_get_notBefore(x509.get());
+  auto result = folly::ssl::OpenSSLCertUtils::asnTimeToTimepoint(notBefore);
+  EXPECT_EQ(
+      std::chrono::time_point_cast<std::chrono::seconds>(expected),
+      std::chrono::time_point_cast<std::chrono::seconds>(result));
 }
 
 TEST_P(OpenSSLCertUtilsTest, TestX509Summary) {
@@ -294,18 +309,18 @@ TEST_P(OpenSSLCertUtilsTest, TestReadCertsFromMixedBuffer) {
 }
 
 TEST_P(OpenSSLCertUtilsTest, TestX509Digest) {
-  auto x509 = readCertFromFile(kTestCertWithoutSan);
+  auto x509 = readCertFromData(kTestCertWithSan);
   EXPECT_NE(x509, nullptr);
 
   auto sha1Digest = folly::ssl::OpenSSLCertUtils::getDigestSha1(*x509);
   EXPECT_EQ(
       folly::hexlify(folly::range(sha1Digest)),
-      "b84e951d6c4e6cc70346357fab43d7ed73a07b0f");
+      "692c24cbc0f595b668480a8b62e5cd6bf5041c64");
 
   auto sha2Digest = folly::ssl::OpenSSLCertUtils::getDigestSha256(*x509);
   EXPECT_EQ(
       folly::hexlify(folly::range(sha2Digest)),
-      "364d3a6a0b10d0635ce59b40c0b7f505ab2cd9fd0a06661cdc61d9cb8c9c9821");
+      "82f800877c004fc8e5d89d6646b15d135d2d4677d56dfcdf29a4698fce1c257f");
 }
 
 TEST_P(OpenSSLCertUtilsTest, TestX509Store) {

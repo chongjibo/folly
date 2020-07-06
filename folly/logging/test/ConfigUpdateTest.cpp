@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/dynamic.h>
 #include <folly/json.h>
 #include <folly/logging/LogCategory.h>
@@ -27,7 +28,6 @@
 #include <folly/test/TestUtils.h>
 
 using namespace folly;
-using ::testing::Pair;
 using ::testing::UnorderedElementsAre;
 
 namespace {
@@ -40,13 +40,13 @@ MATCHER_P(LogHandlerMatcherImpl, config, "") {
  * A helper function to use in EXPECT_THAT() for matching a TestLogHandler
  * with the specified type and options.
  */
+auto MatchLogHandler(const LogHandlerConfig& config) {
+  return LogHandlerMatcherImpl(config);
+}
 auto MatchLogHandler(
     StringPiece type,
     std::unordered_map<std::string, std::string> options) {
-  return LogHandlerMatcherImpl(LogHandlerConfig{type, std::move(options)});
-}
-auto MatchLogHandler(const LogHandlerConfig& config) {
-  return LogHandlerMatcherImpl(config);
+  return MatchLogHandler(LogHandlerConfig{type, std::move(options)});
 }
 
 } // namespace

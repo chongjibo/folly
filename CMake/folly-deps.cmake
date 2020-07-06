@@ -1,15 +1,41 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 include(CheckCXXSourceCompiles)
 include(CheckIncludeFileCXX)
 include(CheckFunctionExists)
 
-if(MSVC)
-  set(Boost_USE_STATIC_LIBS ON) #Force static lib in msvc
-endif(MSVC)
+set(
+  BOOST_LINK_STATIC "auto"
+  CACHE STRING
+  "Whether to link against boost statically or dynamically."
+)
+if("${BOOST_LINK_STATIC}" STREQUAL "auto")
+  # Default to linking boost statically on Windows with MSVC
+  if(MSVC)
+    set(FOLLY_BOOST_LINK_STATIC ON)
+  else()
+    set(FOLLY_BOOST_LINK_STATIC OFF)
+  endif()
+else()
+  set(FOLLY_BOOST_LINK_STATIC "${BOOST_LINK_STATIC}")
+endif()
+set(Boost_USE_STATIC_LIBS "${FOLLY_BOOST_LINK_STATIC}")
+
 find_package(Boost 1.51.0 MODULE
   COMPONENTS
     context
-    chrono
-    date_time
     filesystem
     program_options
     regex
@@ -26,10 +52,12 @@ list(APPEND FOLLY_INCLUDE_DIRECTORIES ${DOUBLE_CONVERSION_INCLUDE_DIR})
 
 find_package(Gflags MODULE)
 set(FOLLY_HAVE_LIBGFLAGS ${LIBGFLAGS_FOUND})
-list(APPEND FOLLY_LINK_LIBRARIES ${LIBGFLAGS_LIBRARY})
-list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBGFLAGS_INCLUDE_DIR})
-list(APPEND CMAKE_REQUIRED_LIBRARIES ${LIBGFLAGS_LIBRARY})
-list(APPEND CMAKE_REQUIRED_INCLUDES ${LIBGFLAGS_INCLUDE_DIR})
+if(LIBGFLAGS_FOUND)
+  list(APPEND FOLLY_LINK_LIBRARIES ${LIBGFLAGS_LIBRARY})
+  list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBGFLAGS_INCLUDE_DIR})
+  list(APPEND CMAKE_REQUIRED_LIBRARIES ${LIBGFLAGS_LIBRARY})
+  list(APPEND CMAKE_REQUIRED_INCLUDES ${LIBGFLAGS_INCLUDE_DIR})
+endif()
 
 find_package(Glog MODULE)
 set(FOLLY_HAVE_LIBGLOG ${GLOG_FOUND})
@@ -101,6 +129,10 @@ find_package(LibAIO)
 list(APPEND FOLLY_LINK_LIBRARIES ${LIBAIO_LIBRARIES})
 list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBAIO_INCLUDE_DIRS})
 
+find_package(LibUring)
+list(APPEND FOLLY_LINK_LIBRARIES ${LIBURING_LIBRARIES})
+list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBURING_INCLUDE_DIRS})
+
 find_package(Libsodium)
 list(APPEND FOLLY_LINK_LIBRARIES ${LIBSODIUM_LIBRARIES})
 list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBSODIUM_INCLUDE_DIRS})
@@ -120,7 +152,8 @@ if (UNWIND_LIBRARIES)
   list(APPEND FOLLY_LINK_LIBRARIES ${UNWIND_LIBRARIES})
   list(APPEND CMAKE_REQUIRED_LIBRARIES ${UNWIND_LIBRARIES})
 endif()
-check_function_exists(backtrace FOLLY_HAVE_BACKTRACE)
+find_package(Backtrace)
+set(FOLLY_HAVE_BACKTRACE ${Backtrace_FOUND})
 if (FOLLY_HAVE_ELF_H AND FOLLY_HAVE_BACKTRACE AND LIBDWARF_FOUND)
   set(FOLLY_USE_SYMBOLIZER ON)
 endif()
@@ -187,6 +220,14 @@ if (FOLLY_LIBRARY_SANITIZE_ADDRESS)
 endif()
 
 add_library(folly_deps INTERFACE)
+
+find_package(fmt CONFIG)
+if (NOT DEFINED fmt_CONFIG)
+    # Fallback on a normal search on the current system
+    find_package(fmt MODULE REQUIRED)
+endif()
+target_link_libraries(folly_deps INTERFACE fmt::fmt)
+
 list(REMOVE_DUPLICATES FOLLY_INCLUDE_DIRECTORIES)
 target_include_directories(folly_deps INTERFACE ${FOLLY_INCLUDE_DIRECTORIES})
 target_link_libraries(folly_deps INTERFACE
@@ -194,3 +235,4 @@ target_link_libraries(folly_deps INTERFACE
   ${FOLLY_SHINY_DEPENDENCIES}
   ${FOLLY_ASAN_FLAGS}
 )
+

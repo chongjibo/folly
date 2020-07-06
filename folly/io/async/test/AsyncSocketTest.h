@@ -1,11 +1,11 @@
 /*
- * Copyright 2015-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/io/async/AsyncSocket.h>
@@ -54,7 +55,7 @@ class ConnCallback : public folly::AsyncSocket::ConnectCallback {
   VoidCallback errorCallback;
 };
 
-class WriteCallback : public folly::AsyncTransportWrapper::WriteCallback {
+class WriteCallback : public folly::AsyncTransport::WriteCallback {
  public:
   WriteCallback()
       : state(STATE_WAITING),
@@ -87,7 +88,7 @@ class WriteCallback : public folly::AsyncTransportWrapper::WriteCallback {
   VoidCallback errorCallback;
 };
 
-class ReadCallback : public folly::AsyncTransportWrapper::ReadCallback {
+class ReadCallback : public folly::AsyncTransport::ReadCallback {
  public:
   explicit ReadCallback(size_t _maxBufferSz = 4096)
       : state(STATE_WAITING),
@@ -96,10 +97,8 @@ class ReadCallback : public folly::AsyncTransportWrapper::ReadCallback {
         maxBufferSz(_maxBufferSz) {}
 
   ~ReadCallback() override {
-    for (std::vector<Buffer>::iterator it = buffers.begin();
-         it != buffers.end();
-         ++it) {
-      it->free();
+    for (auto& buffer : buffers) {
+      buffer.free();
     }
     currentBuffer.free();
   }

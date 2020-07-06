@@ -1,11 +1,11 @@
 /*
- * Copyright 2013-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -228,6 +228,8 @@ class IOBuf {
   enum TakeOwnershipOp { TAKE_OWNERSHIP };
   enum CopyBufferOp { COPY_BUFFER };
 
+  enum class CombinedOption { DEFAULT, COMBINED, SEPARATE };
+
   typedef ByteRange value_type;
   typedef Iterator iterator;
   typedef Iterator const_iterator;
@@ -277,6 +279,20 @@ class IOBuf {
   static std::unique_ptr<IOBuf> createChain(
       size_t totalCapacity,
       std::size_t maxBufCapacity);
+
+  /**
+   * Uses folly::goodMallocSize() to figure out what the largest capacity would
+   * be that would trigger the same underlying allocation size as would be
+   * triggered by the given capacity.
+   *
+   * Note that IOBufs do this up-sizing for you: they will round up to the full
+   * allocation size and make that capacity available to you without your using
+   * this function. This just lets you introspect into that process, so you can
+   * for example figure out whether a given IOBuf can be usefully compacted.
+   */
+  static size_t goodSize(
+      size_t minCapacity,
+      CombinedOption combined = CombinedOption::DEFAULT);
 
   /**
    * Create a new IOBuf pointing to an existing data buffer.
@@ -986,7 +1002,7 @@ class IOBuf {
   }
 
   /**
-   * For most of the  use-cases where it seems like a good idea to call this
+   * For most of the use-cases where it seems like a good idea to call this
    * function, what you really want is `isSharedOne()`.
    *
    * If this IOBuf is managed by the usual refcounting mechanism (ie
@@ -1020,19 +1036,7 @@ class IOBuf {
       return true;
     }
 
-    if (LIKELY(!(flags() & kFlagMaybeShared))) {
-      return false;
-    }
-
-    // kFlagMaybeShared is set, so we need to check the reference count.
-    // (Checking the reference count requires an atomic operation, which is why
-    // we prefer to only check kFlagMaybeShared if possible.)
-    bool shared = sharedInfo()->refcount.load(std::memory_order_acquire) > 1;
-    if (!shared) {
-      // we're the last one left
-      clearFlags(kFlagMaybeShared);
-    }
-    return shared;
+    return sharedInfo()->refcount.load(std::memory_order_acquire) > 1;
   }
 
   /**
@@ -1409,8 +1413,7 @@ class IOBuf {
     // as these flags are stashed in the least significant 2 bits of a
     // max-align-aligned pointer.
     kFlagFreeSharedInfo = 0x1,
-    kFlagMaybeShared = 0x2,
-    kFlagMask = kFlagFreeSharedInfo | kFlagMaybeShared
+    kFlagMask = (1 << 2 /* least significant bits */) - 1,
   };
 
   struct SharedInfoObserverEntryBase {
@@ -1541,7 +1544,7 @@ class IOBuf {
   std::size_t capacity_{0};
 
   // Pack flags in least significant 2 bits, sharedInfo in the rest
-  mutable uintptr_t flagsAndSharedInfo_{0};
+  uintptr_t flagsAndSharedInfo_{0};
 
   static inline uintptr_t packFlagsAndSharedInfo(
       uintptr_t flags,
@@ -1567,12 +1570,12 @@ class IOBuf {
   }
 
   // flags_ are changed from const methods
-  inline void setFlags(uintptr_t flags) const noexcept {
+  inline void setFlags(uintptr_t flags) noexcept {
     DCHECK_EQ(flags & ~kFlagMask, 0u);
     flagsAndSharedInfo_ |= flags;
   }
 
-  inline void clearFlags(uintptr_t flags) const noexcept {
+  inline void clearFlags(uintptr_t flags) noexcept {
     DCHECK_EQ(flags & ~kFlagMask, 0u);
     flagsAndSharedInfo_ &= ~flags;
   }

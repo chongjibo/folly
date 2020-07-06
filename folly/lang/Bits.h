@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,6 +32,9 @@
  *
  * nextPowTwo(x)  [constexpr]
  *    Finds the next power of two >= x.
+ *
+ * strictNextPowTwo(x)  [constexpr]
+ *    Finds the next power of two > x.
  *
  * isPowTwo(x)  [constexpr]
  *    return true iff x is a power of two
@@ -64,6 +67,10 @@
 #include <folly/lang/Assume.h>
 #include <folly/portability/Builtins.h>
 
+#if __has_include(<bit>)
+#include <bit>
+#endif
+
 namespace folly {
 
 #if __cpp_lib_bit_cast
@@ -77,13 +84,13 @@ template <
     typename To,
     typename From,
     std::enable_if_t<
-        sizeof(From) == sizeof(To) && std::is_trivial<To>::value &&
+        sizeof(From) == sizeof(To) && is_trivially_copyable<To>::value &&
             is_trivially_copyable<From>::value,
         int> = 0>
 To bit_cast(const From& src) noexcept {
-  To to;
-  std::memcpy(&to, &src, sizeof(From));
-  return to;
+  aligned_storage_for_t<To> storage;
+  std::memcpy(&storage, &src, sizeof(From));
+  return reinterpret_cast<To&>(storage);
 }
 
 #endif
@@ -204,6 +211,18 @@ inline constexpr bool isPowTwo(T const v) {
   return (v != 0) && !(v & (v - 1));
 }
 
+template <class T>
+inline constexpr T strictNextPowTwo(T const v) {
+  static_assert(std::is_unsigned<T>::value, "signed type");
+  return nextPowTwo(T(v + 1));
+}
+
+template <class T>
+inline constexpr T strictPrevPowTwo(T const v) {
+  static_assert(std::is_unsigned<T>::value, "signed type");
+  return v > 1 ? prevPowTwo(T(v - 1)) : T(0);
+}
+
 /**
  * Endianness detection and manipulation primitives.
  */
@@ -317,6 +336,8 @@ struct Unaligned;
 /**
  * Representation of an unaligned value of a POD type.
  */
+FOLLY_PUSH_WARNING
+FOLLY_CLANG_DISABLE_WARNING("-Wpacked")
 FOLLY_PACK_PUSH
 template <class T>
 struct Unaligned<T, typename std::enable_if<std::is_pod<T>::value>::type> {
@@ -325,6 +346,7 @@ struct Unaligned<T, typename std::enable_if<std::is_pod<T>::value>::type> {
   T value;
 } FOLLY_PACK_ATTR;
 FOLLY_PACK_POP
+FOLLY_POP_WARNING
 
 /**
  * Read an unaligned value of type T and return it.

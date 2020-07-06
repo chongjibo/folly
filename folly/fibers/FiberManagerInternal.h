@@ -1,11 +1,11 @@
 /*
- * Copyright 2014-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <functional>
@@ -87,11 +88,13 @@ class FiberManager : public ::folly::Executor {
 
     /**
      * Sanitizers need a lot of extra stack space. 16x is a conservative
-     * estimate, but 8x also worked with tests where it mattered. Note that
-     * over-allocating here does not necessarily increase RSS, since unused
-     * memory is pretty much free.
+     * estimate, but 8x also worked with tests where it mattered. Similarly,
+     * debug builds need extra stack space due to reduced inlining.
+     *
+     * Note that over-allocating here does not necessarily increase RSS, since
+     * unused memory is pretty much free.
      */
-    size_t stackSizeMultiplier{kIsSanitize ? 16 : 1};
+    size_t stackSizeMultiplier{kIsSanitize ? 16 : (kIsDebug ? 2 : 1)};
 
     /**
      * Record exact amount of stack used.
@@ -142,8 +145,8 @@ class FiberManager : public ::folly::Executor {
    * with different Option, on the same EventBase.
    */
   struct FrozenOptions {
-    explicit FrozenOptions(Options options_)
-        : options(std::move(options_)), token(create(options)) {}
+    explicit FrozenOptions(Options opts)
+        : options(std::move(opts)), token(create(options)) {}
 
     const Options options;
     const ssize_t token;
@@ -199,6 +202,11 @@ class FiberManager : public ::folly::Executor {
    * This should only be called by a LoopController.
    */
   void loopUntilNoReadyImpl();
+
+  /**
+   * This should only be called by a LoopController.
+   */
+  void runEagerFiberImpl(Fiber*);
 
   /**
    * This should only be called by a LoopController.
@@ -416,6 +424,10 @@ class FiberManager : public ::folly::Executor {
   static FiberManager& getFiberManager();
   static FiberManager* getFiberManagerUnsafe();
 
+  const Options& getOptions() const {
+    return options_;
+  }
+
  private:
   friend class Baton;
   friend class Fiber;
@@ -489,7 +501,7 @@ class FiberManager : public ::folly::Executor {
    * When we are inside FiberManager loop this points to FiberManager. Otherwise
    * it's nullptr
    */
-  static FOLLY_TLS FiberManager* currentFiberManager_;
+  static FiberManager*& getCurrentFiberManager();
 
   /**
    * Allocator used to allocate stack for Fibers in the pool.
@@ -674,13 +686,7 @@ typename FirstArgOf<F>::type::value_type inline await(F&& func);
  * @return value returned by func().
  */
 template <typename F>
-invoke_result_t<F> inline runInMainContext(F&& func) {
-  auto fm = FiberManager::getFiberManagerUnsafe();
-  if (UNLIKELY(fm == nullptr)) {
-    return func();
-  }
-  return fm->runInMainContext(std::forward<F>(func));
-}
+invoke_result_t<F> inline runInMainContext(F&& func);
 
 /**
  * Returns a refference to a fiber-local context for given Fiber. Should be

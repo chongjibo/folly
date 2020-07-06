@@ -1,3 +1,17 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from folly.executor cimport get_executor
 from cpython cimport Py_buffer
 from weakref import WeakValueDictionary
@@ -11,12 +25,14 @@ __all__ = ['IOBuf']
 
 cdef unique_ptr[cIOBuf] from_python_buffer(memoryview view):
     """Take a python object that supports buffer protocol"""
+    if not view.is_c_contig() and not view.is_f_contig():
+        raise ValueError("View must be contiguous")
     return move(
         iobuf_from_python(
             get_executor(),
             <PyObject*>view,
             view.view.buf,
-            view.shape[0],
+            view.view.len,
         )
     )
 
@@ -38,6 +54,9 @@ cdef class IOBuf:
         self._hash = None
         __cache[(<unsigned long>self._this, id(self))] = self
 
+    def __dealloc__(self):
+        self._ours.reset()
+
     @staticmethod
     cdef IOBuf create(cIOBuf* this, object parent):
         key = (<unsigned long>this, id(parent))
@@ -48,6 +67,9 @@ cdef class IOBuf:
             inst._parent = parent
             __cache[key] = inst
         return inst
+
+    cdef void cleanup(self):
+        self._ours.reset()
 
     cdef unique_ptr[cIOBuf] c_clone(self):
         return move(self._this.clone())
@@ -115,7 +137,7 @@ cdef class IOBuf:
         "Iterates through the chain of buffers returning a memory view for each"
         yield memoryview(self, PyBUF_C_CONTIGUOUS)
         next = self.next
-        while next is not None and next != self:
+        while next is not None and next is not self:
             yield memoryview(next, PyBUF_C_CONTIGUOUS)
             next = next.next
 

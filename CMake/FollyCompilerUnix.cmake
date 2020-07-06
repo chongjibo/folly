@@ -1,3 +1,17 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Provide an option to control the -std argument for the C++ compiler.
 # We don't use CMAKE_CXX_STANDARD since it requires at least CMake 3.8
 # to support C++17.
@@ -26,7 +40,6 @@ function(apply_folly_compile_options_to_target THETARGET)
     PRIVATE
       _REENTRANT
       _GNU_SOURCE
-      "FOLLY_XLOG_STRIP_PREFIXES=\"${FOLLY_DIR_PREFIXES}\""
   )
   target_compile_options(${THETARGET}
     PRIVATE

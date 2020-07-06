@@ -1,11 +1,11 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -137,6 +137,29 @@ TEST(Bits, nextPowTwoClz) {
   EXPECT_EQ(1ull << 63, nextPowTwo((1ull << 62) + 1));
 }
 
+TEST(Bits, strictNextPowTwoClz) {
+  EXPECT_EQ(1, strictNextPowTwo(0u));
+  EXPECT_EQ(2, strictNextPowTwo(1u));
+  EXPECT_EQ(4, strictNextPowTwo(2u));
+  EXPECT_EQ(4, strictNextPowTwo(3u));
+  EXPECT_EQ(8, strictNextPowTwo(4u));
+  EXPECT_EQ(8, strictNextPowTwo(5u));
+  EXPECT_EQ(8, strictNextPowTwo(6u));
+  EXPECT_EQ(8, strictNextPowTwo(7u));
+  EXPECT_EQ(16, strictNextPowTwo(8u));
+  EXPECT_EQ(16, strictNextPowTwo(9u));
+  EXPECT_EQ(16, strictNextPowTwo(13u));
+  EXPECT_EQ(32, strictNextPowTwo(16u));
+  EXPECT_EQ(512, strictNextPowTwo(510u));
+  EXPECT_EQ(512, strictNextPowTwo(511u));
+  EXPECT_EQ(1024, strictNextPowTwo(512u));
+  EXPECT_EQ(1024, strictNextPowTwo(513u));
+  EXPECT_EQ(1024, strictNextPowTwo(777u));
+  EXPECT_EQ(1ul << 31, strictNextPowTwo((1ul << 31) - 1));
+  EXPECT_EQ(1ull << 32, strictNextPowTwo((1ull << 32) - 1));
+  EXPECT_EQ(1ull << 63, strictNextPowTwo((1ull << 62) + 1));
+}
+
 TEST(Bits, prevPowTwoClz) {
   EXPECT_EQ(0, prevPowTwo(0u));
   EXPECT_EQ(1, prevPowTwo(1u));
@@ -158,6 +181,29 @@ TEST(Bits, prevPowTwoClz) {
   EXPECT_EQ(1ul << 30, prevPowTwo((1ul << 31) - 1));
   EXPECT_EQ(1ull << 31, prevPowTwo((1ull << 32) - 1));
   EXPECT_EQ(1ull << 62, prevPowTwo((1ull << 62) + 1));
+}
+
+TEST(Bits, strictPrevPowTwoClz) {
+  EXPECT_EQ(0, strictPrevPowTwo(0u));
+  EXPECT_EQ(0, strictPrevPowTwo(1u));
+  EXPECT_EQ(1, strictPrevPowTwo(2u));
+  EXPECT_EQ(2, strictPrevPowTwo(3u));
+  EXPECT_EQ(2, strictPrevPowTwo(4u));
+  EXPECT_EQ(4, strictPrevPowTwo(5u));
+  EXPECT_EQ(4, strictPrevPowTwo(6u));
+  EXPECT_EQ(4, strictPrevPowTwo(7u));
+  EXPECT_EQ(4, strictPrevPowTwo(8u));
+  EXPECT_EQ(8, strictPrevPowTwo(9u));
+  EXPECT_EQ(8, strictPrevPowTwo(13u));
+  EXPECT_EQ(8, strictPrevPowTwo(16u));
+  EXPECT_EQ(256, strictPrevPowTwo(510u));
+  EXPECT_EQ(256, strictPrevPowTwo(511u));
+  EXPECT_EQ(256, strictPrevPowTwo(512u));
+  EXPECT_EQ(512, strictPrevPowTwo(513u));
+  EXPECT_EQ(512, strictPrevPowTwo(777u));
+  EXPECT_EQ(1ul << 30, strictPrevPowTwo((1ul << 31) - 1));
+  EXPECT_EQ(1ull << 31, strictPrevPowTwo((1ull << 32) - 1));
+  EXPECT_EQ(1ull << 62, strictPrevPowTwo((1ull << 62) + 1));
 }
 
 TEST(Bits, isPowTwo) {
@@ -255,16 +301,25 @@ TEST(Bits, BitCastBasic) {
   auto one = std::make_unique<int>();
   auto two = folly::bit_cast<std::uintptr_t>(one.get());
   EXPECT_EQ(folly::bit_cast<int*>(two), one.get());
+
+  struct FancyInt {
+    FancyInt() {
+      ADD_FAILURE() << "Default constructor should not be called by bit_cast";
+    }
+
+    int value;
+  };
+
+  int x = 5;
+  auto bi = folly::bit_cast<FancyInt>(x);
+  EXPECT_EQ(x, bi.value);
+}
+
+TEST(Bits, BitCastCompatibilityTest) {
+  auto one = folly::Random::rand64();
+  auto pointer = folly::bit_cast<std::uintptr_t>(one);
+  auto two = folly::bit_cast<std::uint64_t>(pointer);
+  EXPECT_EQ(one, two);
 }
 
 } // namespace folly
-
-TEST(Bits, BitCastCompatibilityTest) {
-  using namespace folly;
-  using namespace std;
-
-  auto one = folly::Random::rand64();
-  auto pointer = bit_cast<std::uintptr_t>(one);
-  auto two = bit_cast<std::uint64_t>(pointer);
-  EXPECT_EQ(one, two);
-}

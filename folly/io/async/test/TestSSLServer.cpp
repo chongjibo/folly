@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,13 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/io/async/test/TestSSLServer.h>
+#include <folly/portability/OpenSSL.h>
 
 namespace folly {
 
 const char* kTestCert = "folly/io/async/test/certs/tests-cert.pem";
 const char* kTestKey = "folly/io/async/test/certs/tests-key.pem";
 const char* kTestCA = "folly/io/async/test/certs/ca-cert.pem";
+const char* kTestCertCN = "Asox Company";
 
 const char* kClientTestCert = "folly/io/async/test/certs/client_cert.pem";
 const char* kClientTestKey = "folly/io/async/test/certs/client_key.pem";
@@ -40,6 +43,9 @@ TestSSLServer::TestSSLServer(SSLServerAcceptCallbackBase* acb, bool enableTFO)
   ctx_->loadCertificate(kTestCert);
   ctx_->loadPrivateKey(kTestKey);
   ctx_->ciphers("ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH");
+  // By default, SSLContext disables OpenSSL's internal session cache.
+  // Enable it here on the server for testing session reuse.
+  SSL_CTX_set_session_cache_mode(ctx_->getSSLCtx(), SSL_SESS_CACHE_SERVER);
 
   init(enableTFO);
 }

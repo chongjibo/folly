@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <experimental/coroutine>
@@ -21,6 +22,8 @@
 #include <folly/Executor.h>
 #include <folly/Traits.h>
 #include <folly/experimental/coro/Traits.h>
+#include <folly/experimental/coro/WithCancellation.h>
+#include <folly/experimental/coro/detail/Malloc.h>
 #include <folly/io/async/Request.h>
 #include <folly/lang/CustomizationPoint.h>
 
@@ -38,8 +41,17 @@ class ViaCoroutine {
  public:
   class promise_type {
    public:
-    promise_type(folly::Executor::KeepAlive<> executor) noexcept
+    // Passed as lvalue by compiler, but should have no other dependencies
+    promise_type(folly::Executor::KeepAlive<>& executor) noexcept
         : executor_(std::move(executor)) {}
+
+    static void* operator new(std::size_t size) {
+      return ::folly_coro_async_malloc(size);
+    }
+
+    static void operator delete(void* ptr, std::size_t size) {
+      ::folly_coro_async_free(ptr, size);
+    }
 
     ViaCoroutine get_return_object() noexcept {
       return ViaCoroutine{
@@ -47,11 +59,11 @@ class ViaCoroutine {
               *this)};
     }
 
-    std::experimental::suspend_always initial_suspend() {
+    std::experimental::suspend_always initial_suspend() noexcept {
       return {};
     }
 
-    auto final_suspend() {
+    auto final_suspend() noexcept {
       struct Awaiter {
         bool await_ready() noexcept {
           return false;
@@ -170,7 +182,7 @@ class ViaIfAsyncAwaiter {
   explicit ViaIfAsyncAwaiter(
       folly::Executor::KeepAlive<> executor,
       Awaitable&& awaitable)
-      : viaCoroutine_(detail::ViaCoroutine::create(executor)),
+      : viaCoroutine_(detail::ViaCoroutine::create(std::move(executor))),
         awaiter_(
             folly::coro::get_awaiter(static_cast<Awaitable&&>(awaitable))) {}
 
@@ -215,7 +227,8 @@ class ViaIfAsyncAwaiter {
           int> = 0>
   auto
   await_suspend(std::experimental::coroutine_handle<> continuation) noexcept(
-      noexcept(awaiter_.await_suspend(continuation))) -> Result {
+      noexcept(std::declval<Awaiter&>().await_suspend(continuation)))
+      -> Result {
     return awaiter_.await_suspend(
         viaCoroutine_.getWrappedCoroutine(continuation));
   }
@@ -227,7 +240,8 @@ class ViaIfAsyncAwaiter {
           int> = 0>
   auto
   await_suspend(std::experimental::coroutine_handle<> continuation) noexcept(
-      noexcept(awaiter_.await_suspend(continuation))) -> Result {
+      noexcept(std::declval<Awaiter&>().await_suspend(continuation)))
+      -> Result {
     return awaiter_.await_suspend(
         viaCoroutine_.getWrappedCoroutineWithSavedContext(continuation));
   }
@@ -280,7 +294,8 @@ template <typename Awaitable>
 auto operator co_await(ViaIfAsyncAwaitable<Awaitable>&& awaitable)
     -> ViaIfAsyncAwaiter<folly::coro::awaiter_type_t<Awaitable>> {
   return ViaIfAsyncAwaiter<folly::coro::awaiter_type_t<Awaitable>>{
-      awaitable.executor_, static_cast<Awaitable&&>(awaitable.awaitable_)};
+      std::move(awaitable.executor_),
+      static_cast<Awaitable&&>(awaitable.awaitable_)};
 }
 
 template <typename Awaitable>
@@ -294,7 +309,7 @@ template <typename Awaitable>
 auto operator co_await(const ViaIfAsyncAwaitable<Awaitable>&& awaitable)
     -> ViaIfAsyncAwaiter<folly::coro::awaiter_type_t<const Awaitable&&>> {
   return ViaIfAsyncAwaiter<folly::coro::awaiter_type_t<const Awaitable&&>>{
-      awaitable.executor_,
+      std::move(awaitable.executor_),
       static_cast<const Awaitable&&>(awaitable.awaitable_)};
 }
 
@@ -428,6 +443,16 @@ class TrySemiAwaitable {
       TrySemiAwaitable&& self) noexcept {
     return makeTryAwaiter(get_awaiter(
         co_viaIfAsync(std::move(executor), std::move(self.semiAwaitable_))));
+  }
+
+  friend auto co_withCancellation(
+      const CancellationToken& cancelToken,
+      TrySemiAwaitable&& awaitable) {
+    auto cancelAwaitable = folly::coro::co_withCancellation(
+        std::move(cancelToken),
+        static_cast<SemiAwaitable&&>(awaitable.semiAwaitable_));
+    return TrySemiAwaitable<decltype(cancelAwaitable)>(
+        std::move(cancelAwaitable));
   }
 
  private:
