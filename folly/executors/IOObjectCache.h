@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,9 +60,7 @@ class IOObjectCache {
     return it->second;
   }
 
-  void setFactory(TFactory factory) {
-    factory_ = std::move(factory);
-  }
+  void setFactory(TFactory factory) { factory_ = std::move(factory); }
 
  private:
   folly::ThreadLocal<std::map<folly::EventBase*, std::shared_ptr<T>>> cache_;

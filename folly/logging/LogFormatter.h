@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,7 +41,6 @@ class LogFormatter {
    *     message->getCategory()
    */
   virtual std::string formatMessage(
-      const LogMessage& message,
-      const LogCategory* handlerCategory) = 0;
+      const LogMessage& message, const LogCategory* handlerCategory) = 0;
 };
 } // namespace folly

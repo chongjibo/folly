@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,8 @@ namespace folly {
 
 template <class F>
 auto async(F&& fn) {
-  return folly::via<F>(getCPUExecutor().get(), std::forward<F>(fn));
+  return folly::via<F>(
+      getUnsafeMutableGlobalCPUExecutor().get(), std::forward<F>(fn));
 }
 
 } // namespace folly

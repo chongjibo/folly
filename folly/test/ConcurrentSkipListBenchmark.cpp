@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// @author: Xin Liu <xliux@fb.com>
+#include <folly/ConcurrentSkipList.h>
 
 #include <map>
 #include <memory>
@@ -22,12 +22,12 @@
 #include <set>
 #include <thread>
 
+#include <glog/logging.h>
+
 #include <folly/Benchmark.h>
-#include <folly/ConcurrentSkipList.h>
 #include <folly/hash/Hash.h>
 #include <folly/portability/GFlags.h>
 #include <folly/synchronization/RWSpinLock.h>
-#include <glog/logging.h>
 
 DEFINE_int32(num_threads, 12, "num concurrent threads to test");
 
@@ -406,15 +406,15 @@ class ConcurrentAccessData {
   }
 
   inline bool setFind(int idx, ValueType val) {
-    RWSpinLock::ReadHolder g(locks_[idx]);
+    std::shared_lock g(*locks_[idx]);
     return sets_[idx].find(val) == sets_[idx].end();
   }
   inline void setInsert(int idx, ValueType val) {
-    RWSpinLock::WriteHolder g(locks_[idx]);
+    std::unique_lock g(*locks_[idx]);
     sets_[idx].insert(val);
   }
   inline void setErase(int idx, ValueType val) {
-    RWSpinLock::WriteHolder g(locks_[idx]);
+    std::unique_lock g(*locks_[idx]);
     sets_[idx].erase(val);
   }
 

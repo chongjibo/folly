@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ TimedMutex::LockResult TimedMutex::lockHelper(WaitFunc&& waitFunc) {
     return LockResult::SUCCESS;
   }
 
-  const auto isOnFiber = onFiber();
+  const auto isOnFiber = options_.stealing_ && onFiber();
 
   if (!isOnFiber && notifiedFiber_ != nullptr) {
     // lock() was called on a thread and while some other fiber was already
@@ -173,7 +173,10 @@ void TimedRWMutexImpl<ReaderPriority, BatonType>::lock_shared() {
     read_waiters_.push_back(waiter);
     ulock.unlock();
     waiter.baton.wait();
-    assert(state_ == State::READ_LOCKED);
+    if (folly::kIsDebug) {
+      std::unique_lock<folly::SpinLock> assertLock{lock_};
+      assert(state_ == State::READ_LOCKED);
+    }
     return;
   }
   assert(

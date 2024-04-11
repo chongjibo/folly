@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/futures/SharedPromise.h>
+
 #include <folly/portability/GTest.h>
 
 using namespace folly;
@@ -149,10 +150,19 @@ TEST(SharedPromise, interruptHandler) {
 
 TEST(SharedPromise, ConstMethods) {
   SharedPromise<int> p;
-  EXPECT_FALSE(folly::as_const(p).isFulfilled());
-  auto fut = folly::as_const(p).getFuture();
+  EXPECT_FALSE(std::as_const(p).isFulfilled());
+  auto fut = std::as_const(p).getFuture();
   EXPECT_FALSE(fut.isReady());
   p.setValue(42);
   EXPECT_TRUE(fut.isReady());
   EXPECT_EQ(42, std::move(fut).get());
+}
+
+TEST(SharedPromise, InterruptHandlerSetsException) {
+  folly::SharedPromise<int> p;
+  p.setInterruptHandler([&](auto&& ew) { p.setException(ew); });
+  auto f = p.getSemiFuture();
+  f.cancel();
+  ASSERT_TRUE(f.isReady());
+  EXPECT_THROW(std::move(f).get(), FutureCancellation);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,19 +56,15 @@ ScopedEventBaseThread::ScopedEventBaseThread(EventBaseManager* ebm)
     : ScopedEventBaseThread(ebm, "") {}
 
 ScopedEventBaseThread::ScopedEventBaseThread(
-    EventBaseManager* ebm,
-    StringPiece name)
-    : ScopedEventBaseThread(
-          std::unique_ptr<EventBaseBackendBase>(),
-          ebm,
-          name) {}
+    EventBaseManager* ebm, StringPiece name)
+    : ScopedEventBaseThread(EventBase::Options(), ebm, name) {}
 
 ScopedEventBaseThread::ScopedEventBaseThread(
-    std::unique_ptr<EventBaseBackendBase>&& backend,
+    EventBase::Options eventBaseOptions,
     EventBaseManager* ebm,
     StringPiece name)
     : ebm_(ebm ? ebm : EventBaseManager::get()) {
-  new (&eb_) EventBase(std::move(backend));
+  new (&eb_) EventBase(std::move(eventBaseOptions));
   th_ = thread(run, ebm_, &eb_, &stop_, name);
   eb_.waitUntilRunning();
 }

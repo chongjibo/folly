@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,13 +32,15 @@
 // If FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE differs across compilation
 // units the program will fail to link due to a missing definition of
 // folly::container::detail::F14LinkCheck<X>::check() for some X.
-#if (FOLLY_SSE >= 2 || (FOLLY_NEON && FOLLY_AARCH64)) && !FOLLY_MOBILE
+#if (FOLLY_SSE >= 2 || (FOLLY_NEON && FOLLY_AARCH64) || FOLLY_RISCV64) && \
+    !FOLLY_MOBILE &&                                                      \
+    !(defined(FOLLY_F14_FORCE_FALLBACK) && FOLLY_F14_FORCE_FALLBACK)
 #define FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE 1
 #else
 #define FOLLY_F14_VECTOR_INTRINSICS_AVAILABLE 0
 #endif
 
-#if FOLLY_SSE_PREREQ(4, 2) || __ARM_FEATURE_CRC32
+#if FOLLY_SSE_PREREQ(4, 2) || FOLLY_ARM_FEATURE_CRC32
 #define FOLLY_F14_CRC_INTRINSIC_AVAILABLE 1
 #else
 #define FOLLY_F14_CRC_INTRINSIC_AVAILABLE 0

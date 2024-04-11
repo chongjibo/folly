@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 #include <folly/logging/LogLevel.h>
 #include <folly/logging/LogMessage.h>
 #include <folly/portability/Time.h>
+#include <folly/system/ThreadName.h>
 
 namespace {
 using folly::LogLevel;
@@ -44,8 +45,7 @@ StringPiece getGlogLevelName(LogLevel level) {
 namespace folly {
 
 std::string GlogStyleFormatter::formatMessage(
-    const LogMessage& message,
-    const LogCategory* /* handlerCategory */) {
+    const LogMessage& message, const LogCategory* /* handlerCategory */) {
   // Get the local time info
   struct tm ltime;
   auto timeSinceEpoch = message.getTimestamp().time_since_epoch();
@@ -60,18 +60,34 @@ std::string GlogStyleFormatter::formatMessage(
   }
 
   auto basename = message.getFileBaseName();
-  auto headerFormatter = folly::format(
-      "{}{:02d}{:02d} {:02d}:{:02d}:{:02d}.{:06d} {:5d} {}:{}] ",
-      getGlogLevelName(message.getLevel())[0],
-      ltime.tm_mon + 1,
-      ltime.tm_mday,
-      ltime.tm_hour,
-      ltime.tm_min,
-      ltime.tm_sec,
-      usecs.count(),
-      message.getThreadID(),
-      basename,
-      message.getLineNumber());
+  auto header = log_thread_name_
+      ? folly::sformat(
+            "{}{:02d}{:02d} {:02d}:{:02d}:{:02d}.{:06d} {:5d} [{}] {}:{}{}] ",
+            getGlogLevelName(message.getLevel())[0],
+            ltime.tm_mon + 1,
+            ltime.tm_mday,
+            ltime.tm_hour,
+            ltime.tm_min,
+            ltime.tm_sec,
+            usecs.count(),
+            message.getThreadID(),
+            getCurrentThreadName().value_or("Unknown"),
+            basename,
+            message.getLineNumber(),
+            message.getContextString())
+      : folly::sformat(
+            "{}{:02d}{:02d} {:02d}:{:02d}:{:02d}.{:06d} {:5d} {}:{}{}] ",
+            getGlogLevelName(message.getLevel())[0],
+            ltime.tm_mon + 1,
+            ltime.tm_mday,
+            ltime.tm_hour,
+            ltime.tm_min,
+            ltime.tm_sec,
+            usecs.count(),
+            message.getThreadID(),
+            basename,
+            message.getLineNumber(),
+            message.getContextString());
 
   // TODO: Support including thread names and thread context info.
 
@@ -92,9 +108,6 @@ std::string GlogStyleFormatter::formatMessage(
   if (message.containsNewlines()) {
     // If there are multiple lines in the log message, add a header
     // before each one.
-    std::string header;
-    header.reserve(headerLengthGuess);
-    headerFormatter.appendTo(header);
 
     buffer.reserve(
         ((header.size() + 1) * message.getNumNewlines()) + msgData.size());
@@ -118,7 +131,7 @@ std::string GlogStyleFormatter::formatMessage(
     }
   } else {
     buffer.reserve(headerLengthGuess + msgData.size());
-    headerFormatter.appendTo(buffer);
+    buffer.append(header);
     buffer.append(msgData.data(), msgData.size());
     buffer.push_back('\n');
   }

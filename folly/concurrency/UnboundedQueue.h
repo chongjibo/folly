@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -137,6 +137,10 @@ namespace folly {
 ///   a fixed size of 2^LgSegmentSize entries. Each segment is used
 ///   exactly once.
 /// - Each entry is composed of a futex and a single element.
+/// - Each segment's array of entries is strided to avoid false sharing.
+///   I.e., to reduce any cacheline contention that might be induced by
+///   concurrent mutations to the queue that might happen to affect
+///   otherwise-adjacent locations that might happen to share cacheline.
 /// - The queue contains two 64-bit ticket variables. The producer
 ///   ticket counts the number of producer tickets issued so far, and
 ///   the same for the consumer ticket. Each ticket number corresponds
@@ -226,8 +230,7 @@ class UnboundedQueue {
   static constexpr size_t Align = 1u << LgAlign;
 
   static_assert(
-      std::is_nothrow_destructible<T>::value,
-      "T must be nothrow_destructible");
+      std::is_nothrow_destructible<T>::value, "T must be nothrow_destructible");
   static_assert((Stride & 1) == 1, "Stride must be odd");
   static_assert(LgSegmentSize < 32, "LgSegmentSize must be < 32");
   static_assert(LgAlign < 16, "LgAlign must be < 16");
@@ -263,27 +266,19 @@ class UnboundedQueue {
   }
 
   /** enqueue */
-  FOLLY_ALWAYS_INLINE void enqueue(const T& arg) {
-    enqueueImpl(arg);
-  }
+  FOLLY_ALWAYS_INLINE void enqueue(const T& arg) { enqueueImpl(arg); }
 
-  FOLLY_ALWAYS_INLINE void enqueue(T&& arg) {
-    enqueueImpl(std::move(arg));
-  }
+  FOLLY_ALWAYS_INLINE void enqueue(T&& arg) { enqueueImpl(std::move(arg)); }
 
   /** dequeue */
-  FOLLY_ALWAYS_INLINE void dequeue(T& item) noexcept {
-    item = dequeueImpl();
-  }
+  FOLLY_ALWAYS_INLINE void dequeue(T& item) noexcept { item = dequeueImpl(); }
 
-  FOLLY_ALWAYS_INLINE T dequeue() noexcept {
-    return dequeueImpl();
-  }
+  FOLLY_ALWAYS_INLINE T dequeue() noexcept { return dequeueImpl(); }
 
   /** try_dequeue */
   FOLLY_ALWAYS_INLINE bool try_dequeue(T& item) noexcept {
     auto o = try_dequeue();
-    if (LIKELY(o.has_value())) {
+    if (FOLLY_LIKELY(o.has_value())) {
       item = std::move(*o);
       return true;
     }
@@ -301,7 +296,7 @@ class UnboundedQueue {
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
     folly::Optional<T> o = try_dequeue_until(deadline);
 
-    if (LIKELY(o.has_value())) {
+    if (FOLLY_LIKELY(o.has_value())) {
       item = std::move(*o);
       return true;
     }
@@ -318,11 +313,10 @@ class UnboundedQueue {
   /** try_dequeue_for */
   template <typename Rep, typename Period>
   FOLLY_ALWAYS_INLINE bool try_dequeue_for(
-      T& item,
-      const std::chrono::duration<Rep, Period>& duration) noexcept {
+      T& item, const std::chrono::duration<Rep, Period>& duration) noexcept {
     folly::Optional<T> o = try_dequeue_for(duration);
 
-    if (LIKELY(o.has_value())) {
+    if (FOLLY_LIKELY(o.has_value())) {
       item = std::move(*o);
       return true;
     }
@@ -334,7 +328,7 @@ class UnboundedQueue {
   FOLLY_ALWAYS_INLINE folly::Optional<T> try_dequeue_for(
       const std::chrono::duration<Rep, Period>& duration) noexcept {
     folly::Optional<T> o = try_dequeue();
-    if (LIKELY(o.has_value())) {
+    if (FOLLY_LIKELY(o.has_value())) {
       return o;
     }
     return tryDequeueUntil(std::chrono::steady_clock::now() + duration);
@@ -342,8 +336,7 @@ class UnboundedQueue {
 
   /** try_peek */
   FOLLY_ALWAYS_INLINE const T* try_peek() noexcept {
-    /* This function is supported only for USPSC and UMPSC queues. */
-    DCHECK(SingleConsumer);
+    static_assert(SingleConsumer, "not single-consumer");
     return tryPeekUntil(std::chrono::steady_clock::time_point::min());
   }
 
@@ -371,8 +364,8 @@ class UnboundedQueue {
     } else {
       // Using hazptr_holder instead of hazptr_local because it is
       // possible that the T ctor happens to use hazard pointers.
-      hazptr_holder<Atom> hptr;
-      Segment* s = hptr.get_protected(p_.tail);
+      hazptr_holder<Atom> hptr = make_hazard_pointer<Atom>();
+      Segment* s = hptr.protect(p_.tail);
       enqueueCommon(s, std::forward<Arg>(arg));
     }
   }
@@ -406,8 +399,8 @@ class UnboundedQueue {
       // Using hazptr_holder instead of hazptr_local because it is
       // possible to call the T dtor and it may happen to use hazard
       // pointers.
-      hazptr_holder<Atom> hptr;
-      Segment* s = hptr.get_protected(c_.head);
+      hazptr_holder<Atom> hptr = make_hazard_pointer<Atom>();
+      Segment* s = hptr.protect(c_.head);
       return dequeueCommon(s);
     }
   }
@@ -437,8 +430,8 @@ class UnboundedQueue {
     } else {
       // Using hazptr_holder instead of hazptr_local because it is
       //  possible to call ~T() and it may happen to use hazard pointers.
-      hazptr_holder<Atom> hptr;
-      Segment* s = hptr.get_protected(c_.head);
+      hazptr_holder<Atom> hptr = make_hazard_pointer<Atom>();
+      Segment* s = hptr.protect(c_.head);
       return tryDequeueUntilMC(s, deadline);
     }
   }
@@ -453,7 +446,7 @@ class UnboundedQueue {
     DCHECK_LT(t, (s->minTicket() + SegmentSize));
     size_t idx = index(t);
     Entry& e = s->entry(idx);
-    if (UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
+    if (FOLLY_UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
       return folly::Optional<T>();
     }
     setConsumerTicket(t + 1);
@@ -471,14 +464,14 @@ class UnboundedQueue {
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
     while (true) {
       Ticket t = consumerTicket();
-      if (UNLIKELY(t >= (s->minTicket() + SegmentSize))) {
+      if (FOLLY_UNLIKELY(t >= (s->minTicket() + SegmentSize))) {
         s = getAllocNextSegment(s, t);
         DCHECK(s);
         continue;
       }
       size_t idx = index(t);
       Entry& e = s->entry(idx);
-      if (UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
+      if (FOLLY_UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
         return folly::Optional<T>();
       }
       if (!c_.ticket.compare_exchange_weak(
@@ -499,7 +492,7 @@ class UnboundedQueue {
       Entry& e,
       Ticket t,
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
-    if (LIKELY(e.tryWaitUntil(deadline))) {
+    if (FOLLY_LIKELY(e.tryWaitUntil(deadline))) {
       return true;
     }
     return t < producerTicket();
@@ -509,13 +502,15 @@ class UnboundedQueue {
   template <typename Clock, typename Duration>
   FOLLY_ALWAYS_INLINE const T* tryPeekUntil(
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
+    // This function is supported only for USPSC and UMPSC queues.
+    DCHECK(SingleConsumer);
     Segment* s = head();
     Ticket t = consumerTicket();
     DCHECK_GE(t, s->minTicket());
     DCHECK_LT(t, (s->minTicket() + SegmentSize));
     size_t idx = index(t);
     Entry& e = s->entry(idx);
-    if (UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
+    if (FOLLY_UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
       return nullptr;
     }
     return e.peekItem();
@@ -524,7 +519,7 @@ class UnboundedQueue {
   /** findSegment */
   FOLLY_ALWAYS_INLINE
   Segment* findSegment(Segment* s, const Ticket t) noexcept {
-    while (UNLIKELY(t >= (s->minTicket() + SegmentSize))) {
+    while (FOLLY_UNLIKELY(t >= (s->minTicket() + SegmentSize))) {
       s = getAllocNextSegment(s, t);
       DCHECK(s);
     }
@@ -784,9 +779,7 @@ class UnboundedQueue {
       return flag_.try_wait_until(deadline, opt);
     }
 
-    FOLLY_ALWAYS_INLINE void destroyItem() noexcept {
-      itemPtr()->~T();
-    }
+    FOLLY_ALWAYS_INLINE void destroyItem() noexcept { itemPtr()->~T(); }
 
    private:
     FOLLY_ALWAYS_INLINE T getItem() noexcept {

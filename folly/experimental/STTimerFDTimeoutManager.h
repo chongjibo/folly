@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,8 +39,8 @@ class STTimerFDTimeoutManager : public TimeoutManager, TimerFD {
   /**
    * Schedules AsyncTimeout to fire after `timeout` microseconds
    */
-  bool scheduleTimeoutHighRes(AsyncTimeout* obj, timeout_type_high_res timeout)
-      final;
+  bool scheduleTimeoutHighRes(
+      AsyncTimeout* obj, timeout_type_high_res timeout) final;
 
   /**
    * Cancels the AsyncTimeout, if scheduled

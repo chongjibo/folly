@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,7 @@
 
 namespace folly {
 Executor::KeepAlive<> ExecutorWithPriority::create(
-    Executor::KeepAlive<Executor> executor,
-    int8_t priority) {
+    Executor::KeepAlive<Executor> executor, int8_t priority) {
   return ExecutorWithPriority::createDynamic(
       executor, [priority]() { return priority; });
 }

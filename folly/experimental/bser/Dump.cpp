@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,8 +36,7 @@ serialization_opts::serialization_opts()
     : sort_keys(false), growth_increment(8192) {}
 
 static const dynamic* getTemplate(
-    const serialization_opts& opts,
-    dynamic const& dynArray) {
+    const serialization_opts& opts, dynamic const& dynArray) {
   if (!opts.templates.has_value()) {
     return nullptr;
   }
@@ -52,9 +51,10 @@ static const dynamic* getTemplate(
 static void bserEncodeInt(int64_t ival, QueueAppender& appender) {
   /* Return the smallest size int that can store the value */
   auto size =
-      ((ival == ((int8_t)ival))
-           ? 1
-           : (ival == ((int16_t)ival)) ? 2 : (ival == ((int32_t)ival)) ? 4 : 8);
+      ((ival == ((int8_t)ival))        ? 1
+           : (ival == ((int16_t)ival)) ? 2
+           : (ival == ((int32_t)ival)) ? 4
+                                       : 8);
 
   switch (size) {
     case 1:
@@ -100,7 +100,7 @@ static void bserEncodeArray(
     QueueAppender& appender,
     const serialization_opts& opts) {
   auto templ = getTemplate(opts, dyn);
-  if (UNLIKELY(templ != nullptr)) {
+  if (FOLLY_UNLIKELY(templ != nullptr)) {
     appender.write((int8_t)BserType::Template);
 
     // Emit the list of property names
@@ -189,8 +189,7 @@ static void bserEncode(
 }
 
 std::unique_ptr<folly::IOBuf> toBserIOBuf(
-    folly::dynamic const& dyn,
-    const serialization_opts& opts) {
+    folly::dynamic const& dyn, const serialization_opts& opts) {
   IOBufQueue q(IOBufQueue::cacheChainLength());
   uint8_t hdrbuf[sizeof(kMagic) + 1 + sizeof(int64_t)];
 

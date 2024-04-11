@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@
 
 #pragma once
 
+#include <string>
+
 #include <folly/Range.h>
 #include <folly/logging/LogFormatter.h>
-#include <string>
 
 namespace folly {
 
@@ -40,6 +41,7 @@ namespace folly {
  * USECS: microseconds
  * THREAD: Thread ID
  * FILE: Filename (just the last component)
+ * FIL: Filename (just the last component) without extension
  * FUN: The function that logged the message
  * LINE: Line number
  *
@@ -52,8 +54,7 @@ class CustomLogFormatter : public LogFormatter {
  public:
   explicit CustomLogFormatter(StringPiece format, bool colored);
   std::string formatMessage(
-      const LogMessage& message,
-      const LogCategory* handlerCategory) override;
+      const LogMessage& message, const LogCategory* handlerCategory) override;
 
  private:
   void parseFormatString(StringPiece input);
@@ -62,6 +63,7 @@ class CustomLogFormatter : public LogFormatter {
   std::string singleLineLogFormat_;
   std::size_t staticEstimatedWidth_{0};
   std::size_t fileNameCount_{0};
+  std::size_t fileNameNoExtCount_{0};
   std::size_t functionNameCount_{0};
   const bool colored_;
 };

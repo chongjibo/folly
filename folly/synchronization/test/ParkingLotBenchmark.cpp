@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#include <thread>
-
 #include <folly/synchronization/ParkingLot.h>
+
+#include <thread>
 
 #include <folly/Benchmark.h>
 #include <folly/detail/Futex.h>

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,11 @@
  * limitations under the License.
  */
 
-#include <folly/hash/detail/ChecksumDetail.h>
-
 #include <array>
 #include <utility>
 
 #include <folly/Bits.h>
-#include <folly/ConstexprMath.h>
+#include <folly/hash/detail/ChecksumDetail.h>
 
 namespace folly {
 
@@ -28,8 +26,8 @@ namespace folly {
 // b, m, and p are all bit-reflected.
 //
 // https://en.wikipedia.org/wiki/Finite_field_arithmetic
-static constexpr uint32_t
-gf_multiply_sw_1(size_t i, uint32_t p, uint32_t a, uint32_t b, uint32_t m) {
+static constexpr uint32_t gf_multiply_sw_1(
+    size_t i, uint32_t p, uint32_t a, uint32_t b, uint32_t m) {
   // clang-format off
   return i == 32 ? p : gf_multiply_sw_1(
       /* i = */ i + 1,

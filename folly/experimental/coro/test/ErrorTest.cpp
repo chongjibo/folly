@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,15 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
-#include <folly/experimental/coro/Error.h>
+#include <folly/experimental/coro/Result.h>
 
 #include <type_traits>
 
 #include <folly/ExceptionWrapper.h>
 #include <folly/Utility.h>
 #include <folly/portability/GTest.h>
+
+#if FOLLY_HAS_COROUTINES
 
 class CoErrorTest : public testing::Test {};
 
@@ -36,7 +36,7 @@ TEST_F(CoErrorTest, constructible) {
   EXPECT_TRUE((std::is_constructible_v<co_error, std::runtime_error>));
   EXPECT_TRUE((std::is_constructible_v<
                co_error,
-               in_place_type_t<std::runtime_error>,
+               std::in_place_type_t<std::runtime_error>,
                std::string>));
   EXPECT_FALSE((std::is_constructible_v<co_error, int>));
 }

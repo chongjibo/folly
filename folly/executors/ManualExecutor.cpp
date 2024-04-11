@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -75,6 +75,28 @@ size_t ManualExecutor::run() {
   }
 
   return count;
+}
+
+size_t ManualExecutor::step() {
+  Func func;
+
+  {
+    std::lock_guard<std::mutex> lock(lock_);
+
+    if (funcs_.empty()) {
+      return 0;
+    }
+
+    // Balance the semaphore so it doesn't grow without bound
+    // if nobody is calling wait().
+    // This may fail (with EAGAIN), that's fine.
+    sem_.tryWait();
+
+    func = std::move(funcs_.front());
+    funcs_.pop();
+  }
+  func();
+  return 1;
 }
 
 size_t ManualExecutor::drain() {

@@ -1,9 +1,9 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from __future__ import absolute_import, division, print_function, unicode_literals
+# pyre-unsafe
 
 import os
 import select
@@ -24,13 +24,13 @@ class RunCommandError(Exception):
     pass
 
 
-def _print_env_diff(env):
+def _print_env_diff(env, log_fn) -> None:
     current_keys = set(os.environ.keys())
     wanted_env = set(env.keys())
 
     unset_keys = current_keys.difference(wanted_env)
     for k in sorted(unset_keys):
-        print("+ unset %s" % k)
+        log_fn("+ unset %s\n" % k)
 
     added_keys = wanted_env.difference(current_keys)
     for k in wanted_env.intersection(current_keys):
@@ -39,19 +39,19 @@ def _print_env_diff(env):
 
     for k in sorted(added_keys):
         if ("PATH" in k) and (os.pathsep in env[k]):
-            print("+ %s=\\" % k)
+            log_fn("+ %s=\\\n" % k)
             for elem in env[k].split(os.pathsep):
-                print("+      %s%s\\" % (shellquote(elem), os.pathsep))
+                log_fn("+      %s%s\\\n" % (shellquote(elem), os.pathsep))
         else:
-            print("+ %s=%s \\" % (k, shellquote(env[k])))
+            log_fn("+ %s=%s \\\n" % (k, shellquote(env[k])))
 
 
-def run_cmd(cmd, env=None, cwd=None, allow_fail=False, log_file=None):
+def run_cmd(cmd, env=None, cwd=None, allow_fail: bool = False, log_file=None) -> int:
     def log_to_stdout(msg):
         sys.stdout.buffer.write(msg.encode(errors="surrogateescape"))
 
     if log_file is not None:
-        with open(log_file, "a", errors="surrogateescape") as log:
+        with open(log_file, "a", encoding="utf-8", errors="surrogateescape") as log:
 
             def log_function(msg):
                 log.write(msg)
@@ -66,7 +66,7 @@ def run_cmd(cmd, env=None, cwd=None, allow_fail=False, log_file=None):
         )
 
 
-def _run_cmd(cmd, env, cwd, allow_fail, log_fn):
+def _run_cmd(cmd, env, cwd, allow_fail, log_fn) -> int:
     log_fn("---\n")
     try:
         cmd_str = " \\\n+      ".join(shellquote(arg) for arg in cmd)
@@ -76,7 +76,7 @@ def _run_cmd(cmd, env, cwd, allow_fail, log_fn):
 
     if env:
         assert isinstance(env, Env)
-        _print_env_diff(env)
+        _print_env_diff(env, log_fn)
 
         # Convert from our Env type to a regular dict.
         # This is needed because python3 looks up b'PATH' and 'PATH'
@@ -95,9 +95,16 @@ def _run_cmd(cmd, env, cwd, allow_fail, log_fn):
 
     log_fn("+ %s\n" % cmd_str)
 
+    isinteractive = os.isatty(sys.stdout.fileno())
+    if isinteractive:
+        stdout = None
+        sys.stdout.buffer.flush()
+    else:
+        stdout = subprocess.PIPE
+
     try:
         p = subprocess.Popen(
-            cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            cmd, env=env, cwd=cwd, stdout=stdout, stderr=subprocess.STDOUT
         )
     except (TypeError, ValueError, OSError) as exc:
         log_fn("error running `%s`: %s" % (cmd_str, exc))
@@ -106,7 +113,8 @@ def _run_cmd(cmd, env, cwd, allow_fail, log_fn):
             % (str(exc), cmd_str, env, os.environ)
         )
 
-    _pipe_output(p, log_fn)
+    if not isinteractive:
+        _pipe_output(p, log_fn)
 
     p.wait()
     if p.returncode != 0 and not allow_fail:
@@ -139,7 +147,6 @@ if hasattr(select, "poll"):
             if not isinstance(data, str):
                 data = data.decode("utf-8", errors="surrogateescape")
             log_fn(data)
-
 
 else:
 

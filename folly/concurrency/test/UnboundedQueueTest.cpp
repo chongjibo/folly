@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
  */
 
 #include <folly/concurrency/UnboundedQueue.h>
+
 #include <folly/MPMCQueue.h>
 #include <folly/ProducerConsumerQueue.h>
+#include <folly/lang/Keep.h>
 #include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
 
@@ -47,81 +49,79 @@ using UMPMC = folly::UMPMCQueue<T, MayBlock>;
 
 FOLLY_ATTR_WEAK void noop(folly::Optional<int>&&) {}
 
-extern "C" void check_uspsc_mayblock_dequeue_ref(
-    USPSC<int, true>& queue,
-    int& item) {
+extern "C" FOLLY_KEEP void check_uspsc_mayblock_dequeue_ref(
+    USPSC<int, true>& queue, int& item) {
   queue.dequeue(item);
 }
-extern "C" bool check_uspsc_mayblock_try_dequeue_ref(
-    USPSC<int, true>& queue,
-    int& item) {
+extern "C" FOLLY_KEEP bool check_uspsc_mayblock_try_dequeue_ref(
+    USPSC<int, true>& queue, int& item) {
   return queue.try_dequeue(item);
 }
-extern "C" bool check_uspsc_mayblock_try_dequeue_for_ref(
+extern "C" FOLLY_KEEP bool check_uspsc_mayblock_try_dequeue_for_ref(
     USPSC<int, true>& queue,
     int& item,
     std::chrono::milliseconds const& timeout) {
   return queue.try_dequeue_for(item, timeout);
 }
-extern "C" bool check_uspsc_mayblock_try_dequeue_until_ref(
+extern "C" FOLLY_KEEP bool check_uspsc_mayblock_try_dequeue_until_ref(
     USPSC<int, true>& queue,
     int& item,
     std::chrono::steady_clock::time_point const& deadline) {
   return queue.try_dequeue_until(item, deadline);
 }
 
-extern "C" int check_uspsc_mayblock_dequeue_ret(USPSC<int, true>& queue) {
+extern "C" FOLLY_KEEP int check_uspsc_mayblock_dequeue_ret(
+    USPSC<int, true>& queue) {
   return queue.dequeue();
 }
-extern "C" void check_uspsc_mayblock_try_dequeue_ret(USPSC<int, true>& queue) {
+extern "C" FOLLY_KEEP void check_uspsc_mayblock_try_dequeue_ret(
+    USPSC<int, true>& queue) {
   noop(queue.try_dequeue());
 }
-extern "C" void check_uspsc_mayblock_try_dequeue_for_ret(
-    USPSC<int, true>& queue,
-    std::chrono::milliseconds const& timeout) {
+extern "C" FOLLY_KEEP void check_uspsc_mayblock_try_dequeue_for_ret(
+    USPSC<int, true>& queue, std::chrono::milliseconds const& timeout) {
   noop(queue.try_dequeue_for(timeout));
 }
-extern "C" void check_uspsc_mayblock_try_dequeue_until_ret(
+extern "C" FOLLY_KEEP void check_uspsc_mayblock_try_dequeue_until_ret(
     USPSC<int, true>& queue,
     std::chrono::steady_clock::time_point const& deadline) {
   noop(queue.try_dequeue_until(deadline));
 }
 
-extern "C" void check_umpmc_mayblock_dequeue_ref(
-    UMPMC<int, true>& queue,
-    int& item) {
+extern "C" FOLLY_KEEP void check_umpmc_mayblock_dequeue_ref(
+    UMPMC<int, true>& queue, int& item) {
   queue.dequeue(item);
 }
-extern "C" bool check_umpmc_mayblock_try_dequeue_ref(
-    UMPMC<int, true>& queue,
-    int& item) {
+extern "C" FOLLY_KEEP bool check_umpmc_mayblock_try_dequeue_ref(
+    UMPMC<int, true>& queue, int& item) {
   return queue.try_dequeue(item);
 }
-extern "C" bool check_umpmc_mayblock_try_dequeue_for_ref(
+extern "C" FOLLY_KEEP bool check_umpmc_mayblock_try_dequeue_for_ref(
     UMPMC<int, true>& queue,
     int& item,
     std::chrono::milliseconds const& timeout) {
   return queue.try_dequeue_for(item, timeout);
 }
-extern "C" bool check_umpmc_mayblock_try_dequeue_until_ref(
+extern "C" FOLLY_KEEP bool check_umpmc_mayblock_try_dequeue_until_ref(
     UMPMC<int, true>& queue,
     int& item,
     std::chrono::steady_clock::time_point const& deadline) {
   return queue.try_dequeue_until(item, deadline);
 }
 
-extern "C" int check_umpmc_mayblock_dequeue_ret(UMPMC<int, true>& queue) {
+extern "C" FOLLY_KEEP int check_umpmc_mayblock_dequeue_ret(
+    UMPMC<int, true>& queue) {
   return queue.dequeue();
 }
-extern "C" void check_umpmc_mayblock_try_dequeue_ret(UMPMC<int, true>& queue) {
+extern "C" FOLLY_KEEP void check_umpmc_mayblock_try_dequeue_ret(
+    UMPMC<int, true>& queue) {
   noop(queue.try_dequeue());
 }
-extern "C" void check_umpmc_mayblock_try_dequeue_for_ret(
-    UMPMC<int, true>& queue,
-    std::chrono::milliseconds const& timeout) {
+extern "C" FOLLY_KEEP void check_umpmc_mayblock_try_dequeue_for_ret(
+    UMPMC<int, true>& queue, std::chrono::milliseconds const& timeout) {
   noop(queue.try_dequeue_for(timeout));
 }
-extern "C" void check_umpmc_mayblock_try_dequeue_until_ret(
+extern "C" FOLLY_KEEP void check_umpmc_mayblock_try_dequeue_until_ret(
     UMPMC<int, true>& queue,
     std::chrono::steady_clock::time_point const& deadline) {
   noop(queue.try_dequeue_until(deadline));
@@ -213,7 +213,7 @@ TEST(UnboundedQueue, peek) {
   peek_test<UMPSC, true>();
 }
 
-TEST(UnboundedQueue, cleanup_on_destruction) {
+TEST(UnboundedQueue, cleanupOnDestruction) {
   struct Foo {
     int* p_{nullptr};
     explicit Foo(int* p) : p_(p) {}
@@ -320,7 +320,7 @@ void enq_deq_test(const int nprod, const int ncons) {
       int v = -1;
       int vpeek = -1;
 
-      if (SingleConsumer) {
+      if constexpr (SingleConsumer) {
         while (true) {
           auto res = q.try_peek();
           if (res) {
@@ -360,7 +360,7 @@ void enq_deq_test(const int nprod, const int ncons) {
   run_once(nprod, ncons, prod, cons, endfn);
 }
 
-TEST(UnboundedQueue, enq_deq) {
+TEST(UnboundedQueue, enqDeq) {
   /* SPSC */
   enq_deq_test<true, true, false>(1, 1);
   enq_deq_test<true, true, true>(1, 1);
@@ -412,7 +412,7 @@ uint64_t runBench(const std::string& name, int ops, const RepFunc& repFn) {
     min = std::min(min, dur);
     max = std::max(max, dur);
     // if each rep takes too long run at least 3 reps
-    const uint64_t minute = 60000000000UL;
+    const uint64_t minute = 60000000000ULL;
     if (sum > minute && r >= 2) {
       reps = r + 1;
       break;
@@ -453,12 +453,12 @@ uint64_t bench(const int nprod, const int ncons, const std::string& name) {
       for (uint64_t i = tid; i < ops; i += ncons) {
         T v;
         if (Op == 0 || Op == 3) {
-          while (UNLIKELY(!q.try_dequeue(v))) {
+          while (FOLLY_UNLIKELY(!q.try_dequeue(v))) {
             /* keep trying */;
           }
         } else if (Op == 1 || Op == 4) {
           auto duration = std::chrono::microseconds(1000);
-          while (UNLIKELY(!q.try_dequeue_for(v, duration))) {
+          while (FOLLY_UNLIKELY(!q.try_dequeue_for(v, duration))) {
             /* keep trying */;
           }
         } else {
@@ -495,18 +495,13 @@ class MPMC {
     q_.blockingWrite(std::forward<Args>(args)...);
   }
 
-  void dequeue(T& item) {
-    q_.blockingRead(item);
-  }
+  void dequeue(T& item) { q_.blockingRead(item); }
 
-  bool try_dequeue(T& item) {
-    return q_.read(item);
-  }
+  bool try_dequeue(T& item) { return q_.read(item); }
 
   template <typename Rep, typename Period>
   bool try_dequeue_for(
-      T& item,
-      const std::chrono::duration<Rep, Period>& duration) noexcept {
+      T& item, const std::chrono::duration<Rep, Period>& duration) noexcept {
     auto deadline = std::chrono::steady_clock::now() + duration;
     return q_.tryReadUntil(deadline, item);
   }
@@ -529,13 +524,9 @@ class PCQ {
     }
   }
 
-  void dequeue(T&) {
-    ASSERT_TRUE(false);
-  }
+  void dequeue(T&) { ASSERT_TRUE(false); }
 
-  bool try_dequeue(T& item) {
-    return q_.read(item);
-  }
+  bool try_dequeue(T& item) { return q_.read(item); }
 
   template <typename Rep, typename Period>
   bool try_dequeue_for(T&, const std::chrono::duration<Rep, Period>&) noexcept {
@@ -555,9 +546,7 @@ struct IntArray {
       a[i] = v;
     }
   }
-  operator int() {
-    return a[0];
-  }
+  operator int() { return a[0]; }
 };
 
 void dottedLine() {

@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ endif()
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
   # clang only rejects unknown warning flags if -Werror=unknown-warning-option
   # is also specified.
-  CHECK_CXX_COMPILER_FLAG(
+  check_cxx_compiler_flag(
     -Werror=unknown-warning-option
     COMPILER_HAS_UNKNOWN_WARNING_OPTION)
   if (COMPILER_HAS_UNKNOWN_WARNING_OPTION)
@@ -37,8 +37,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
       "${CMAKE_REQUIRED_FLAGS} -Werror=unknown-warning-option")
   endif()
 
-  CHECK_CXX_COMPILER_FLAG(-Wshadow-local COMPILER_HAS_W_SHADOW_LOCAL)
-  CHECK_CXX_COMPILER_FLAG(
+  check_cxx_compiler_flag(-Wshadow-local COMPILER_HAS_W_SHADOW_LOCAL)
+  check_cxx_compiler_flag(
     -Wshadow-compatible-local
     COMPILER_HAS_W_SHADOW_COMPATIBLE_LOCAL)
   if (COMPILER_HAS_W_SHADOW_LOCAL AND COMPILER_HAS_W_SHADOW_COMPATIBLE_LOCAL)
@@ -46,31 +46,31 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     list(APPEND FOLLY_CXX_FLAGS -Wshadow-compatible-local)
   endif()
 
-  CHECK_CXX_COMPILER_FLAG(-Wnoexcept-type COMPILER_HAS_W_NOEXCEPT_TYPE)
+  check_cxx_compiler_flag(-Wnoexcept-type COMPILER_HAS_W_NOEXCEPT_TYPE)
   if (COMPILER_HAS_W_NOEXCEPT_TYPE)
     list(APPEND FOLLY_CXX_FLAGS -Wno-noexcept-type)
   endif()
 
-  CHECK_CXX_COMPILER_FLAG(
+  check_cxx_compiler_flag(
       -Wnullability-completeness
       COMPILER_HAS_W_NULLABILITY_COMPLETENESS)
   if (COMPILER_HAS_W_NULLABILITY_COMPLETENESS)
     list(APPEND FOLLY_CXX_FLAGS -Wno-nullability-completeness)
   endif()
 
-  CHECK_CXX_COMPILER_FLAG(
+  check_cxx_compiler_flag(
       -Winconsistent-missing-override
       COMPILER_HAS_W_INCONSISTENT_MISSING_OVERRIDE)
   if (COMPILER_HAS_W_INCONSISTENT_MISSING_OVERRIDE)
     list(APPEND FOLLY_CXX_FLAGS -Wno-inconsistent-missing-override)
   endif()
 
-  CHECK_CXX_COMPILER_FLAG(-faligned-new COMPILER_HAS_F_ALIGNED_NEW)
+  check_cxx_compiler_flag(-faligned-new COMPILER_HAS_F_ALIGNED_NEW)
   if (COMPILER_HAS_F_ALIGNED_NEW)
     list(APPEND FOLLY_CXX_FLAGS -faligned-new)
   endif()
 
-  CHECK_CXX_COMPILER_FLAG(-fopenmp COMPILER_HAS_F_OPENMP)
+  check_cxx_compiler_flag(-fopenmp COMPILER_HAS_F_OPENMP)
   if (COMPILER_HAS_F_OPENMP)
       list(APPEND FOLLY_CXX_FLAGS -fopenmp)
   endif()
@@ -85,9 +85,7 @@ string(REGEX REPLACE
 
 check_symbol_exists(pthread_atfork pthread.h FOLLY_HAVE_PTHREAD_ATFORK)
 
-# Unfortunately check_symbol_exists() does not work for memrchr():
-# it fails complaining that there are multiple overloaded versions of memrchr()
-check_function_exists(memrchr FOLLY_HAVE_MEMRCHR)
+list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 check_symbol_exists(accept4 sys/socket.h FOLLY_HAVE_ACCEPT4)
 check_symbol_exists(getrandom sys/random.h FOLLY_HAVE_GETRANDOM)
 check_symbol_exists(preadv sys/uio.h FOLLY_HAVE_PREADV)
@@ -108,12 +106,6 @@ check_cxx_source_compiles("
   int main() { return 0; }"
   FOLLY_HAVE_IFUNC
 )
-check_cxx_source_compiles("
-  #include <type_traits>
-  const bool val = std::is_trivially_copyable<bool>::value;
-  int main() { return 0; }"
-  FOLLY_HAVE_STD__IS_TRIVIALLY_COPYABLE
-)
 check_cxx_source_runs("
   int main(int, char**) {
     char buf[64] = {0};
@@ -131,10 +123,11 @@ check_cxx_source_compiles("
   }"
   FOLLY_HAVE_VLA
 )
-check_cxx_source_compiles("
-  extern \"C\" void configure_link_extern_weak_test() __attribute__((weak));
+check_cxx_source_runs("
+  extern \"C\" int folly_example_undefined_weak_symbol() __attribute__((weak));
   int main(int argc, char** argv) {
-    return configure_link_extern_weak_test == nullptr;
+    auto f = folly_example_undefined_weak_symbol; // null pointer
+    return f ? f() : 0; // must compile, link, and run with null pointer
   }"
   FOLLY_HAVE_WEAK_SYMBOLS
 )
@@ -150,30 +143,6 @@ check_cxx_source_runs("
   }"
   FOLLY_HAVE_LINUX_VDSO
 )
-
-check_type_size(__int128 INT128_SIZE LANGUAGE CXX)
-if (NOT INT128_SIZE STREQUAL "")
-  set(FOLLY_HAVE_INT128_T ON)
-  check_cxx_source_compiles("
-    #include <functional>
-    #include <type_traits>
-    #include <utility>
-    static_assert(
-      ::std::is_same<::std::make_signed<unsigned __int128>::type,
-                     __int128>::value,
-      \"signed form of 'unsigned __uint128' must be '__int128'.\");
-    static_assert(
-        sizeof(::std::hash<__int128>{}(0)) > 0, \
-        \"std::hash<__int128> is disabled.\");
-    int main() { return 0; }"
-    HAVE_INT128_TRAITS
-  )
-  if (HAVE_INT128_TRAITS)
-    set(FOLLY_SUPPLY_MISSING_INT128_TRAITS OFF)
-  else()
-    set(FOLLY_SUPPLY_MISSING_INT128_TRAITS ON)
-  endif()
-endif()
 
 check_cxx_source_runs("
   #include <cstddef>
@@ -191,24 +160,6 @@ check_cxx_source_compiles("
     return 0;
   }"
   FOLLY_HAVE_EXTRANDOM_SFMT19937
-)
-
-check_cxx_source_compiles("
-  #include <type_traits>
-  #if !_LIBCPP_VERSION
-  #error No libc++
-  #endif
-  int main() { return 0; }"
-  FOLLY_USE_LIBCPP
-)
-
-check_cxx_source_compiles("
-  #include <type_traits>
-  #if !__GLIBCXX__
-  #error No libstdc++
-  #endif
-  int main() { return 0; }"
-  FOLLY_USE_LIBSTDCPP
 )
 
 check_cxx_source_runs("
@@ -235,6 +186,8 @@ if (FOLLY_HAVE_LIBGFLAGS)
   # use "google" but also make symbols available in the deprecated "gflags"
   # namespace too.  The folly code internally uses "gflags" unless we tell it
   # otherwise.
+  list(APPEND CMAKE_REQUIRED_LIBRARIES ${FOLLY_LIBGFLAGS_LIBRARY})
+  list(APPEND CMAKE_REQUIRED_INCLUDES ${FOLLY_LIBGFLAGS_INCLUDE})
   check_cxx_source_compiles("
     #include <gflags/gflags.h>
     int main() {
@@ -244,6 +197,8 @@ if (FOLLY_HAVE_LIBGFLAGS)
     "
     GFLAGS_NAMESPACE_IS_GFLAGS
   )
+  list(REMOVE_ITEM CMAKE_REQUIRED_LIBRARIES ${FOLLY_LIBGFLAGS_LIBRARY})
+  list(REMOVE_ITEM CMAKE_REQUIRED_INCLUDES ${FOLLY_LIBGFLAGS_INCLUDE})
   if (GFLAGS_NAMESPACE_IS_GFLAGS)
     set(FOLLY_UNUSUAL_GFLAGS_NAMESPACE OFF)
     set(FOLLY_GFLAGS_NAMESPACE gflags)

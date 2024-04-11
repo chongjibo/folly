@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -103,9 +103,7 @@ struct MyObjectDirectory {
  */
 TEST(AHMIntStressTest, Test) {
   auto const objs = new MyObjectDirectory();
-  SCOPE_EXIT {
-    delete objs;
-  };
+  SCOPE_EXIT { delete objs; };
 
   std::vector<std::thread> threads;
   for (int threadId = 0; threadId < 64; ++threadId) {

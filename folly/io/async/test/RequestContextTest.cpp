@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <atomic>
+#include <cstdint>
 #include <thread>
 
 #include <folly/Memory.h>
@@ -22,6 +24,8 @@
 #include <folly/io/async/test/RequestContextHelper.h>
 #include <folly/portability/GTest.h>
 #include <folly/system/ThreadName.h>
+
+#include <boost/thread/barrier.hpp>
 
 using namespace folly;
 
@@ -190,6 +194,7 @@ TEST_F(RequestContextTest, testSetUnset) {
 
   // onSet called in setContextData
   EXPECT_EQ(1, testData1->set_);
+  EXPECT_EQ(ctx1.get(), testData1->onSetRctx);
 
   // Override RequestContext
   RequestContext::create();
@@ -199,14 +204,19 @@ TEST_F(RequestContextTest, testSetUnset) {
 
   // onSet called in setContextData
   EXPECT_EQ(1, testData2->set_);
+  EXPECT_EQ(ctx2.get(), testData2->onSetRctx);
 
   // Check ctx1->onUnset was called
   EXPECT_EQ(1, testData1->unset_);
+  EXPECT_EQ(ctx1.get(), testData1->onUnSetRctx);
 
   RequestContext::setContext(ctx1);
   EXPECT_EQ(2, testData1->set_);
   EXPECT_EQ(1, testData1->unset_);
   EXPECT_EQ(1, testData2->unset_);
+  EXPECT_EQ(ctx1.get(), testData1->onSetRctx);
+  EXPECT_EQ(ctx1.get(), testData1->onUnSetRctx);
+  EXPECT_EQ(ctx2.get(), testData2->onUnSetRctx);
 
   RequestContext::setContext(ctx2);
   EXPECT_EQ(2, testData1->set_);
@@ -225,9 +235,7 @@ TEST_F(RequestContextTest, deadlockTest) {
           val_, std::make_unique<TestData>(1));
     }
 
-    bool hasCallback() override {
-      return false;
-    }
+    bool hasCallback() override { return false; }
 
     std::string val_;
   };
@@ -254,9 +262,7 @@ TEST_F(RequestContextTest, sharedGlobalTest) {
       global = false;
     }
 
-    bool hasCallback() override {
-      return true;
-    }
+    bool hasCallback() override { return true; }
   };
 
   intptr_t root = 0;
@@ -358,6 +364,30 @@ TEST_F(RequestContextTest, ShallowCopyClear) {
   EXPECT_EQ(1, getData().unset_);
 }
 
+TEST_F(RequestContextTest, ShallowCopyMulti) {
+  RequestContextScopeGuard g0;
+  setData(1, "test1");
+  setData(2, "test2");
+  EXPECT_EQ(1, getData("test1").data_);
+  EXPECT_EQ(2, getData("test2").data_);
+  {
+    ShallowCopyRequestContextScopeGuard g1(
+        RequestDataItem{"test1", std::make_unique<TestData>(2)},
+        RequestDataItem{"test2", std::make_unique<TestData>(4)});
+
+    EXPECT_EQ(2, getData("test1").data_);
+    EXPECT_EQ(4, getData("test2").data_);
+    clearData("test1");
+    clearData("test2");
+    setData(4, "test1");
+    setData(8, "test2");
+    EXPECT_EQ(4, getData("test1").data_);
+    EXPECT_EQ(8, getData("test2").data_);
+  }
+  EXPECT_EQ(1, getData("test1").data_);
+  EXPECT_EQ(2, getData("test2").data_);
+}
+
 TEST_F(RequestContextTest, RootIdOnCopy) {
   auto ctxBase = std::make_shared<RequestContext>(0xab);
   EXPECT_EQ(0xab, ctxBase->getRootId());
@@ -381,7 +411,7 @@ TEST_F(RequestContextTest, ThreadId) {
 
   EventBase base;
   base.runInEventBaseThread([&]() {
-    RequestContextScopeGuard g;
+    RequestContextScopeGuard g_;
     folly::setThreadName("DummyThread2");
     rootids = RequestContext::getRootIdsFromAllThreads();
     base.terminateLoopSoon();
@@ -409,9 +439,7 @@ TEST_F(RequestContextTest, Clear) {
       EXPECT_TRUE(cleared);
       deleted = true;
     }
-    bool hasCallback() override {
-      return false;
-    }
+    bool hasCallback() override { return false; }
     void onClear() override {
       EXPECT_FALSE(cleared);
       cleared = true;
@@ -498,4 +526,159 @@ TEST_F(RequestContextTest, ConcurrentDataRefRelease) {
     th1.join();
     th2.join();
   }
+}
+
+TEST_F(RequestContextTest, AccessAllThreadsDestructionGuard) {
+  constexpr auto kNumThreads = 128;
+
+  std::vector<std::thread> threads{kNumThreads};
+  boost::barrier barrier{kNumThreads + 1};
+
+  std::atomic<std::size_t> count{0};
+  for (auto& thread : threads) {
+    thread = std::thread([&] {
+      // Force creation of thread local
+      RequestContext::get();
+      ++count;
+      // Wait for all other threads to do the same
+      barrier.wait();
+      // Wait until signaled to die
+      barrier.wait();
+    });
+  }
+
+  barrier.wait();
+  // Sanity check
+  EXPECT_EQ(count.load(), kNumThreads);
+
+  {
+    auto accessor = RequestContext::accessAllThreads();
+    // Allow threads to die (but they should not as long as we hold accessor!)
+    barrier.wait();
+    auto accessorsCount = std::distance(accessor.begin(), accessor.end());
+    EXPECT_EQ(accessorsCount, kNumThreads + 1);
+    for (RequestContext::StaticContext& staticContext : accessor) {
+      EXPECT_EQ(staticContext.requestContext, nullptr);
+    }
+  }
+
+  for (auto& thread : threads) {
+    thread.join();
+  }
+}
+
+namespace {
+
+struct KeyATraits {
+  static inline const RequestToken kToken{"keyA"};
+};
+
+struct KeyBTraits {
+  static inline const RequestToken kToken{"keyB"};
+};
+
+} // namespace
+
+TEST_F(RequestContextTest, GetThreadCachedContextData) {
+  auto makeData = [](int value) {
+    return std::make_unique<ImmutableRequestData<int>>(value);
+  };
+
+  auto getData = [](auto traits) {
+    auto* data = RequestContext::try_get()
+                     ->getThreadCachedContextData<decltype(traits)>();
+    CHECK(data != nullptr);
+    auto* idata = dynamic_cast<ImmutableRequestData<int>*>(data);
+    CHECK(idata != nullptr);
+    return idata;
+  };
+
+  RequestContextScopeGuard guard;
+
+  RequestContext::try_get()->setContextData(KeyATraits::kToken, makeData(1));
+  RequestContext::try_get()->setContextData(KeyBTraits::kToken, makeData(2));
+
+  EXPECT_EQ(getData(KeyATraits{})->value(), 1);
+  EXPECT_EQ(getData(KeyBTraits{})->value(), 2);
+
+  RequestContext::try_get()->overwriteContextData(
+      KeyATraits::kToken, makeData(3));
+  EXPECT_EQ(getData(KeyATraits{})->value(), 3);
+  EXPECT_EQ(getData(KeyBTraits{})->value(), 2);
+
+  RequestContext::try_get()->clearContextData(KeyATraits::kToken);
+  EXPECT_TRUE(
+      RequestContext::try_get()->getThreadCachedContextData<KeyATraits>() ==
+      nullptr);
+  EXPECT_EQ(getData(KeyBTraits{})->value(), 2);
+
+  // Invalidations are delivered from other threads too.
+  std::thread([&, ctx = RequestContext::saveContext()] {
+    RequestContextScopeGuard guard2(ctx);
+    RequestContext::try_get()->setContextData(KeyATraits::kToken, makeData(4));
+  }).join();
+  EXPECT_EQ(getData(KeyATraits{})->value(), 4);
+  EXPECT_EQ(getData(KeyBTraits{})->value(), 2);
+
+  // Caches are not leaked when switching request context.
+  {
+    RequestContextScopeGuard guard3;
+    EXPECT_TRUE(
+        RequestContext::try_get()->getThreadCachedContextData<KeyATraits>() ==
+        nullptr);
+    EXPECT_TRUE(
+        RequestContext::try_get()->getThreadCachedContextData<KeyBTraits>() ==
+        nullptr);
+  }
+}
+
+TEST(RequestContextTryGetTest, TryGetTest) {
+  // try_get() should not create a default RequestContext object if none exists.
+  EXPECT_EQ(RequestContext::try_get(), nullptr);
+  // Explicitly create a new instance so that subsequent calls to try_get()
+  // return it.
+  RequestContext::create();
+  EXPECT_NE(RequestContext::saveContext(), nullptr);
+  EXPECT_NE(RequestContext::try_get(), nullptr);
+  // Make sure that the pointers returned by both get() and try_get() point to
+  // the same underlying instance.
+  EXPECT_EQ(RequestContext::try_get(), RequestContext::get());
+  // Set some context data and read it out via try_get() accessor.
+  RequestContext::get()->setContextData("test", std::make_unique<TestData>(10));
+  auto rc = RequestContext::try_get();
+  EXPECT_TRUE(rc->hasContextData("test"));
+  auto* dataPtr = dynamic_cast<TestData*>(rc->getContextData("test"));
+  EXPECT_EQ(dataPtr->data_, 10);
+
+  auto thread = std::thread([&] {
+    auto accessor = RequestContext::accessAllThreads();
+    // test there is no deadlock with try_get()
+    RequestContext::try_get();
+  });
+  thread.join();
+
+  thread = std::thread([&] {
+    RequestContext::get();
+    auto accessor = RequestContext::accessAllThreads();
+    // test there is no deadlock with get()
+    RequestContext::get();
+  });
+  thread.join();
+}
+
+TEST(ImmutableRequestTest, simple) {
+  ImmutableRequestData<int> ird(4);
+  EXPECT_EQ(ird.value(), 4);
+}
+
+TEST(ImmutableRequestTest, typeTraits) {
+  using IRDI = ImmutableRequestData<int>;
+
+  auto c1 = std::is_constructible<IRDI, int>::value;
+  EXPECT_TRUE(c1);
+  auto n1 = std::is_nothrow_constructible<IRDI, int>::value;
+  EXPECT_TRUE(n1);
+
+  auto c2 = std::is_constructible<IRDI, int, int>::value;
+  EXPECT_FALSE(c2);
 }

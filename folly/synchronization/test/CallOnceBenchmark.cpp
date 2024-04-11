@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,9 +20,9 @@
 #include <mutex>
 #include <thread>
 
-#include <folly/Benchmark.h>
-
 #include <glog/logging.h>
+
+#include <folly/Benchmark.h>
 
 DEFINE_int32(threads, 16, "benchmark concurrency");
 

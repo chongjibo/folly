@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,8 +25,6 @@
  *  Check out AtomicHashMap.h for more thorough documentation on perf and
  *  general pros and cons relative to other hash maps.
  *
- *  @author Spencer Ahrens <sahrens@fb.com>
- *  @author Jordan DeLong <delong.j@fb.com>
  */
 
 #pragma once
@@ -41,22 +39,22 @@
 namespace folly {
 
 struct AtomicHashArrayLinearProbeFcn {
-  inline size_t operator()(size_t idx, size_t /* numProbes */, size_t capacity)
-      const {
+  inline size_t operator()(
+      size_t idx, size_t /* numProbes */, size_t capacity) const {
     idx += 1; // linear probing
 
     // Avoid modulus because it's slow
-    return LIKELY(idx < capacity) ? idx : (idx - capacity);
+    return FOLLY_LIKELY(idx < capacity) ? idx : (idx - capacity);
   }
 };
 
 struct AtomicHashArrayQuadraticProbeFcn {
-  inline size_t operator()(size_t idx, size_t numProbes, size_t capacity)
-      const {
+  inline size_t operator()(
+      size_t idx, size_t numProbes, size_t capacity) const {
     idx += numProbes; // quadratic probing
 
     // Avoid modulus because it's slow
-    return LIKELY(idx < capacity) ? idx : (idx - capacity);
+    return FOLLY_LIKELY(idx < capacity) ? idx : (idx - capacity);
   }
 };
 
@@ -71,10 +69,7 @@ inline void checkLegalKeyIfKeyTImpl(
 
 template <typename KeyT>
 inline void checkLegalKeyIfKeyTImpl(
-    KeyT key_in,
-    KeyT emptyKey,
-    KeyT lockedKey,
-    KeyT erasedKey) {
+    KeyT key_in, KeyT emptyKey, KeyT lockedKey, KeyT erasedKey) {
   DCHECK_NE(key_in, emptyKey);
   DCHECK_NE(key_in, lockedKey);
   DCHECK_NE(key_in, erasedKey);
@@ -144,9 +139,7 @@ class AtomicHashArray {
   const size_t kAnchorMask_;
 
   struct Deleter {
-    void operator()(AtomicHashArray* ptr) {
-      AtomicHashArray::destroy(ptr);
-    }
+    void operator()(AtomicHashArray* ptr) { AtomicHashArray::destroy(ptr); }
   };
 
  public:
@@ -204,7 +197,7 @@ class AtomicHashArray {
    *   allowed to be different from the type of keys actually stored (KeyT).
    *
    *   This enables use cases where materializing the key is costly and usually
-   *   redudant, e.g., canonicalizing/interning a set of strings and being able
+   *   redundant, e.g., canonicalizing/interning a set of strings and being able
    *   to look up by StringPiece. To use this feature, LookupHashFcn must take
    *   a LookupKeyT, and LookupEqualFcn must take KeyT and LookupKeyT as first
    *   and second parameter, respectively.
@@ -286,9 +279,7 @@ class AtomicHashArray {
     return numEntries_.readFull() - numErases_.load(std::memory_order_relaxed);
   }
 
-  bool empty() const {
-    return size() == 0;
-  }
+  bool empty() const { return size() == 0; }
 
   iterator begin() {
     iterator it(this, 0);
@@ -301,12 +292,8 @@ class AtomicHashArray {
     return it;
   }
 
-  iterator end() {
-    return iterator(this, capacity_);
-  }
-  const_iterator end() const {
-    return const_iterator(this, capacity_);
-  }
+  iterator end() { return iterator(this, capacity_); }
+  const_iterator end() const { return const_iterator(this, capacity_); }
 
   // See AtomicHashMap::findAt - access elements directly
   // WARNING: The following 2 functions will fail silently for hashtable
@@ -319,17 +306,13 @@ class AtomicHashArray {
     return const_cast<AtomicHashArray*>(this)->findAt(idx);
   }
 
-  iterator makeIter(size_t idx) {
-    return iterator(this, idx);
-  }
+  iterator makeIter(size_t idx) { return iterator(this, idx); }
   const_iterator makeIter(size_t idx) const {
     return const_iterator(this, idx);
   }
 
   // The max load factor allowed for this map
-  double maxLoadFactor() const {
-    return ((double)maxEntries_) / capacity_;
-  }
+  double maxLoadFactor() const { return ((double)maxEntries_) / capacity_; }
 
   void setEntryCountThreadCacheSize(uint32_t newSize) {
     numEntries_.setCacheSize(newSize);
@@ -438,7 +421,7 @@ class AtomicHashArray {
   inline size_t keyToAnchorIdx(const LookupKeyT k) const {
     const size_t hashVal = LookupHashFcn()(k);
     const size_t probe = hashVal & kAnchorMask_;
-    return LIKELY(probe < capacity_) ? probe : hashVal % capacity_;
+    return FOLLY_LIKELY(probe < capacity_) ? probe : hashVal % capacity_;
   }
 
 }; // AtomicHashArray

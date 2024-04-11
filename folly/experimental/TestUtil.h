@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,9 +52,7 @@ class TemporaryFile {
   ~TemporaryFile();
 
   // Movable, but not copyable
-  TemporaryFile(TemporaryFile&& other) noexcept {
-    assign(other);
-  }
+  TemporaryFile(TemporaryFile&& other) noexcept { assign(other); }
 
   TemporaryFile& operator=(TemporaryFile&& other) {
     if (this != &other) {
@@ -65,9 +63,7 @@ class TemporaryFile {
   }
 
   void close();
-  int fd() const {
-    return fd_;
-  }
+  int fd() const { return fd_; }
   const fs::path& path() const;
   void reset();
 
@@ -81,7 +77,7 @@ class TemporaryFile {
     scope_ = other.scope_;
     closeOnDestruction_ = other.closeOnDestruction_;
     fd_ = std::exchange(other.fd_, -1);
-    path_ = other.path_;
+    path_ = std::exchange(other.path_, fs::path());
   }
 };
 
@@ -113,9 +109,7 @@ class TemporaryDirectory {
   TemporaryDirectory(TemporaryDirectory&&) = default;
   TemporaryDirectory& operator=(TemporaryDirectory&&) = default;
 
-  const fs::path& path() const {
-    return *path_;
-  }
+  const fs::path& path() const { return *path_; }
 
  private:
   Scope scope_;
@@ -135,9 +129,7 @@ class ChangeToTempDir {
   ChangeToTempDir(ChangeToTempDir&&) = default;
   ChangeToTempDir& operator=(ChangeToTempDir&&) = default;
 
-  const fs::path& path() const {
-    return dir_.path();
-  }
+  const fs::path& path() const { return dir_.path(); }
 
  private:
   TemporaryDirectory dir_;
@@ -165,9 +157,7 @@ void enableInvalidParameters(SavedState state);
 template <typename Func>
 auto msvcSuppressAbortOnInvalidParams(Func func) -> decltype(func()) {
   auto savedState = detail::disableInvalidParameters();
-  SCOPE_EXIT {
-    detail::enableInvalidParameters(savedState);
-  };
+  SCOPE_EXIT { detail::enableInvalidParameters(savedState); };
   return func();
 }
 
@@ -263,6 +253,14 @@ class CaptureFD {
 
   off_t readOffset_; // for incremental reading
 };
+
+//  find_resource
+//
+//  Finds the file path of a resource which was built alongside a test binary.
+//
+//  Care must be taken to set up the test and resource build rules in accordance
+//  with this function.
+fs::path find_resource(const std::string& resource);
 
 } // namespace test
 } // namespace folly

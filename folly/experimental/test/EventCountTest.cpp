@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,9 +44,7 @@ class Semaphore {
     ec_.notifyAll();
   }
 
-  int value() const {
-    return value_;
-  }
+  int value() const { return value_; }
 
  private:
   bool tryDown() {
@@ -64,10 +62,7 @@ class Semaphore {
 
 template <class T, class Random>
 void randomPartition(
-    Random& random,
-    T key,
-    int n,
-    std::vector<std::pair<T, int>>& out) {
+    Random& random, T key, int n, std::vector<std::pair<T, int>>& out) {
   while (n != 0) {
     int m = std::min(n, 1000);
     std::uniform_int_distribution<uint32_t> u(1, m);

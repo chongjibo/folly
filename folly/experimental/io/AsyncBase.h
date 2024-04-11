@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include <folly/Function.h>
 #include <folly/Portability.h>
 #include <folly/Range.h>
 #include <folly/portability/SysUio.h>
@@ -44,7 +45,7 @@ class AsyncBaseOp {
   friend class AsyncBase;
 
  public:
-  using NotificationCallback = std::function<void(AsyncBaseOp*)>;
+  using NotificationCallback = folly::Function<void(AsyncBaseOp*)>;
 
   explicit AsyncBaseOp(NotificationCallback cb = NotificationCallback());
   AsyncBaseOp(const AsyncBaseOp&) = delete;
@@ -67,6 +68,10 @@ class AsyncBaseOp {
     pread(fd, range.begin(), range.size(), start);
   }
   virtual void preadv(int fd, const iovec* iov, int iovcnt, off_t start) = 0;
+  virtual void pread(
+      int fd, void* buf, size_t size, off_t start, int /*buf_index*/) {
+    pread(fd, buf, size, start);
+  }
 
   /**
    * Initiate a write request.
@@ -76,6 +81,10 @@ class AsyncBaseOp {
     pwrite(fd, range.begin(), range.size(), start);
   }
   virtual void pwritev(int fd, const iovec* iov, int iovcnt, off_t start) = 0;
+  virtual void pwrite(
+      int fd, const void* buf, size_t size, off_t start, int /*buf_index*/) {
+    pwrite(fd, buf, size, start);
+  }
 
   // we support only these subclasses
   virtual AsyncIOOp* getAsyncIOOp() = 0;
@@ -87,20 +96,14 @@ class AsyncBaseOp {
   /**
    * Return the current operation state.
    */
-  State state() const {
-    return state_;
-  }
+  State state() const { return state_; }
 
   /**
    * user data get/set
    */
-  void* getUserData() const {
-    return userData_;
-  }
+  void* getUserData() const { return userData_; }
 
-  void setUserData(void* userData) {
-    userData_ = userData;
-  }
+  void setUserData(void* userData) { userData_ = userData; }
 
   /**
    * Reset the operation for reuse.  It is an error to call reset() on
@@ -108,12 +111,16 @@ class AsyncBaseOp {
    */
   virtual void reset(NotificationCallback cb = NotificationCallback()) = 0;
 
-  void setNotificationCallback(NotificationCallback cb) {
-    cb_ = std::move(cb);
-  }
-  const NotificationCallback& notificationCallback() const {
-    return cb_;
-  }
+  void setNotificationCallback(NotificationCallback cb) { cb_ = std::move(cb); }
+
+  /**
+   * Get the notification callback from the op.
+   *
+   * Note that this moves the callback out, leaving the callback in an
+   * uninitialized state! You must call setNotificationCallback before
+   * submitting the operation!
+   */
+  NotificationCallback getNotificationCallback() { return std::move(cb_); }
 
   /**
    * Retrieve the result of this operation.  Returns >=0 on success,
@@ -131,11 +138,12 @@ class AsyncBaseOp {
  protected:
   void init();
   void start();
+  void unstart();
   void complete(ssize_t result);
   void cancel();
 
   NotificationCallback cb_;
-  State state_;
+  std::atomic<State> state_;
   ssize_t result_;
   void* userData_{nullptr};
 };
@@ -178,6 +186,11 @@ class AsyncBase {
   virtual ~AsyncBase();
 
   /**
+   * Initialize context
+   */
+  virtual void initializeContext() = 0;
+
+  /**
    * Wait for at least minRequests to complete.  Returns the requests that
    * have completed; the returned range is valid until the next call to
    * wait().  minRequests may be 0 to not block.
@@ -193,34 +206,26 @@ class AsyncBase {
   /**
    * Return the number of pending requests.
    */
-  size_t pending() const {
-    return pending_;
-  }
+  size_t pending() const { return pending_; }
 
   /**
    * Return the maximum number of requests that can be kept outstanding
    * at any one time.
    */
-  size_t capacity() const {
-    return capacity_;
-  }
+  size_t capacity() const { return capacity_; }
 
   /**
    * Return the accumulative number of submitted I/O, since this object
    * has been created.
    */
-  size_t totalSubmits() const {
-    return submitted_;
-  }
+  size_t totalSubmits() const { return submitted_; }
 
   /**
    * If POLLABLE, return a file descriptor that can be passed to poll / epoll
    * and will become readable when any async IO operations have completed.
    * If NOT_POLLABLE, return -1.
    */
-  int pollFd() const {
-    return pollFd_;
-  }
+  int pollFd() const { return pollFd_; }
 
   /**
    * If POLLABLE, call instead of wait after the file descriptor returned
@@ -234,22 +239,22 @@ class AsyncBase {
    */
   void submit(Op* op);
 
+  /**
+   * Submit a range of ops for execution
+   */
+  int submit(Range<Op**> ops);
+
  protected:
-  void complete(Op* op, ssize_t result) {
-    op->complete(result);
-  }
+  virtual int drainPollFd() = 0;
+  void complete(Op* op, ssize_t result) { op->complete(result); }
 
-  void cancel(Op* op) {
-    op->cancel();
-  }
+  void cancel(Op* op) { op->cancel(); }
 
-  bool isInit() const {
-    return init_.load(std::memory_order_relaxed);
-  }
+  bool isInit() const { return init_.load(std::memory_order_relaxed); }
 
-  void decrementPending();
-  virtual void initializeContext() = 0;
+  void decrementPending(size_t num = 1);
   virtual int submitOne(AsyncBase::Op* op) = 0;
+  virtual int submitRange(Range<AsyncBase::Op**> ops) = 0;
 
   enum class WaitType { COMPLETE, CANCEL };
   virtual Range<AsyncBase::Op**> doWait(
@@ -264,6 +269,7 @@ class AsyncBase {
   std::atomic<size_t> pending_{0};
   std::atomic<size_t> submitted_{0};
   const size_t capacity_;
+  const PollMode pollMode_;
   int pollFd_{-1};
   std::vector<Op*> completed_;
   std::vector<Op*> canceled_;
@@ -284,9 +290,7 @@ class AsyncBaseQueue {
   explicit AsyncBaseQueue(AsyncBase* asyncBase);
   ~AsyncBaseQueue();
 
-  size_t queued() const {
-    return queue_.size();
-  }
+  size_t queued() const { return queue_.size(); }
 
   /**
    * Submit an op to the AsyncBase queue.  The op will be queued until

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,14 +24,13 @@ BufferedStat<DigestT, ClockT>::BufferedStat(
     typename ClockT::duration bufferDuration,
     size_t bufferSize,
     size_t digestSize)
-    : bufferDuration_(bufferDuration), digestBuilder_(bufferSize, digestSize) {
-  expiry_.store(
-      TimePointHolder(roundUp(ClockT::now())), std::memory_order_relaxed);
-}
+    : bufferDuration_(bufferDuration),
+      expiry_(roundUp(ClockT::now())),
+      digestBuilder_(bufferSize, digestSize) {}
 
 template <typename DigestT, typename ClockT>
 void BufferedStat<DigestT, ClockT>::append(double value, TimePoint now) {
-  if (UNLIKELY(now > expiry_.load(std::memory_order_relaxed).tp)) {
+  if (FOLLY_UNLIKELY(now > expiry_.load(std::memory_order_relaxed))) {
     std::unique_lock<SharedMutex> g(mutex_, std::try_to_lock_t());
     if (g.owns_lock()) {
       doUpdate(now, g, UpdateMode::OnExpiry);
@@ -69,12 +68,12 @@ void BufferedStat<DigestT, ClockT>::doUpdate(
     TimePoint now,
     const std::unique_lock<SharedMutex>& g,
     UpdateMode updateMode) {
-  DCHECK(g.owns_lock());
+  assert(g.owns_lock());
   // Check that no other thread has performed the slide after the check
-  auto oldExpiry = expiry_.load(std::memory_order_relaxed).tp;
+  auto oldExpiry = expiry_.load(std::memory_order_relaxed);
   if (now > oldExpiry || updateMode == UpdateMode::Now) {
     now = roundUp(now);
-    expiry_.store(TimePointHolder(now), std::memory_order_relaxed);
+    expiry_.store(now, std::memory_order_relaxed);
     onNewDigest(digestBuilder_.build(), now, oldExpiry, g);
   }
 }
@@ -99,7 +98,7 @@ void BufferedDigest<DigestT, ClockT>::onNewDigest(
     TimePoint /*newExpiry*/,
     TimePoint /*oldExpiry*/,
     const std::unique_lock<SharedMutex>& /*g*/) {
-  std::array<DigestT, 2> a{{digest_, std::move(digest)}};
+  std::array<DigestT, 2> a{{std::move(digest_), std::move(digest)}};
   digest_ = DigestT::merge(a);
 }
 

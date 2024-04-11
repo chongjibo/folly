@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-#include <folly/io/async/test/BlockingSocket.h>
-
 #include <iostream>
 
 #include <folly/ExceptionWrapper.h>
+#include <folly/io/async/test/BlockingSocket.h>
 #include <folly/portability/GFlags.h>
 
 using namespace folly;
+using namespace folly::test;
 
 DEFINE_string(host, "localhost", "Host");
 DEFINE_int32(port, 0, "port");

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <folly/container/HeterogeneousAccess.h>
 
 #include <set>
+#include <string_view>
 #include <vector>
 
 #include <folly/FBString.h>
@@ -26,30 +27,20 @@
 #include <folly/portability/GTest.h>
 #include <folly/small_vector.h>
 
-#if FOLLY_HAS_STRING_VIEW
-#include <string_view> // @manual
-#endif
-
 using namespace folly;
 
 namespace {
 
-template <typename T, typename Enable = void>
-struct IsTransparent : std::false_type {};
-
-template <typename T>
-struct IsTransparent<T, void_t<typename T::is_transparent>> : std::true_type {};
-
 template <typename T>
 void checkTransparent() {
-  static_assert(IsTransparent<HeterogeneousAccessEqualTo<T>>::value, "");
-  static_assert(IsTransparent<HeterogeneousAccessHash<T>>::value, "");
+  static_assert(is_transparent_v<HeterogeneousAccessEqualTo<T>>, "");
+  static_assert(is_transparent_v<HeterogeneousAccessHash<T>>, "");
 }
 
 template <typename T>
 void checkNotTransparent() {
-  static_assert(!IsTransparent<HeterogeneousAccessEqualTo<T>>::value, "");
-  static_assert(!IsTransparent<HeterogeneousAccessHash<T>>::value, "");
+  static_assert(!is_transparent_v<HeterogeneousAccessEqualTo<T>>, "");
+  static_assert(!is_transparent_v<HeterogeneousAccessHash<T>>, "");
 }
 
 struct StringVector {
@@ -76,12 +67,10 @@ TEST(HeterogeneousAccess, transparentIsSelected) {
   checkTransparent<std::u16string>();
   checkTransparent<std::u32string>();
 
-#if FOLLY_HAS_STRING_VIEW
   checkTransparent<std::string_view>();
   checkTransparent<std::wstring_view>();
   checkTransparent<std::u16string_view>();
   checkTransparent<std::u32string_view>();
-#endif
 
   checkTransparent<fbstring>();
 
@@ -169,11 +158,7 @@ template <typename S>
 void runTestMatches(S const& src) {
   using SP = Range<typename S::value_type const*>;
   using MSP = Range<typename S::value_type*>;
-#if FOLLY_HAS_STRING_VIEW
   using SV = std::basic_string_view<typename S::value_type>;
-#else
-  using SV = SP;
-#endif
   using V = std::vector<typename S::value_type>;
 
   runTestMatches2<S, S>(src);
@@ -209,7 +194,11 @@ Range<int const*> foo(small_vector<int, 2> const& sv) {
 
 TEST(HeterogeneousAccess, transparentMatches) {
   runTestMatches<std::string>("abcd");
+#if !defined(__cpp_lib_char8_t) || __cpp_lib_char8_t < 201907
   runTestMatches<std::string>(u8"abcd");
+#else
+  runTestMatches<std::u8string>(u8"abcd");
+#endif
   runTestMatches<std::wstring>(L"abcd");
   runTestMatches<std::u16string>(u"abcd");
   runTestMatches<std::u32string>(U"abcd");

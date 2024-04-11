@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,8 +65,7 @@ constexpr auto copy_table(D const (&table)[S0]) {
 
 template <typename D, size_t S0, size_t S1, size_t... I0>
 constexpr auto copy_table(
-    D const (&table)[S0][S1],
-    std::index_sequence<I0...>) {
+    D const (&table)[S0][S1], std::index_sequence<I0...>) {
   using array = std::array<std::array<D, S1>, S0>;
   return array{{copy_table(table[I0])...}};
 }
@@ -77,8 +76,7 @@ constexpr auto copy_table(D const (&table)[S0][S1]) {
 
 template <typename D, size_t S0, size_t S1, size_t S2, size_t... I0>
 constexpr auto copy_table(
-    D const (&table)[S0][S1][S2],
-    std::index_sequence<I0...>) {
+    D const (&table)[S0][S1][S2], std::index_sequence<I0...>) {
   using array = std::array<std::array<std::array<D, S2>, S1>, S0>;
   return array{{copy_table(table[I0])...}};
 }
@@ -93,7 +91,7 @@ constexpr poly_table<Deg> make_poly_table() {
   uint64_t table[8][256][poly_size(Deg)] = {};
   // table[i][q] is Q(X) * X^(k+8*i) mod P(X),
   // where k is the number of bits in the fingerprint (and deg(P)) and
-  // Q(X) = q7*X^7 + q6*X^6 + ... + q1*X + q0 is a degree-7 polyonomial
+  // Q(X) = q7*X^7 + q6*X^6 + ... + q1*X + q0 is a degree-7 polynomial
   // whose coefficients are the bits of q.
   for (uint16_t x = 0; x < 256; x++) {
     FingerprintPolynomial<Deg> t;
@@ -121,12 +119,10 @@ const uint64_t FingerprintTable<64>::poly[poly_size(64)] = {
     FingerprintTablePoly<63>::data[0]};
 template <>
 const uint64_t FingerprintTable<96>::poly[poly_size(96)] = {
-    FingerprintTablePoly<95>::data[0],
-    FingerprintTablePoly<95>::data[1]};
+    FingerprintTablePoly<95>::data[0], FingerprintTablePoly<95>::data[1]};
 template <>
 const uint64_t FingerprintTable<128>::poly[poly_size(128)] = {
-    FingerprintTablePoly<127>::data[0],
-    FingerprintTablePoly<127>::data[1]};
+    FingerprintTablePoly<127>::data[0], FingerprintTablePoly<127>::data[1]};
 
 template <>
 const poly_table<64> FingerprintTable<64>::table = poly_table_63;

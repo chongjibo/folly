@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,14 @@
  */
 
 #include <folly/futures/test/TestExecutor.h>
+
 #include <folly/portability/GTest.h>
 
 using namespace std;
 using namespace std::chrono;
 using namespace folly;
 
-TEST(TestExecutor, parallel_run) {
+TEST(TestExecutor, parallelRun) {
   mutex m;
   set<thread::id> ids;
   auto executor = std::make_unique<TestExecutor>(4);

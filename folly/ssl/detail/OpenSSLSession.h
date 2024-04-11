@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 
 #pragma once
 
+#include <folly/SharedMutex.h>
+#include <folly/Synchronized.h>
 #include <folly/portability/OpenSSL.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
 #include <folly/ssl/SSLSession.h>
-#include <atomic>
 
 namespace folly {
 namespace ssl {
@@ -37,7 +38,7 @@ namespace detail {
 
 class OpenSSLSession : public SSLSession {
  public:
-  ~OpenSSLSession();
+  ~OpenSSLSession() = default;
 
   /**
    * Set the underlying SSL session. Any previously held session
@@ -51,7 +52,7 @@ class OpenSSLSession : public SSLSession {
   SSLSessionUniquePtr getActiveSession();
 
  private:
-  std::atomic<SSL_SESSION*> activeSession_;
+  folly::Synchronized<SSLSessionUniquePtr, folly::SharedMutex> activeSession_;
 };
 
 } // namespace detail

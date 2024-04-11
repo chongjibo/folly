@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -152,23 +152,35 @@ class PrimaryPtr {
   PrimaryPtr(std::unique_ptr<T2, Deleter> ptr) {
     set(std::move(ptr));
   }
+
+  explicit PrimaryPtr(std::nullptr_t) {}
+
   ~PrimaryPtr() {
     if (*this) {
       LOG(FATAL) << "PrimaryPtr has to be joined explicitly.";
     }
   }
 
-  explicit operator bool() const {
-    return !!innerPtr_;
+  PrimaryPtr(PrimaryPtr<T>&&) = default;
+
+  void swap(PrimaryPtr<T>& other) noexcept {
+    PrimaryPtr<T> temp = std::move(other);
+    other = std::move(*this);
+    *this = std::move(temp);
   }
+
+  PrimaryPtr<T> exchange(PrimaryPtr<T>&& newVal) noexcept {
+    PrimaryPtr<T> oldVal = std::move(*this);
+    *this = std::move(newVal);
+    return oldVal;
+  }
+
+  explicit operator bool() const { return !!innerPtr_; }
 
   // Attempts to lock a pointer. Returns null if pointer is not set or if join()
   // was called or the cleanup() task was started (even if the call to join()
   // hasn't returned yet and the cleanup() task has not completed yet).
   std::shared_ptr<T> lock() const {
-    if (!*this) {
-      return nullptr;
-    }
     if (auto outerPtr = outerPtrWeak_.lock()) {
       return *outerPtr;
     }
@@ -205,10 +217,7 @@ class PrimaryPtr {
           return std::move(this->unreferenced_);
         })
         // start cleanup tasks
-        .deferValue([this](folly::Unit) {
-          auto cleanup = getCleanup(innerPtr_.get());
-          return std::move(cleanup);
-        })
+        .deferValue([this](folly::Unit) { return getCleanup(innerPtr_.get()); })
         .defer([this](folly::Try<folly::Unit> r) {
           if (r.hasException()) {
             LOG(FATAL) << "Cleanup actions must be noexcept.";
@@ -237,10 +246,26 @@ class PrimaryPtr {
     auto referencesContract = folly::makePromiseContract<folly::Unit>();
     unreferenced_ = std::move(std::get<1>(referencesContract));
 
+    // The deleter object needs to be copyable in std::shared_ptr on some
+    // platform. To work around this limitation we can slightly tweak the
+    // semantics of deleter copy constructor and check we always use this
+    // object at most once.
+    class LastReference {
+     public:
+      LastReference(Promise<Unit>&& p) : p_(std::move(p)) {}
+      LastReference(LastReference&&) = default;
+      LastReference(LastReference& other) : LastReference(std::move(other)) {}
+      void operator()(T*) {
+        DCHECK(!p_.isFulfilled());
+        p_.setValue();
+      }
+
+     private:
+      Promise<Unit> p_;
+    };
     auto innerPtrShared = std::shared_ptr<T>(
         innerPtr_.get(),
-        [lastReference = std::move(std::get<0>(referencesContract))](
-            T*) mutable { lastReference.setValue(folly::Unit{}); });
+        LastReference{std::move(std::get<0>(referencesContract))});
 
     outerPtrWeak_ = outerPtrShared_ =
         std::make_shared<std::shared_ptr<T>>(innerPtrShared);
@@ -252,11 +277,13 @@ class PrimaryPtr {
 
   // Gets a non-owning reference to the pointer. join() and the cleanup() work
   // do *NOT* wait for outstanding PrimaryPtrRef objects to be released.
-  PrimaryPtrRef<T> ref() const {
-    return PrimaryPtrRef<T>(outerPtrWeak_);
-  }
+  PrimaryPtrRef<T> ref() const { return PrimaryPtrRef<T>(outerPtrWeak_); }
 
  private:
+  // Making this private for now since non-null PrimaryPtr's must be explicitly
+  // joined before destruction.
+  PrimaryPtr<T>& operator=(PrimaryPtr<T>&& other) = default;
+
   template <class>
   friend class EnablePrimaryFromThis;
   friend class PrimaryPtrRef<T>;
@@ -267,6 +294,16 @@ class PrimaryPtr {
   std::unique_ptr<T, folly::Function<void(T*)>> innerPtr_;
 };
 
+template <typename T>
+void swap(PrimaryPtr<T>& x, PrimaryPtr<T>& y) noexcept {
+  x.swap(y);
+}
+
+template <typename T>
+PrimaryPtr<T> exchange(PrimaryPtr<T>& x, PrimaryPtr<T>&& newVal) noexcept {
+  return x.exchange(std::move(newVal));
+}
+
 /**
  * PrimaryPtrRef is a non-owning reference to the pointer. PrimaryPtr::join()
  * and the PrimaryPtr::cleanup() work do *NOT* wait for outstanding
@@ -275,6 +312,8 @@ class PrimaryPtr {
 template <typename T>
 class PrimaryPtrRef {
  public:
+  PrimaryPtrRef() = default;
+
   // Attempts to lock a pointer. Returns null if pointer is not set or if
   // join() was called or cleanup() work was started (even if the call to join()
   // hasn't returned yet or the cleanup() work has not completed yet).

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,12 +18,17 @@
 #error This file may only be included from folly/gen/Base.h
 #endif
 
+#include <folly/Function.h>
 #include <folly/Portability.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include <folly/functional/Invoke.h>
 
-#if FOLLY_USE_RANGEV3
+// inner condition from:
+// https://github.com/ericniebler/range-v3/blob/0.11.0/include/range/v3/detail/config.hpp#L222
+#define FOLLY_DETAIL_GEN_BASE_HAS_RANGEV3 __has_include(<range/v3/version.hpp>)
+
+#if FOLLY_DETAIL_GEN_BASE_HAS_RANGEV3
 #include <range/v3/view/filter.hpp>
 #include <range/v3/view/transform.hpp>
 #endif
@@ -65,19 +70,11 @@ class Group : public GenImpl<Value&&, Group<Key, Value>> {
   Group(Key key, VectorType values)
       : key_(std::move(key)), values_(std::move(values)) {}
 
-  const Key& key() const {
-    return key_;
-  }
+  const Key& key() const { return key_; }
 
-  size_t size() const {
-    return values_.size();
-  }
-  const VectorType& values() const {
-    return values_;
-  }
-  VectorType& values() {
-    return values_;
-  }
+  size_t size() const { return values_.size(); }
+  const VectorType& values() const { return values_; }
+  VectorType& values() { return values_; }
 
   VectorType operator|(const detail::Collect<VectorType>&) const {
     return values();
@@ -142,14 +139,14 @@ class ReferencedSource
 
   template <class Body>
   void foreach(Body&& body) const {
-    for (auto& value : *container_) {
+    for (auto&& value : *container_) {
       body(std::forward<Value>(value));
     }
   }
 
   template <class Handler>
   bool apply(Handler&& handler) const {
-    for (auto& value : *container_) {
+    for (auto&& value : *container_) {
       if (!handler(std::forward<Value>(value))) {
         return false;
       }
@@ -179,8 +176,7 @@ template <class StorageType, class Container>
 class CopiedSource
     : public GenImpl<const StorageType&, CopiedSource<StorageType, Container>> {
   static_assert(
-      !std::is_reference<StorageType>::value,
-      "StorageType must be decayed");
+      !std::is_reference<StorageType>::value, "StorageType must be decayed");
 
  public:
   // Generator objects are often copied during normal construction as they are
@@ -189,8 +185,7 @@ class CopiedSource
   // const reference to the value, it's safe to share it between multiple
   // generators.
   static_assert(
-      !std::is_reference<Container>::value,
-      "Can't copy into a reference");
+      !std::is_reference<Container>::value, "Can't copy into a reference");
   std::shared_ptr<const Container> copy_;
 
  public:
@@ -198,7 +193,8 @@ class CopiedSource
 
   template <class SourceContainer>
   explicit CopiedSource(const SourceContainer& container)
-      : copy_(new Container(begin(container), end(container))) {}
+      : copy_(new Container(access::begin(container), access::end(container))) {
+  }
 
   explicit CopiedSource(Container&& container)
       : copy_(new Container(std::move(container))) {}
@@ -324,12 +320,8 @@ class RangeImpl {
 
  public:
   explicit RangeImpl(Value end) : end_(std::move(end)) {}
-  bool test(const Value& current) const {
-    return current < end_;
-  }
-  void step(Value& current) const {
-    ++current;
-  }
+  bool test(const Value& current) const { return current < end_; }
+  void step(Value& current) const { ++current; }
   static constexpr bool infinite = false;
 };
 
@@ -341,12 +333,8 @@ class RangeWithStepImpl {
  public:
   explicit RangeWithStepImpl(Value end, Distance step)
       : end_(std::move(end)), step_(std::move(step)) {}
-  bool test(const Value& current) const {
-    return current < end_;
-  }
-  void step(Value& current) const {
-    current += step_;
-  }
+  bool test(const Value& current) const { return current < end_; }
+  void step(Value& current) const { current += step_; }
   static constexpr bool infinite = false;
 };
 
@@ -356,12 +344,8 @@ class SeqImpl {
 
  public:
   explicit SeqImpl(Value end) : end_(std::move(end)) {}
-  bool test(const Value& current) const {
-    return current <= end_;
-  }
-  void step(Value& current) const {
-    ++current;
-  }
+  bool test(const Value& current) const { return current <= end_; }
+  void step(Value& current) const { ++current; }
   static constexpr bool infinite = false;
 };
 
@@ -373,24 +357,16 @@ class SeqWithStepImpl {
  public:
   explicit SeqWithStepImpl(Value end, Distance step)
       : end_(std::move(end)), step_(std::move(step)) {}
-  bool test(const Value& current) const {
-    return current <= end_;
-  }
-  void step(Value& current) const {
-    current += step_;
-  }
+  bool test(const Value& current) const { return current <= end_; }
+  void step(Value& current) const { current += step_; }
   static constexpr bool infinite = false;
 };
 
 template <class Value>
 class InfiniteImpl {
  public:
-  bool test(const Value& /* current */) const {
-    return true;
-  }
-  void step(Value& current) const {
-    ++current;
-  }
+  bool test(const Value& /* current */) const { return true; }
+  void step(Value& current) const { ++current; }
   static constexpr bool infinite = true;
 };
 
@@ -441,6 +417,7 @@ class Yield : public GenImpl<Value, Yield<Value, Source>> {
 template <class Value>
 class Empty : public GenImpl<Value, Empty<Value>> {
  public:
+  Empty() = default;
   template <class Handler>
   bool apply(Handler&&) const {
     return true;
@@ -480,8 +457,7 @@ class SingleReference : public GenImpl<Value&, SingleReference<Value>> {
 template <class Value>
 class SingleCopy : public GenImpl<const Value&, SingleCopy<Value>> {
   static_assert(
-      !std::is_reference<Value>::value,
-      "SingleCopy requires non-ref types");
+      !std::is_reference<Value>::value, "SingleCopy requires non-ref types");
   Value value_;
 
  public:
@@ -551,14 +527,12 @@ class Map : public Operator<Map<Predicate>> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source, class Value, class Gen = Generator<Value, Source>>
-  Gen compose(GenImpl<Value, Source>&& source) const {
+  template <
+      class Source,
+      class Gen =
+          Generator<typename Source::ValueType, typename Source::SelfType>>
+  Gen compose(Source source) const {
     return Gen(std::move(source.self()), pred_);
-  }
-
-  template <class Source, class Value, class Gen = Generator<Value, Source>>
-  Gen compose(const GenImpl<Value, Source>& source) const {
-    return Gen(source.self(), pred_);
   }
 };
 
@@ -835,10 +809,8 @@ class Stride : public Operator<Stride> {
       size_t distance = stride_;
       return source_.apply([&](Value value) -> bool {
         if (++distance >= stride_) {
-          if (!handler(std::forward<Value>(value))) {
-            return false;
-          }
           distance = 0;
+          return handler(std::forward<Value>(value));
         }
         return true;
       });
@@ -1323,6 +1295,7 @@ class GroupByAdjacent : public Operator<GroupByAdjacent<Selector>> {
 template <class Expected>
 class TypeAssertion : public Operator<TypeAssertion<Expected>> {
  public:
+  TypeAssertion() = default;
   template <class Source, class Value>
   const Source& compose(const GenImpl<Value, Source>& source) const {
     static_assert(
@@ -1761,28 +1734,28 @@ class RangeConcat : public Operator<RangeConcat> {
  **/
 template <class Exception, class ErrorHandler>
 class GuardImpl : public Operator<GuardImpl<Exception, ErrorHandler>> {
-  ErrorHandler handler_;
+  ErrorHandler exceptionHandler_;
 
  public:
-  explicit GuardImpl(ErrorHandler handler) : handler_(std::move(handler)) {}
+  explicit GuardImpl(ErrorHandler handler)
+      : exceptionHandler_(std::move(handler)) {}
 
   template <class Value, class Source>
   class Generator : public GenImpl<Value, Generator<Value, Source>> {
     Source source_;
-    ErrorHandler handler_;
+    ErrorHandler exceptionHandler_;
 
    public:
     explicit Generator(Source source, ErrorHandler handler)
-        : source_(std::move(source)), handler_(std::move(handler)) {}
+        : source_(std::move(source)), exceptionHandler_(std::move(handler)) {}
 
     template <class Handler>
     bool apply(Handler&& handler) const {
       return source_.apply([&](Value value) -> bool {
         try {
-          handler(std::forward<Value>(value));
-          return true;
+          return handler(std::forward<Value>(value));
         } catch (Exception& e) {
-          return handler_(e, std::forward<Value>(value));
+          return exceptionHandler_(e, std::forward<Value>(value));
         }
       });
     }
@@ -1793,12 +1766,12 @@ class GuardImpl : public Operator<GuardImpl<Exception, ErrorHandler>> {
 
   template <class Value, class Source, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
-    return Gen(std::move(source.self()), handler_);
+    return Gen(std::move(source.self()), exceptionHandler_);
   }
 
   template <class Value, class Source, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
-    return Gen(source.self(), handler_);
+    return Gen(source.self(), exceptionHandler_);
   }
 };
 
@@ -1836,10 +1809,7 @@ class Dereference : public Operator<Dereference> {
     template <class Handler>
     bool apply(Handler&& handler) const {
       return source_.apply([&](Value value) -> bool {
-        if (value) {
-          return handler(*std::forward<Value>(value));
-        }
-        return true;
+        return !value || handler(*std::forward<Value>(value));
       });
     }
 
@@ -1988,9 +1958,7 @@ class Cycle : public Operator<Cycle<forever>> {
    *
    *  auto tripled = gen | cycle(3);
    */
-  Cycle<false> operator()(off_t limit) const {
-    return Cycle<false>(limit);
-  }
+  Cycle<false> operator()(off_t limit) const { return Cycle<false>(limit); }
 };
 
 /*
@@ -2335,8 +2303,10 @@ class Collect : public Operator<Collect<Collection>> {
  *   set<string> uniqueNames = from(names) | as<set>();
  */
 template <
-    template <class, class> class Container,
-    template <class> class Allocator>
+    template <class, class>
+    class Container,
+    template <class>
+    class Allocator>
 class CollectTemplate : public Operator<CollectTemplate<Container, Allocator>> {
  public:
   CollectTemplate() = default;
@@ -2374,12 +2344,8 @@ class UnwrapOr {
   explicit UnwrapOr(T&& value) : value_(std::move(value)) {}
   explicit UnwrapOr(const T& value) : value_(value) {}
 
-  T& value() {
-    return value_;
-  }
-  const T& value() const {
-    return value_;
-  }
+  T& value() { return value_; }
+  const T& value() const { return value_; }
 
  private:
   T value_;
@@ -2485,7 +2451,18 @@ const T& operator|(const Optional<T>& opt, const Unwrap&) {
   return opt.value();
 }
 
-#if FOLLY_USE_RANGEV3
+class ToVirtualGen : public Operator<ToVirtualGen> {
+ public:
+  using Operator<ToVirtualGen>::Operator;
+  template <
+      class Source,
+      class Generator = VirtualGenMoveOnly<typename Source::ValueType>>
+  Generator compose(Source source) const {
+    return Generator(std::move(source.self()));
+  }
+};
+
+#if FOLLY_DETAIL_GEN_BASE_HAS_RANGEV3
 template <class RangeV3, class Value>
 class RangeV3Source
     : public gen::GenImpl<Value, RangeV3Source<RangeV3, Value>> {
@@ -2566,10 +2543,10 @@ struct from_rangev3_copy_fn {
     return RangeV3CopySource<RangeDecay, Value>(std::move(r));
   }
 };
-#endif // FOLLY_USE_RANGEV3
+#endif // FOLLY_DETAIL_GEN_BASE_HAS_RANGEV3
 } // namespace detail
 
-#if FOLLY_USE_RANGEV3
+#if FOLLY_DETAIL_GEN_BASE_HAS_RANGEV3
 /*
  ******************************************************************************
  * Pipe fittings between a container/range-v3 and a folly::gen.
@@ -2594,71 +2571,111 @@ template <typename Range>
 auto rangev3_will_be_consumed(Range&& r) {
   // intentionally use `r` instead of `std::forward<Range>(r)`; see above.
   // range-v3 ranges copy in O(1) so it is appropriate.
-  return ranges::views::all(r);
+  return ::ranges::views::all(r);
 }
-#endif // FOLLY_USE_RANGEV3
+#endif // FOLLY_DETAIL_GEN_BASE_HAS_RANGEV3
 
 /**
  * VirtualGen<T> - For wrapping template types in simple polymorphic wrapper.
  **/
-template <class Value>
-class VirtualGen : public GenImpl<Value, VirtualGen<Value>> {
+template <class Value, class Self>
+class VirtualGenBase : public GenImpl<Value, Self> {
+ protected:
   class WrapperBase {
    public:
     virtual ~WrapperBase() noexcept {}
-    virtual bool apply(const std::function<bool(Value)>& handler) const = 0;
-    virtual void foreach(const std::function<void(Value)>& body) const = 0;
-    virtual std::unique_ptr<const WrapperBase> clone() const = 0;
+    virtual bool apply(const FunctionRef<bool(Value)>& handler) const = 0;
+    virtual void foreach(const FunctionRef<void(Value)>& body) const = 0;
+    virtual std::unique_ptr<const WrapperBase> clone() const {
+      // clone() is only ever called from VirtualGen<>, where it
+      // is overridden with a real implementation.
+      return nullptr;
+    }
   };
 
   template <class Wrapped>
   class WrapperImpl : public WrapperBase {
+   protected:
     Wrapped wrapped_;
 
    public:
     explicit WrapperImpl(Wrapped wrapped) : wrapped_(std::move(wrapped)) {}
 
-    bool apply(const std::function<bool(Value)>& handler) const override {
+    bool apply(const FunctionRef<bool(Value)>& handler) const final {
       return wrapped_.apply(handler);
     }
 
-    void foreach(const std::function<void(Value)>& body) const override {
+    void foreach(const FunctionRef<void(Value)>& body) const final {
       wrapped_.foreach(body);
-    }
-
-    std::unique_ptr<const WrapperBase> clone() const override {
-      return std::unique_ptr<const WrapperBase>(new WrapperImpl(wrapped_));
     }
   };
 
   std::unique_ptr<const WrapperBase> wrapper_;
 
+  VirtualGenBase() = default;
+  VirtualGenBase(VirtualGenBase&&) = default;
+  VirtualGenBase& operator=(VirtualGenBase&&) = default;
+
  public:
-  template <class Self>
-  /* implicit */ VirtualGen(Self source)
-      : wrapper_(new WrapperImpl<Self>(std::move(source))) {}
-
-  VirtualGen(VirtualGen&& source) noexcept
-      : wrapper_(std::move(source.wrapper_)) {}
-
-  VirtualGen(const VirtualGen& source) : wrapper_(source.wrapper_->clone()) {}
-
-  VirtualGen& operator=(const VirtualGen& source) {
-    wrapper_.reset(source.wrapper_->clone());
-    return *this;
-  }
-
-  VirtualGen& operator=(VirtualGen&& source) noexcept {
-    wrapper_ = std::move(source.wrapper_);
-    return *this;
-  }
-
-  bool apply(const std::function<bool(Value)>& handler) const {
+  bool apply(const FunctionRef<bool(Value)>& handler) const {
     return wrapper_->apply(handler);
   }
 
-  void foreach(const std::function<void(Value)>& body) const {
+  void foreach(const FunctionRef<void(Value)>& body) const {
     wrapper_->foreach(body);
+  }
+};
+
+template <class Value>
+class VirtualGen : public VirtualGenBase<Value, VirtualGen<Value>> {
+  using Base = VirtualGenBase<Value, VirtualGen>;
+  using WrapperBase = typename Base::WrapperBase;
+  template <class Wrapped>
+  using WrapperImpl = typename Base::template WrapperImpl<Wrapped>;
+
+  template <class Wrapped>
+  class CloneableWrapperImpl : public WrapperImpl<Wrapped> {
+   public:
+    using WrapperImpl<Wrapped>::WrapperImpl;
+
+    std::unique_ptr<const WrapperBase> clone() const final {
+      return std::make_unique<CloneableWrapperImpl<Wrapped>>(this->wrapped_);
+    }
+  };
+
+ public:
+  VirtualGen() = default;
+  VirtualGen(VirtualGen&& source) = default;
+  VirtualGen& operator=(VirtualGen&& source) = default;
+
+  template <class Source>
+  /* implicit */ VirtualGen(Source source) {
+    this->wrapper_ =
+        std::make_unique<CloneableWrapperImpl<Source>>(std::move(source));
+  }
+
+  VirtualGen(const VirtualGen& source) {
+    this->wrapper_ = source.wrapper_->clone();
+  }
+
+  VirtualGen& operator=(const VirtualGen& source) {
+    return *this = VirtualGen(source);
+  }
+};
+
+template <class Value>
+class VirtualGenMoveOnly
+    : public VirtualGenBase<Value, VirtualGenMoveOnly<Value>> {
+ public:
+  VirtualGenMoveOnly() = default;
+  VirtualGenMoveOnly(VirtualGenMoveOnly&& other) = default;
+  VirtualGenMoveOnly& operator=(VirtualGenMoveOnly&&) = default;
+
+  template <class Source>
+  /* implicit */ VirtualGenMoveOnly(Source source) {
+    this->wrapper_ = std::make_unique<
+        typename VirtualGenBase<Value, VirtualGenMoveOnly<Value>>::
+            template WrapperImpl<Source>>(std::move(source));
   }
 };
 
@@ -2697,6 +2714,8 @@ constexpr detail::Dereference dereference{};
 constexpr detail::Indirect indirect{};
 
 constexpr detail::Unwrap unwrap{};
+
+constexpr detail::ToVirtualGen virtualize{};
 
 template <class Number>
 inline detail::Take take(Number count) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
  */
 
 #include <folly/Memory.h>
-#include <folly/fibers/EventBaseLoopController.h>
 
 namespace folly {
 namespace fibers {
@@ -127,7 +126,7 @@ inline void EventBaseLoopController::scheduleThreadSafe() {
 inline HHWheelTimer* EventBaseLoopController::timer() {
   assert(eventBaseAttached_);
 
-  if (UNLIKELY(eventBaseShutdownToken_.isCancellationRequested())) {
+  if (FOLLY_UNLIKELY(eventBaseShutdownToken_.isCancellationRequested())) {
     return nullptr;
   }
 

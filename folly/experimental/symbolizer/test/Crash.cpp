@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
+#include <cstdlib>
 #include <folly/experimental/symbolizer/SignalHandler.h>
 
 int main() {
   folly::symbolizer::installFatalSignalHandler();
-  __builtin_trap();
+  std::abort();
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,27 +16,24 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_STRING_VIEW
-#include <string_view> // @manual
-#endif
-
 #include <memory>
+#include <string_view>
+
+#if __has_include(<range>)
+#include <ranges>
+#endif
 
 #include <folly/portability/GTest.h>
 
 class Base {
  public:
   virtual ~Base() {}
-  virtual int foo() const {
-    return 1;
-  }
+  virtual int foo() const { return 1; }
 };
 
 class Derived : public Base {
  public:
-  int foo() const final {
-    return 2;
-  }
+  int foo() const final { return 2; }
 };
 
 // A compiler that supports final will likely inline the call to p->foo()
@@ -54,3 +51,7 @@ TEST(Portability, Final) {
   EXPECT_EQ(3, fooBase(p.get()));
   EXPECT_EQ(3, fooDerived(p.get()));
 }
+
+#if __has_include(<range>)
+static_assert(std::ranges::random_access_range<std::vector<int>>);
+#endif

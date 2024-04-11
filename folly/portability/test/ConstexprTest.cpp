@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,33 +19,84 @@
 #include <folly/portability/GTest.h>
 
 using folly::constexpr_strcmp;
+using folly::constexpr_strlen;
+using folly::detail::constexpr_strcmp_fallback;
+using folly::detail::constexpr_strlen_fallback;
 
-TEST(ConstexprTest, constexpr_strlen_cstr) {
+template <typename, typename>
+struct static_assert_same;
+template <typename T>
+struct static_assert_same<T, T> {};
+
+TEST(ConstexprTest, constexprStrlenCstr) {
   constexpr auto v = "hello";
-  constexpr auto a = folly::constexpr_strlen(v);
-  EXPECT_EQ(5, a);
-  EXPECT_TRUE((std::is_same<const size_t, decltype(a)>::value));
+  {
+    constexpr auto a = constexpr_strlen(v);
+    void(static_assert_same<const size_t, decltype(a)>{});
+    EXPECT_EQ(5, a);
+  }
+  {
+    constexpr auto a = constexpr_strlen_fallback(v);
+    void(static_assert_same<const size_t, decltype(a)>{});
+    EXPECT_EQ(5, a);
+  }
 }
 
-TEST(ConstexprTest, constexpr_strlen_ints) {
+TEST(ConstexprTest, constexprStrlenInts) {
   constexpr int v[] = {5, 3, 4, 0, 7};
-  constexpr auto a = folly::constexpr_strlen(v);
-  EXPECT_EQ(3, a);
-  EXPECT_TRUE((std::is_same<const size_t, decltype(a)>::value));
+  {
+    constexpr auto a = constexpr_strlen(v);
+    void(static_assert_same<const size_t, decltype(a)>{});
+    EXPECT_EQ(3, a);
+  }
+  {
+    constexpr auto a = constexpr_strlen_fallback(v);
+    void(static_assert_same<const size_t, decltype(a)>{});
+    EXPECT_EQ(3, a);
+  }
 }
 
-TEST(ConstexprTest, constexpr_strcmp_ints) {
+TEST(ConstexprTest, constexprStrcmpInts) {
   constexpr int v[] = {5, 3, 4, 0, 7};
   constexpr int v1[] = {6, 4};
   static_assert(constexpr_strcmp(v1, v) > 0, "constexpr_strcmp is broken");
+  static_assert(constexpr_strcmp(v, v1) < 0, "constexpr_strcmp is broken");
   static_assert(constexpr_strcmp(v, v) == 0, "constexpr_strcmp is broken");
+  static_assert(
+      constexpr_strcmp_fallback(v1, v) > 0, "constexpr_strcmp is broken");
+  static_assert(
+      constexpr_strcmp_fallback(v, v1) < 0, "constexpr_strcmp is broken");
+  static_assert(
+      constexpr_strcmp_fallback(v, v) == 0, "constexpr_strcmp is broken");
 }
 
 static_assert(
-    constexpr_strcmp("abc", "abc") == 0,
-    "constexpr_strcmp is broken");
+    constexpr_strcmp("abc", "abc") == 0, "constexpr_strcmp is broken");
 static_assert(constexpr_strcmp("", "") == 0, "constexpr_strcmp is broken");
 static_assert(constexpr_strcmp("abc", "def") < 0, "constexpr_strcmp is broken");
 static_assert(constexpr_strcmp("xyz", "abc") > 0, "constexpr_strcmp is broken");
 static_assert(constexpr_strcmp("a", "abc") < 0, "constexpr_strcmp is broken");
 static_assert(constexpr_strcmp("abc", "a") > 0, "constexpr_strcmp is broken");
+static_assert(
+    constexpr_strcmp_fallback("abc", "abc") == 0, "constexpr_strcmp is broken");
+static_assert(
+    constexpr_strcmp_fallback("", "") == 0, "constexpr_strcmp is broken");
+static_assert(
+    constexpr_strcmp_fallback("abc", "def") < 0, "constexpr_strcmp is broken");
+static_assert(
+    constexpr_strcmp_fallback("xyz", "abc") > 0, "constexpr_strcmp is broken");
+static_assert(
+    constexpr_strcmp_fallback("a", "abc") < 0, "constexpr_strcmp is broken");
+static_assert(
+    constexpr_strcmp_fallback("abc", "a") > 0, "constexpr_strcmp is broken");
+
+TEST(ConstexprTest, isConstantEvaluatedOr) {
+  static_assert(folly::is_constant_evaluated_or(true));
+  EXPECT_FALSE(folly::is_constant_evaluated_or(false));
+
+#if !defined(__cpp_lib_is_constant_evaluated) && \
+    !FOLLY_HAS_BUILTIN(__builtin_is_constant_evaluated)
+  static_assert(!folly::is_constant_evaluated_or(false));
+  EXPECT_TRUE(folly::is_constant_evaluated_or(true));
+#endif
+}

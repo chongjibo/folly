@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,48 +16,80 @@
 
 #include <folly/experimental/symbolizer/Symbolizer.h>
 
-#include <link.h>
-#include <ucontext.h>
-
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 
-#ifdef __GLIBCXX__
-#include <ext/stdio_filebuf.h>
-#include <ext/stdio_sync_filebuf.h>
-#endif
-
-#include <folly/Conv.h>
 #include <folly/FileUtil.h>
 #include <folly/Memory.h>
 #include <folly/ScopeGuard.h>
 #include <folly/String.h>
+#include <folly/Synchronized.h>
+#include <folly/container/EvictingCacheMap.h>
 #include <folly/experimental/symbolizer/Dwarf.h>
 #include <folly/experimental/symbolizer/Elf.h>
+#include <folly/experimental/symbolizer/ElfCache.h>
 #include <folly/experimental/symbolizer/LineReader.h>
+#include <folly/experimental/symbolizer/detail/Debug.h>
 #include <folly/lang/SafeAssert.h>
+#include <folly/lang/ToAscii.h>
+#include <folly/memory/SanitizeAddress.h>
+#include <folly/portability/Config.h>
 #include <folly/portability/SysMman.h>
 #include <folly/portability/Unistd.h>
+#include <folly/tracing/AsyncStack.h>
 
-#if defined(__linux__)
-static struct r_debug* get_r_debug() {
-  return &_r_debug;
-}
-#elif defined(__APPLE__)
-extern struct r_debug _r_debug;
-static struct r_debug* get_r_debug() {
-  return &_r_debug;
-}
-#else
-static struct r_debug* get_r_debug() {
-  return nullptr;
-}
+#if FOLLY_HAVE_SWAPCONTEXT
+// folly/portability/Config.h (thus features.h) must be included
+// first, and _XOPEN_SOURCE must be defined to unable the context
+// functions on macOS.
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE
+#endif
+#include <ucontext.h>
+#endif
+
+#if FOLLY_HAVE_BACKTRACE
+#include <execinfo.h>
 #endif
 
 namespace folly {
 namespace symbolizer {
+
+namespace {
+template <typename PrintFunc>
+void printAsyncStackInfo(PrintFunc print) {
+  char buf[to_ascii_size_max<16, uint64_t>];
+  auto printHex = [&print, &buf](uint64_t val) {
+    print("0x");
+    print(StringPiece(buf, to_ascii_lower<16>(buf, val)));
+  };
+
+  // Print async stack trace, if available
+  const auto* asyncStackRoot = tryGetCurrentAsyncStackRoot();
+  const auto* asyncStackFrame =
+      asyncStackRoot ? asyncStackRoot->getTopFrame() : nullptr;
+
+  print("\n");
+  print("*** Check failure async stack trace: ***\n");
+  print("*** First async stack root: ");
+  printHex((uint64_t)asyncStackRoot);
+  print(", normal stack frame pointer holding async stack root: ");
+  printHex(
+      asyncStackRoot ? (uint64_t)asyncStackRoot->getStackFramePointer() : 0);
+  print(", return address: ");
+  printHex(asyncStackRoot ? (uint64_t)asyncStackRoot->getReturnAddress() : 0);
+  print(" ***\n");
+  print("*** First async stack frame pointer: ");
+  printHex((uint64_t)asyncStackFrame);
+  print(", return address: ");
+  printHex(asyncStackFrame ? (uint64_t)asyncStackFrame->getReturnAddress() : 0);
+  print(", async stack trace: ***\n");
+}
+} // namespace
+
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 namespace {
 
@@ -67,6 +99,7 @@ ElfCache* defaultElfCache() {
 }
 
 void setSymbolizedFrame(
+    ElfCacheBase* const elfCache,
     SymbolizedFrame& frame,
     const std::shared_ptr<ElfFile>& file,
     uintptr_t address,
@@ -74,45 +107,66 @@ void setSymbolizedFrame(
     folly::Range<SymbolizedFrame*> extraInlineFrames = {}) {
   frame.clear();
   frame.found = true;
-
-  auto sym = file->getDefinitionByAddress(address);
-  if (!sym.first) {
-    return;
-  }
-
   frame.addr = address;
   frame.file = file;
-  frame.name = file->getSymbolName(sym);
+  frame.name = file->getSymbolName(file->getDefinitionByAddress(address));
 
-  Dwarf(file.get())
-      .findAddress(address, mode, frame.location, extraInlineFrames);
+  Dwarf(elfCache, file.get())
+      .findAddress(address, mode, frame, extraInlineFrames);
 }
+
+// SymbolCache contains mapping between an address and its frames. The first
+// frame is the normal function call, and the following are stacked inline
+// function calls if any.
+using CachedSymbolizedFrames =
+    std::array<SymbolizedFrame, 1 + kMaxInlineLocationInfoPerFrame>;
+
+using UnsyncSymbolCache = EvictingCacheMap<uintptr_t, CachedSymbolizedFrames>;
 
 } // namespace
 
+struct Symbolizer::SymbolCache : public Synchronized<UnsyncSymbolCache> {
+  using Super = Synchronized<UnsyncSymbolCache>;
+  using Super::Super;
+};
+
 bool Symbolizer::isAvailable() {
-  return get_r_debug();
+  return detail::get_r_debug();
 }
 
 Symbolizer::Symbolizer(
     ElfCacheBase* cache,
     LocationInfoMode mode,
-    size_t symbolCacheSize)
-    : cache_(cache ? cache : defaultElfCache()), mode_(mode) {
+    size_t symbolCacheSize,
+    std::string exePath)
+    : cache_(cache ? cache : defaultElfCache()),
+      mode_(mode),
+      exePath_(std::move(exePath)) {
   if (symbolCacheSize > 0) {
-    symbolCache_.emplace(folly::in_place, symbolCacheSize);
+    symbolCache_ =
+        std::make_unique<SymbolCache>(UnsyncSymbolCache{symbolCacheSize});
   }
 }
+
+// Needs complete type for SymbolCache
+Symbolizer::~Symbolizer() {}
 
 size_t Symbolizer::symbolize(
     folly::Range<const uintptr_t*> addrs,
     folly::Range<SymbolizedFrame*> frames) {
   size_t addrCount = addrs.size();
   size_t frameCount = frames.size();
-  FOLLY_SAFE_CHECK(addrCount <= frameCount, "Not enough frames.");
+  if (addrCount > frameCount) {
+    FOLLY_SAFE_DFATAL(
+        "Not enough frames: addrCount: ",
+        addrCount,
+        " frameCount: ",
+        frameCount);
+    return 0;
+  }
   size_t remaining = addrCount;
 
-  auto const dbg = get_r_debug();
+  auto const dbg = detail::get_r_debug();
   if (dbg == nullptr) {
     return 0;
   }
@@ -122,7 +176,7 @@ size_t Symbolizer::symbolize(
 
   char selfPath[PATH_MAX + 8];
   ssize_t selfSize;
-  if ((selfSize = readlink("/proc/self/exe", selfPath, PATH_MAX + 1)) == -1) {
+  if ((selfSize = readlink(exePath_.c_str(), selfPath, PATH_MAX + 1)) == -1) {
     // Something has gone terribly wrong.
     return 0;
   }
@@ -149,7 +203,6 @@ size_t Symbolizer::symbolize(
     // behavior appears to be documented, so checking for the empty string is
     // as good as anything.
     auto const objPath = lmap->l_name[0] != '\0' ? lmap->l_name : selfPath;
-
     auto const elfFile = cache_->getFile(objPath);
     if (!elfFile) {
       continue;
@@ -199,14 +252,15 @@ size_t Symbolizer::symbolize(
         if (mode_ == LocationInfoMode::FULL_WITH_INLINE &&
             frameCount > addrCount) {
           size_t maxInline = std::min<size_t>(
-              Dwarf::kMaxInlineLocationInfoPerFrame, frameCount - addrCount);
+              kMaxInlineLocationInfoPerFrame, frameCount - addrCount);
           // First use the trailing empty frames (index starting from addrCount)
           // to get the inline call stack, then rotate these inline functions
           // before the caller at `frame[i]`.
           folly::Range<SymbolizedFrame*> inlineFrameRange(
               frames.begin() + addrCount,
               frames.begin() + addrCount + maxInline);
-          setSymbolizedFrame(frame, elfFile, adjusted, mode_, inlineFrameRange);
+          setSymbolizedFrame(
+              cache_, frame, elfFile, adjusted, mode_, inlineFrameRange);
 
           numInlined = countFrames(inlineFrameRange);
           // Rotate inline frames right before its caller frame.
@@ -216,7 +270,7 @@ size_t Symbolizer::symbolize(
               frames.begin() + addrCount + numInlined);
           addrCount += numInlined;
         } else {
-          setSymbolizedFrame(frame, elfFile, adjusted, mode_);
+          setSymbolizedFrame(cache_, frame, elfFile, adjusted, mode_);
         }
         --remaining;
         if (symbolCache_) {
@@ -238,239 +292,54 @@ size_t Symbolizer::symbolize(
   return addrCount;
 }
 
-namespace {
-constexpr char kHexChars[] = "0123456789abcdef";
-constexpr auto kAddressColor = SymbolizePrinter::Color::BLUE;
-constexpr auto kFunctionColor = SymbolizePrinter::Color::PURPLE;
-constexpr auto kFileColor = SymbolizePrinter::Color::DEFAULT;
-} // namespace
+FastStackTracePrinter::FastStackTracePrinter(
+    std::unique_ptr<SymbolizePrinter> printer, size_t symbolCacheSize)
+    : printer_(std::move(printer)),
+      symbolizer_(defaultElfCache(), LocationInfoMode::FULL, symbolCacheSize) {}
 
-constexpr char AddressFormatter::bufTemplate[];
-constexpr std::array<const char*, SymbolizePrinter::Color::NUM>
-    SymbolizePrinter::kColorMap;
+FastStackTracePrinter::~FastStackTracePrinter() = default;
 
-AddressFormatter::AddressFormatter() {
-  memcpy(buf_, bufTemplate, sizeof(buf_));
-}
+void FastStackTracePrinter::printStackTrace(bool symbolize) {
+  SCOPE_EXIT { printer_->flush(); };
 
-folly::StringPiece AddressFormatter::format(uintptr_t address) {
-  // Can't use sprintf, not async-signal-safe
-  static_assert(sizeof(uintptr_t) <= 8, "huge uintptr_t?");
-  char* end = buf_ + sizeof(buf_) - 1 - (16 - 2 * sizeof(uintptr_t));
-  char* p = end;
-  *p-- = '\0';
-  while (address != 0) {
-    *p-- = kHexChars[address & 0xf];
-    address >>= 4;
-  }
+  FrameArray<kMaxStackTraceDepth> addresses;
+  auto printStack = [this, &addresses, &symbolize] {
+    if (symbolize) {
+      symbolizer_.symbolize(addresses);
 
-  return folly::StringPiece(buf_, end);
-}
-
-void SymbolizePrinter::print(const SymbolizedFrame& frame) {
-  if (options_ & TERSE) {
-    printTerse(frame);
-    return;
-  }
-
-  SCOPE_EXIT {
-    color(Color::DEFAULT);
+      // Skip the top 2 frames:
+      // getStackTraceSafe
+      // FastStackTracePrinter::printStackTrace (here)
+      printer_->println(addresses, 2);
+    } else {
+      printer_->print("(safe mode, symbolizer not available)\n");
+      AddressFormatter formatter;
+      for (size_t i = 0; i < addresses.frameCount; ++i) {
+        printer_->print(formatter.format(addresses.addresses[i]));
+        printer_->print("\n");
+      }
+    }
   };
 
-  if (!(options_ & NO_FRAME_ADDRESS) && !(options_ & TERSE_FILE_AND_LINE)) {
-    color(kAddressColor);
-
-    AddressFormatter formatter;
-    doPrint(formatter.format(frame.addr));
-  }
-
-  const char padBuf[] = "                       ";
-  folly::StringPiece pad(
-      padBuf, sizeof(padBuf) - 1 - (16 - 2 * sizeof(uintptr_t)));
-
-  color(kFunctionColor);
-  if (!frame.found) {
-    doPrint(" (not found)");
-    return;
-  }
-
-  if (!(options_ & TERSE_FILE_AND_LINE)) {
-    if (!frame.name || frame.name[0] == '\0') {
-      doPrint(" (unknown)");
-    } else {
-      char demangledBuf[2048];
-      demangle(frame.name, demangledBuf, sizeof(demangledBuf));
-      doPrint(" ");
-      doPrint(demangledBuf[0] == '\0' ? frame.name : demangledBuf);
-    }
-  }
-
-  if (!(options_ & NO_FILE_AND_LINE)) {
-    color(kFileColor);
-    char fileBuf[PATH_MAX];
-    fileBuf[0] = '\0';
-    if (frame.location.hasFileAndLine) {
-      frame.location.file.toBuffer(fileBuf, sizeof(fileBuf));
-      if (!(options_ & TERSE_FILE_AND_LINE)) {
-        doPrint("\n");
-        doPrint(pad);
-      }
-      doPrint(fileBuf);
-
-      char buf[22];
-      uint32_t n = uint64ToBufferUnsafe(frame.location.line, buf);
-      doPrint(":");
-      doPrint(StringPiece(buf, n));
-    } else {
-      if ((options_ & TERSE_FILE_AND_LINE)) {
-        doPrint("(unknown)");
-      }
-    }
-
-    if (frame.location.hasMainFile && !(options_ & TERSE_FILE_AND_LINE)) {
-      char mainFileBuf[PATH_MAX];
-      mainFileBuf[0] = '\0';
-      frame.location.mainFile.toBuffer(mainFileBuf, sizeof(mainFileBuf));
-      if (!frame.location.hasFileAndLine || strcmp(fileBuf, mainFileBuf)) {
-        doPrint("\n");
-        doPrint(pad);
-        doPrint("-> ");
-        doPrint(mainFileBuf);
-      }
-    }
-  }
-}
-
-void SymbolizePrinter::color(SymbolizePrinter::Color color) {
-  if ((options_ & COLOR) == 0 && ((options_ & COLOR_IF_TTY) == 0 || !isTty_)) {
-    return;
-  }
-  if (static_cast<size_t>(color) >= kColorMap.size()) { // catches underflow too
-    return;
-  }
-  doPrint(kColorMap[color]);
-}
-
-void SymbolizePrinter::println(const SymbolizedFrame& frame) {
-  print(frame);
-  doPrint("\n");
-}
-
-void SymbolizePrinter::printTerse(const SymbolizedFrame& frame) {
-  if (frame.found && frame.name && frame.name[0] != '\0') {
-    char demangledBuf[2048] = {0};
-    demangle(frame.name, demangledBuf, sizeof(demangledBuf));
-    doPrint(demangledBuf[0] == '\0' ? frame.name : demangledBuf);
+  if (!getStackTraceSafe(addresses)) {
+    printer_->print("(error retrieving stack trace)\n");
   } else {
-    // Can't use sprintf, not async-signal-safe
-    static_assert(sizeof(uintptr_t) <= 8, "huge uintptr_t?");
-    char buf[] = "0x0000000000000000";
-    char* end = buf + sizeof(buf) - 1 - (16 - 2 * sizeof(uintptr_t));
-    char* p = end;
-    *p-- = '\0';
-    auto address = frame.addr;
-    while (address != 0) {
-      *p-- = kHexChars[address & 0xf];
-      address >>= 4;
-    }
-    doPrint(StringPiece(buf, end));
+    printStack();
   }
-}
 
-void SymbolizePrinter::println(
-    const SymbolizedFrame* frames,
-    size_t frameCount) {
-  for (size_t i = 0; i < frameCount; ++i) {
-    println(frames[i]);
+  addresses.frameCount = 0;
+  if (!getAsyncStackTraceSafe(addresses) || addresses.frameCount == 0) {
+    return;
   }
+  printAsyncStackInfo([this](auto sp) { printer_->print(sp); });
+  printStack();
 }
 
-namespace {
-
-int getFD(const std::ios& stream) {
-#if FOLLY_USE_LIBSTDCPP && FOLLY_HAS_RTTI
-  std::streambuf* buf = stream.rdbuf();
-  using namespace __gnu_cxx;
-
-  {
-    auto sbuf = dynamic_cast<stdio_sync_filebuf<char>*>(buf);
-    if (sbuf) {
-      return fileno(sbuf->file());
-    }
-  }
-  {
-    auto sbuf = dynamic_cast<stdio_filebuf<char>*>(buf);
-    if (sbuf) {
-      return sbuf->fd();
-    }
-  }
-#else
-  (void)stream;
-#endif // __GNUC__
-  return -1;
+void FastStackTracePrinter::flush() {
+  printer_->flush();
 }
 
-bool isColorfulTty(int options, int fd) {
-  if ((options & SymbolizePrinter::TERSE) != 0 ||
-      (options & SymbolizePrinter::COLOR_IF_TTY) == 0 || fd < 0 ||
-      !::isatty(fd)) {
-    return false;
-  }
-  auto term = ::getenv("TERM");
-  return !(term == nullptr || term[0] == '\0' || strcmp(term, "dumb") == 0);
-}
-
-} // namespace
-
-OStreamSymbolizePrinter::OStreamSymbolizePrinter(std::ostream& out, int options)
-    : SymbolizePrinter(options, isColorfulTty(options, getFD(out))),
-      out_(out) {}
-
-void OStreamSymbolizePrinter::doPrint(StringPiece sp) {
-  out_ << sp;
-}
-
-FDSymbolizePrinter::FDSymbolizePrinter(int fd, int options, size_t bufferSize)
-    : SymbolizePrinter(options, isColorfulTty(options, fd)),
-      fd_(fd),
-      buffer_(bufferSize ? IOBuf::create(bufferSize) : nullptr) {}
-
-FDSymbolizePrinter::~FDSymbolizePrinter() {
-  flush();
-}
-
-void FDSymbolizePrinter::doPrint(StringPiece sp) {
-  if (buffer_) {
-    if (sp.size() > buffer_->tailroom()) {
-      flush();
-      writeFull(fd_, sp.data(), sp.size());
-    } else {
-      memcpy(buffer_->writableTail(), sp.data(), sp.size());
-      buffer_->append(sp.size());
-    }
-  } else {
-    writeFull(fd_, sp.data(), sp.size());
-  }
-}
-
-void FDSymbolizePrinter::flush() {
-  if (buffer_ && !buffer_->empty()) {
-    writeFull(fd_, buffer_->data(), buffer_->length());
-    buffer_->clear();
-  }
-}
-
-FILESymbolizePrinter::FILESymbolizePrinter(FILE* file, int options)
-    : SymbolizePrinter(options, isColorfulTty(options, fileno(file))),
-      file_(file) {}
-
-void FILESymbolizePrinter::doPrint(StringPiece sp) {
-  fwrite(sp.data(), 1, sp.size(), file_);
-}
-
-void StringSymbolizePrinter::doPrint(StringPiece sp) {
-  buf_.append(sp.data(), sp.size());
-}
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 SafeStackTracePrinter::SafeStackTracePrinter(int fd)
     : fd_(fd),
@@ -486,6 +355,7 @@ void SafeStackTracePrinter::flush() {
 }
 
 void SafeStackTracePrinter::printSymbolizedStackTrace() {
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
   // This function might run on an alternative stack allocated by
   // UnsafeSelfAllocateStackTracePrinter. Capturing a stack from
   // here is probably wrong.
@@ -502,12 +372,34 @@ void SafeStackTracePrinter::printSymbolizedStackTrace() {
   //
   // Leaving signalHandler on the stack for clarity, I think.
   printer_.println(*addresses_, 2);
+#else
+  printUnsymbolizedStackTrace();
+#endif
+}
+
+void SafeStackTracePrinter::printUnsymbolizedStackTrace() {
+  print("(safe mode, symbolizer not available)\n");
+#if FOLLY_HAVE_BACKTRACE
+  // `backtrace_symbols_fd` from execinfo.h is not explicitly
+  // documented on either macOS or Linux to be async-signal-safe, but
+  // the implementation in
+  // https://opensource.apple.com/source/Libc/Libc-1353.60.8/ appears
+  // safe.
+  ::backtrace_symbols_fd(
+      reinterpret_cast<void**>(addresses_->addresses),
+      addresses_->frameCount,
+      fd_);
+#else
+  AddressFormatter formatter;
+  for (size_t i = 0; i < addresses_->frameCount; ++i) {
+    print(formatter.format(addresses_->addresses[i]));
+    print("\n");
+  }
+#endif
 }
 
 void SafeStackTracePrinter::printStackTrace(bool symbolize) {
-  SCOPE_EXIT {
-    flush();
-  };
+  SCOPE_EXIT { flush(); };
 
   // Skip the getStackTrace frame
   if (!getStackTraceSafe(*addresses_)) {
@@ -515,52 +407,55 @@ void SafeStackTracePrinter::printStackTrace(bool symbolize) {
   } else if (symbolize) {
     printSymbolizedStackTrace();
   } else {
-    print("(safe mode, symbolizer not available)\n");
-    AddressFormatter formatter;
-    for (size_t i = 0; i < addresses_->frameCount; ++i) {
-      print(formatter.format(addresses_->addresses[i]));
-      print("\n");
-    }
+    printUnsymbolizedStackTrace();
   }
-}
 
-FastStackTracePrinter::FastStackTracePrinter(
-    std::unique_ptr<SymbolizePrinter> printer,
-    size_t symbolCacheSize)
-    : printer_(std::move(printer)),
-      symbolizer_(defaultElfCache(), LocationInfoMode::FULL, symbolCacheSize) {}
-
-FastStackTracePrinter::~FastStackTracePrinter() = default;
-
-void FastStackTracePrinter::printStackTrace(bool symbolize) {
-  SCOPE_EXIT {
-    printer_->flush();
-  };
-
-  FrameArray<kMaxStackTraceDepth> addresses;
-
-  if (!getStackTraceSafe(addresses)) {
-    printer_->print("(error retrieving stack trace)\n");
-  } else if (symbolize) {
-    symbolizer_.symbolize(addresses);
-
-    // Skip the top 2 frames:
-    // getStackTraceSafe
-    // FastStackTracePrinter::printStackTrace (here)
-    printer_->println(addresses, 2);
+  addresses_->frameCount = 0;
+  if (!getAsyncStackTraceSafe(*addresses_) || addresses_->frameCount == 0) {
+    return;
+  }
+  printAsyncStackInfo([this](auto sp) { print(sp); });
+  if (symbolize) {
+    printSymbolizedStackTrace();
   } else {
-    printer_->print("(safe mode, symbolizer not available)\n");
-    AddressFormatter formatter;
-    for (size_t i = 0; i < addresses.frameCount; ++i) {
-      printer_->print(formatter.format(addresses.addresses[i]));
-      printer_->print("\n");
-    }
+    printUnsymbolizedStackTrace();
   }
 }
 
-void FastStackTracePrinter::flush() {
-  printer_->flush();
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+namespace {
+constexpr size_t kMaxStackTraceDepth = 100;
+
+template <size_t N, typename StackTraceFunc>
+std::string getStackTraceStrImpl(StackTraceFunc func) {
+  FrameArray<N> addresses;
+
+  if (!func(addresses)) {
+    return "";
+  } else {
+    ElfCache elfCache;
+    Symbolizer symbolizer(&elfCache);
+    symbolizer.symbolize(addresses);
+
+    StringSymbolizePrinter printer;
+    printer.println(addresses);
+    return printer.str();
+  }
 }
+} // namespace
+
+std::string getStackTraceStr() {
+  return getStackTraceStrImpl<kMaxStackTraceDepth>(
+      getStackTrace<kMaxStackTraceDepth>);
+}
+
+std::string getAsyncStackTraceStr() {
+  return getStackTraceStrImpl<kMaxStackTraceDepth>(
+      getAsyncStackTraceSafe<kMaxStackTraceDepth>);
+}
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+
+#if FOLLY_HAVE_SWAPCONTEXT
 
 // Stack utilities used by UnsafeSelfAllocateStackTracePrinter
 namespace {
@@ -616,6 +511,13 @@ MmapPtr allocateStack(ucontext_t* oucp, size_t pageSize) {
 
 } // namespace
 
+FOLLY_PUSH_WARNING
+
+// On Apple platforms, some ucontext methods that are used here are deprecated.
+#ifdef __APPLE__
+FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
+#endif
+
 void UnsafeSelfAllocateStackTracePrinter::printSymbolizedStackTrace() {
   if (pageSizeUnchecked_ <= 0) {
     return;
@@ -637,20 +539,34 @@ void UnsafeSelfAllocateStackTracePrinter::printSymbolizedStackTrace() {
   }
 
   auto contextStart = [](UnsafeSelfAllocateStackTracePrinter* that) {
-    that->SafeStackTracePrinter::printSymbolizedStackTrace();
+    void const* fromStack;
+    size_t fromStackSize;
+    sanitizer_finish_switch_fiber(nullptr, &fromStack, &fromStackSize);
+    if (that) {
+      that->SafeStackTracePrinter::printSymbolizedStackTrace();
+    }
+    sanitizer_start_switch_fiber(nullptr, fromStack, fromStackSize);
   };
 
   makecontext(
       &alt,
-      (void (*)())(void (*)(UnsafeSelfAllocateStackTracePrinter*))(
-          contextStart),
+      (void (*)())(void (*)(
+          UnsafeSelfAllocateStackTracePrinter*))(contextStart),
       /* argc */ 1,
       /* arg */ this);
+  void* currentFakestack;
+  sanitizer_start_switch_fiber(
+      &currentFakestack, alt.uc_stack.ss_sp, alt.uc_stack.ss_size);
   // NOTE: swapcontext is not async-signal-safe
   if (swapcontext(&cur, &alt) != 0) {
-    return;
+    contextStart(nullptr);
   }
+  sanitizer_finish_switch_fiber(currentFakestack, nullptr, nullptr);
 }
+
+FOLLY_POP_WARNING
+
+#endif // FOLLY_HAVE_SWAPCONTEXT
 
 } // namespace symbolizer
 } // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@
 
 #include <folly/executors/InlineExecutor.h>
 #include <folly/futures/detail/Core.h>
-#include <folly/lang/Pretty.h>
 
 namespace folly {
 
@@ -31,7 +30,7 @@ namespace detail {
 template <typename T>
 void coreDetachPromiseMaybeWithResult(Core<T>& core) {
   if (!core.hasResult()) {
-    core.setResult(Try<T>(exception_wrapper(BrokenPromise(pretty_name<T>()))));
+    core.setResult(Try<T>(exception_wrapper(BrokenPromise(tag<T>))));
   }
   core.detachPromise();
 }
@@ -108,9 +107,11 @@ Future<T> Promise<T>::getFuture() {
 
 template <class T>
 template <class E>
-typename std::enable_if<std::is_base_of<std::exception, E>::value>::type
-Promise<T>::setException(E const& e) {
-  setException(make_exception_wrapper<E>(e));
+typename std::enable_if<
+    std::is_base_of<std::exception, typename std::decay<E>::type>::value>::type
+Promise<T>::setException(E&& e) {
+  setException(
+      make_exception_wrapper<typename std::decay<E>::type>(std::forward<E>(e)));
 }
 
 template <class T>
@@ -121,7 +122,7 @@ void Promise<T>::setException(exception_wrapper ew) {
 template <class T>
 template <typename F>
 void Promise<T>::setInterruptHandler(F&& fn) {
-  getCore().setInterruptHandler(std::forward<F>(fn));
+  getCore().setInterruptHandler(static_cast<F&&>(fn));
 }
 
 template <class T>
@@ -141,14 +142,14 @@ template <class M>
 void Promise<T>::setValue(M&& v) {
   static_assert(!std::is_same<T, void>::value, "Use setValue() instead");
 
-  setTry(Try<T>(std::forward<M>(v)));
+  setTry(Try<T>(static_cast<M&&>(v)));
 }
 
 template <class T>
 template <class F>
 void Promise<T>::setWith(F&& func) {
   throwIfFulfilled();
-  setTry(makeTryWith(std::forward<F>(func)));
+  setTry(makeTryWith(static_cast<F&&>(func)));
 }
 
 template <class T>
@@ -158,5 +159,10 @@ bool Promise<T>::isFulfilled() const noexcept {
   }
   return true;
 }
+
+#if FOLLY_USE_EXTERN_FUTURE_UNIT
+// limited to the instances unconditionally forced by the futures library
+extern template class Promise<Unit>;
+#endif
 
 } // namespace folly

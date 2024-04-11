@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,9 @@
 #include <atomic>
 #include <cstdint>
 #include <list>
+#include <memory>
 #include <string>
+#include <unordered_map>
 
 #include <folly/Range.h>
 #include <folly/Synchronized.h>
@@ -64,9 +66,7 @@ class LogCategory {
   /**
    * Get the name of this log category.
    */
-  const std::string& getName() const {
-    return name_;
-  }
+  const std::string& getName() const { return name_; }
 
   /**
    * Get the level for this log category.
@@ -81,8 +81,9 @@ class LogCategory {
    */
   std::pair<LogLevel, bool> getLevelInfo() const {
     auto value = level_.load(std::memory_order_acquire);
-    return {static_cast<LogLevel>(value & ~FLAG_INHERIT),
-            bool(value & FLAG_INHERIT)};
+    return {
+        static_cast<LogLevel>(value & ~FLAG_INHERIT),
+        bool(value & FLAG_INHERIT)};
   }
 
   /**
@@ -155,7 +156,7 @@ class LogCategory {
    * Get which messages processed by this category will be processed by the
    * parent category
    */
-  LogLevel getPropagateLevelMessagesToParentRelaxed();
+  LogLevel getPropagateLevelMessagesToParentRelaxed() const;
 
   /**
    * Get the LoggerDB that this LogCategory belongs to.
@@ -164,9 +165,7 @@ class LogCategory {
    * LoggerDB::get().  The logging unit tests are the main location that
    * creates alternative LoggerDB objects.
    */
-  LoggerDB* getDB() const {
-    return db_;
-  }
+  LoggerDB* getDB() const { return db_; }
 
   /**
    * Attach a LogHandler to this category.
@@ -255,6 +254,8 @@ class LogCategory {
   LogCategory(LogCategory&&) = delete;
   LogCategory& operator=(LogCategory&&) = delete;
 
+  static void processMessageWalker(
+      const LogCategory* category, const LogMessage& message);
   void processMessage(const LogMessage& message) const;
   void updateEffectiveLevel(LogLevel newEffectiveLevel);
   void parentLevelUpdated(LogLevel parentEffectiveLevel);

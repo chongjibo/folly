@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,31 +14,25 @@
  * limitations under the License.
  */
 
+#include <atomic>
+#include <iostream>
+#include <memory>
+#include <thread>
+
 #include <folly/Memory.h>
 #include <folly/ScopeGuard.h>
-
+#include <folly/futures/Promise.h>
 #include <folly/io/async/AsyncTimeout.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/EventHandler.h>
 #include <folly/io/async/test/SocketPair.h>
 #include <folly/io/async/test/Util.h>
+#include <folly/portability/GMock.h>
 #include <folly/portability/Stdlib.h>
 #include <folly/portability/Unistd.h>
-#include <folly/system/ThreadName.h>
-
-#include <folly/futures/Promise.h>
 #include <folly/synchronization/Baton.h>
-
-#include <atomic>
-#include <future>
-#include <iostream>
-#include <memory>
-#include <thread>
-
-#define FOLLY_SKIP_IF_NULLPTR_BACKEND(evb)      \
-  auto backend = TypeParam::getBackend();       \
-  SKIP_IF(!backend) << "Backend not available"; \
-  EventBase evb(std::move(backend))
+#include <folly/system/ThreadId.h>
+#include <folly/system/ThreadName.h>
 
 ///////////////////////////////////////////////////////////////////////////
 // Tests for read and write events
@@ -64,19 +58,19 @@ class EventBaseTestBase : public ::testing::Test {
 
 template <typename T>
 class EventBaseTest : public EventBaseTestBase {
- public:
-  EventBaseTest() = default;
+ protected:
+  void SetUp() override {
+    SKIP_IF(T::getBackend() == nullptr) << "Backend not available";
+  }
+
+  std::unique_ptr<EventBase> makeEventBase(
+      folly::EventBase::Options opts = folly::EventBase::Options()) {
+    return std::make_unique<EventBase>(
+        opts.setBackendFactory([] { return T::getBackend(); }));
+  }
 };
 
-TYPED_TEST_CASE_P(EventBaseTest);
-
-template <typename T>
-class EventBaseTest1 : public EventBaseTestBase {
- public:
-  EventBaseTest1() = default;
-};
-
-TYPED_TEST_CASE_P(EventBaseTest1);
+TYPED_TEST_SUITE_P(EventBaseTest);
 
 enum { BUF_SIZE = 4096 };
 
@@ -159,13 +153,51 @@ struct ScheduledEvent {
   }
 };
 
-FOLLY_ALWAYS_INLINE void
-scheduleEvents(EventBase* eventBase, int fd, ScheduledEvent* events) {
+FOLLY_ALWAYS_INLINE void scheduleEvents(
+    EventBase* eventBase, int fd, ScheduledEvent* events) {
   for (ScheduledEvent* ev = events; ev->milliseconds > 0; ++ev) {
     eventBase->tryRunAfterDelay(
         std::bind(&ScheduledEvent::perform, ev, fd), ev->milliseconds);
   }
 }
+
+class TestObserver : public folly::ExecutionObserver {
+ public:
+  virtual void starting(
+      uintptr_t /* id */,
+      folly::ExecutionObserver::CallbackType /* callbackType */) noexcept
+      override {
+    if (nestedStart_ == 0) {
+      nestedStart_ = 1;
+    }
+    numStartingCalled_++;
+  }
+  virtual void stopped(
+      uintptr_t /* id */,
+      folly::ExecutionObserver::CallbackType /* callbackType */) noexcept
+      override {
+    nestedStart_--;
+    numStoppedCalled_++;
+  }
+
+  int nestedStart_{0};
+  int numStartingCalled_{0};
+  int numStoppedCalled_{0};
+};
+
+class TestEventBaseObserver : public folly::EventBaseObserver {
+ public:
+  explicit TestEventBaseObserver(uint32_t samplingRatio)
+      : samplingRatio_(samplingRatio) {}
+  uint32_t getSampleRate() const override { return samplingRatio_; }
+
+  void loopSample(int64_t, int64_t) override { numTimesCalled_++; }
+  uint32_t getNumTimesCalled() const { return numTimesCalled_; }
+
+ private:
+  uint32_t samplingRatio_;
+  uint32_t numTimesCalled_{0};
+};
 
 class TestHandler : public folly::EventHandler {
  public:
@@ -208,11 +240,52 @@ class TestHandler : public folly::EventHandler {
   int fd_;
 };
 
+TYPED_TEST_P(EventBaseTest, EventBaseThread) {
+  const auto testInLoop = [](EventBase& evb, bool canRunImmediately) {
+    bool done = false;
+    evb.runInEventBaseThread([&] {
+      evb.checkIsInEventBaseThread();
+      EXPECT_TRUE(evb.isInEventBaseThread());
+      done = true;
+    });
+    evb.loopOnce();
+    ASSERT_TRUE(done);
+
+    done = false;
+    evb.runImmediatelyOrRunInEventBaseThread([&] { done = true; });
+    EXPECT_EQ(done, canRunImmediately);
+    evb.loopOnce();
+    EXPECT_TRUE(done);
+  };
+
+  {
+    auto evbPtr = this->makeEventBase();
+    EXPECT_TRUE(evbPtr->isInEventBaseThread());
+    testInLoop(*evbPtr, true);
+    evbPtr->checkIsInEventBaseThread();
+  }
+
+  {
+    auto evbPtr = this->makeEventBase();
+    EXPECT_TRUE(evbPtr->isInEventBaseThread());
+    evbPtr->setStrictLoopThread();
+    EXPECT_FALSE(evbPtr->isInEventBaseThread());
+    testInLoop(*evbPtr, false);
+    EXPECT_DEATH(
+        evbPtr->checkIsInEventBaseThread(),
+        ".*This logic must be executed in the event base thread.*");
+    EXPECT_DEATH(
+        evbPtr->terminateLoopSoon(),
+        ".*terminateLoopSoon\\(\\) not allowed in strict loop thread mode.*");
+  }
+}
+
 /**
  * Test a READ event
  */
 TYPED_TEST_P(EventBaseTest, ReadEvent) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Register for read events
@@ -259,7 +332,8 @@ TYPED_TEST_P(EventBaseTest, ReadEvent) {
  * Test (READ | PERSIST)
  */
 TYPED_TEST_P(EventBaseTest, ReadPersist) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Register for read events
@@ -308,7 +382,8 @@ TYPED_TEST_P(EventBaseTest, ReadPersist) {
  * Test registering for READ when the socket is immediately readable
  */
 TYPED_TEST_P(EventBaseTest, ReadImmediate) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Write some data to the socket so the other end will
@@ -360,7 +435,8 @@ TYPED_TEST_P(EventBaseTest, ReadImmediate) {
  * Test a WRITE event
  */
 TYPED_TEST_P(EventBaseTest, WriteEvent) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Fill up the write buffer before starting
@@ -404,7 +480,8 @@ TYPED_TEST_P(EventBaseTest, WriteEvent) {
  * Test (WRITE | PERSIST)
  */
 TYPED_TEST_P(EventBaseTest, WritePersist) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Fill up the write buffer before starting
@@ -454,7 +531,8 @@ TYPED_TEST_P(EventBaseTest, WritePersist) {
  * Test registering for WRITE when the socket is immediately writable
  */
 TYPED_TEST_P(EventBaseTest, WriteImmediate) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Register for write events
@@ -504,7 +582,8 @@ TYPED_TEST_P(EventBaseTest, WriteImmediate) {
  * Test (READ | WRITE) when the socket becomes readable first
  */
 TYPED_TEST_P(EventBaseTest, ReadWrite) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Fill up the write buffer before starting
@@ -547,7 +626,8 @@ TYPED_TEST_P(EventBaseTest, ReadWrite) {
  * Test (READ | WRITE) when the socket becomes writable first
  */
 TYPED_TEST_P(EventBaseTest, WriteRead) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Fill up the write buffer before starting
@@ -597,7 +677,8 @@ TYPED_TEST_P(EventBaseTest, WriteRead) {
  * at the same time.
  */
 TYPED_TEST_P(EventBaseTest, ReadWriteSimultaneous) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Fill up the write buffer before starting
@@ -641,7 +722,8 @@ TYPED_TEST_P(EventBaseTest, ReadWriteSimultaneous) {
  * Test (READ | WRITE | PERSIST)
  */
 TYPED_TEST_P(EventBaseTest, ReadWritePersist) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Register for read and write events
@@ -727,7 +809,8 @@ class PartialReadHandler : public TestHandler {
  * time around the loop.
  */
 TYPED_TEST_P(EventBaseTest, ReadPartial) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Register for read events
@@ -797,7 +880,8 @@ class PartialWriteHandler : public TestHandler {
  * notified again the next time around the loop.
  */
 TYPED_TEST_P(EventBaseTest, WritePartial) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Fill up the write buffer before starting
@@ -847,9 +931,7 @@ class DestroyHandler : public AsyncTimeout {
   DestroyHandler(EventBase* eb, EventHandler* h)
       : AsyncTimeout(eb), handler_(h) {}
 
-  void timeoutExpired() noexcept override {
-    delete handler_;
-  }
+  void timeoutExpired() noexcept override { delete handler_; }
 
  private:
   EventHandler* handler_;
@@ -860,7 +942,8 @@ class DestroyHandler : public AsyncTimeout {
  * Test destroying a registered EventHandler
  */
 TYPED_TEST_P(EventBaseTest, DestroyingHandler) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   SocketPair sp;
 
   // Fill up the write buffer before starting
@@ -894,12 +977,105 @@ TYPED_TEST_P(EventBaseTest, DestroyingHandler) {
   ASSERT_GT(bytesRemaining, 0);
 }
 
+/**
+ * Handlers may delete other handlers that fire in the same loop iteration. The
+ * order in which callbacks are invoked is unspecified, so we use the first
+ * callback that runs to delete other handlers.
+ */
+TYPED_TEST_P(EventBaseTest, HandlerSideEffects) {
+  struct SharedState {
+    folly::EventBase* evb;
+    std::vector<std::unique_ptr<AsyncTimeout>> timeouts;
+    std::vector<std::unique_ptr<EventHandler>> io;
+    std::atomic<size_t> timeoutsFired{0};
+    std::atomic<size_t> ioFired{0};
+  };
+
+  struct Timeout : AsyncTimeout {
+    explicit Timeout(SharedState& s) : AsyncTimeout(s.evb), state(s) {}
+
+    void timeoutExpired() noexcept override {
+      ++state.timeoutsFired;
+      // First to fire kills the others.
+      for (auto& timeout : state.timeouts) {
+        if (timeout.get() != this) {
+          timeout.reset();
+        }
+      }
+      // Kill a couple of io events too.
+      state.io.front().reset();
+      state.io.back().reset();
+    }
+
+    SharedState& state;
+  };
+
+  struct ReadyIO : EventHandler {
+    explicit ReadyIO(SharedState& s) : state(s) {
+      initHandler(s.evb, folly::NetworkSocket::fromFd(sp[0]));
+      registerHandler(EventHandler::READ);
+      // Event is ready as soon as the loop starts.
+      writeUntilFull(sp[1]);
+    }
+
+    void handlerReady(uint16_t events) noexcept override {
+      EXPECT_EQ(events, READ);
+      ++state.ioFired;
+      // First to fire kills the others.
+      for (auto& io : state.io) {
+        if (io.get() != this) {
+          io.reset();
+        }
+      }
+
+      // Kill a couple of timeouts too.
+      state.timeouts.front().reset();
+      state.timeouts.back().reset();
+    }
+
+    SocketPair sp;
+    SharedState& state;
+  };
+
+  auto evbPtr = this->makeEventBase();
+
+  SharedState state;
+  state.evb = evbPtr.get();
+
+  for (size_t i = 0; i < 10; ++i) {
+    auto& timeout =
+        state.timeouts.emplace_back(std::make_unique<Timeout>(state));
+    timeout->scheduleTimeout(0); // Fire as soon as the loop starts.
+    state.io.emplace_back(std::make_unique<ReadyIO>(state));
+  }
+
+  // Sleep a bit to side-step any rounding in the internal timer implementation.
+  /* sleep override */
+  std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+  // All events should fire in the same iteration.
+  EXPECT_EQ(state.timeoutsFired.load(), 0);
+  EXPECT_EQ(state.ioFired.load(), 0);
+  state.evb->loopOnce();
+  if (TypeParam::isIoUringBackend()) {
+    // IoUringBackend needs two iterations.
+    // TODO(dmm): Figure out why.
+    state.evb->loopOnce();
+  }
+  EXPECT_EQ(state.timeoutsFired.load(), 1);
+  EXPECT_EQ(state.ioFired.load(), 1);
+  state.evb->loop();
+  EXPECT_EQ(state.timeoutsFired.load(), 1);
+  EXPECT_EQ(state.ioFired.load(), 1);
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Tests for timeout events
 ///////////////////////////////////////////////////////////////////////////
 
 TYPED_TEST_P(EventBaseTest, RunAfterDelay) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
 
   TimePoint timestamp1(false);
   TimePoint timestamp2(false);
@@ -935,7 +1111,8 @@ TYPED_TEST_P(EventBaseTest, RunAfterDelayDestruction) {
   TimePoint end(false);
 
   {
-    FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+    auto evbPtr = this->makeEventBase();
+    folly::EventBase& eb = *evbPtr;
     start.reset();
 
     // Run two normal timeouts
@@ -970,16 +1147,15 @@ class TestTimeout : public AsyncTimeout {
   explicit TestTimeout(EventBase* eventBase)
       : AsyncTimeout(eventBase), timestamp(false) {}
 
-  void timeoutExpired() noexcept override {
-    timestamp.reset();
-  }
+  void timeoutExpired() noexcept override { timestamp.reset(); }
 
   TimePoint timestamp;
 };
 } // namespace
 
 TYPED_TEST_P(EventBaseTest, BasicTimeouts) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
 
   TestTimeout t1(&eb);
   TestTimeout t2(&eb);
@@ -1004,9 +1180,7 @@ class ReschedulingTimeout : public AsyncTimeout {
   ReschedulingTimeout(EventBase* evb, const std::vector<uint32_t>& timeouts)
       : AsyncTimeout(evb), timeouts_(timeouts), iterator_(timeouts_.begin()) {}
 
-  void start() {
-    reschedule();
-  }
+  void start() { reschedule(); }
 
   void timeoutExpired() noexcept override {
     timestamps.emplace_back();
@@ -1033,7 +1207,8 @@ class ReschedulingTimeout : public AsyncTimeout {
  * Test rescheduling the same timeout multiple times
  */
 TYPED_TEST_P(EventBaseTest, ReuseTimeout) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
 
   std::vector<uint32_t> timeouts;
   timeouts.push_back(10);
@@ -1065,7 +1240,8 @@ TYPED_TEST_P(EventBaseTest, ReuseTimeout) {
  * Test rescheduling a timeout before it has fired
  */
 TYPED_TEST_P(EventBaseTest, RescheduleTimeout) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
 
   TestTimeout t1(&eb);
   TestTimeout t2(&eb);
@@ -1076,13 +1252,10 @@ TYPED_TEST_P(EventBaseTest, RescheduleTimeout) {
   t2.scheduleTimeout(30);
   t3.scheduleTimeout(30);
 
-  auto f = static_cast<bool (AsyncTimeout::*)(uint32_t)>(
-      &AsyncTimeout::scheduleTimeout);
-
   // after 10ms, reschedule t2 to run sooner than originally scheduled
-  eb.tryRunAfterDelay(std::bind(f, &t2, 10), 10);
+  eb.tryRunAfterDelay([&] { t2.scheduleTimeout(10); }, 10);
   // after 10ms, reschedule t3 to run later than originally scheduled
-  eb.tryRunAfterDelay(std::bind(f, &t3, 40), 10);
+  eb.tryRunAfterDelay([&] { t3.scheduleTimeout(40); }, 10);
 
   eb.loop();
   TimePoint end;
@@ -1097,7 +1270,8 @@ TYPED_TEST_P(EventBaseTest, RescheduleTimeout) {
  * Test cancelling a timeout
  */
 TYPED_TEST_P(EventBaseTest, CancelTimeout) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
 
   std::vector<uint32_t> timeouts;
   timeouts.push_back(10);
@@ -1124,9 +1298,7 @@ class DestroyTimeout : public AsyncTimeout {
   DestroyTimeout(EventBase* eb, AsyncTimeout* t)
       : AsyncTimeout(eb), timeout_(t) {}
 
-  void timeoutExpired() noexcept override {
-    delete timeout_;
-  }
+  void timeoutExpired() noexcept override { delete timeout_; }
 
  private:
   AsyncTimeout* timeout_;
@@ -1137,7 +1309,8 @@ class DestroyTimeout : public AsyncTimeout {
  * Test destroying a scheduled timeout object
  */
 TYPED_TEST_P(EventBaseTest, DestroyingTimeout) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
 
   TestTimeout* t1 = new TestTimeout(&eb);
   TimePoint start;
@@ -1156,7 +1329,8 @@ TYPED_TEST_P(EventBaseTest, DestroyingTimeout) {
  * Test the scheduled executor impl
  */
 TYPED_TEST_P(EventBaseTest, ScheduledFn) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
 
   TimePoint timestamp1(false);
   TimePoint timestamp2(false);
@@ -1179,7 +1353,8 @@ TYPED_TEST_P(EventBaseTest, ScheduledFn) {
 }
 
 TYPED_TEST_P(EventBaseTest, ScheduledFnAt) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
 
   TimePoint timestamp0(false);
   TimePoint timestamp1(false);
@@ -1218,10 +1393,11 @@ namespace {
 
 struct RunInThreadData {
   RunInThreadData(
-      std::unique_ptr<folly::EventBaseBackendBase>&& backend,
+      folly::EventBaseBackendBase::FactoryFunc backendFactory,
       int numThreads,
       int opsPerThread_)
-      : evb(std::move(backend)),
+      : evb(folly::EventBase::Options().setBackendFactory(
+            std::move(backendFactory))),
         opsPerThread(opsPerThread_),
         opsToGo(numThreads * opsPerThread) {}
 
@@ -1257,9 +1433,8 @@ static inline void runInThreadTestFunc(RunInThreadArg* arg) {
 TYPED_TEST_P(EventBaseTest, RunInThread) {
   constexpr uint32_t numThreads = 50;
   constexpr uint32_t opsPerThread = 100;
-  auto backend = TypeParam::getBackend();
-  SKIP_IF(!backend) << "Backend not available";
-  RunInThreadData data(std::move(backend), numThreads, opsPerThread);
+  RunInThreadData data(
+      [] { return TypeParam::getBackend(); }, numThreads, opsPerThread);
 
   std::deque<std::thread> threads;
   SCOPE_EXIT {
@@ -1322,19 +1497,21 @@ TYPED_TEST_P(EventBaseTest, RunInThread) {
 //  whether any of the race conditions happened.
 TYPED_TEST_P(EventBaseTest, RunInEventBaseThreadAndWait) {
   const size_t c = 256;
+  std::vector<std::unique_ptr<EventBase>> evbs;
+  for (size_t i = 0; i < c; ++i) {
+    auto evbPtr = this->makeEventBase();
+    evbs.push_back(std::move(evbPtr));
+  }
+
   std::vector<std::unique_ptr<std::atomic<size_t>>> atoms(c);
-  std::vector<std::unique_ptr<folly::EventBaseBackendBase>> backends(c);
   for (size_t i = 0; i < c; ++i) {
     auto& atom = atoms.at(i);
     atom = std::make_unique<std::atomic<size_t>>(0);
-    auto backend = TypeParam::getBackend();
-    SKIP_IF(!backend) << i << " : Backend not available";
-    backends[i] = std::move(backend);
   }
   std::vector<std::thread> threads;
   for (size_t i = 0; i < c; ++i) {
-    threads.emplace_back([&atoms, &backends, i] {
-      EventBase eb(std::move(backends[i]));
+    threads.emplace_back([&atoms, i, evb = std::move(evbs[i])] {
+      folly::EventBase& eb = *evb;
       auto& atom = *atoms.at(i);
       auto ebth = std::thread([&] { eb.loopForever(); });
       eb.waitUntilRunning();
@@ -1362,7 +1539,8 @@ TYPED_TEST_P(EventBaseTest, RunInEventBaseThreadAndWait) {
 }
 
 TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitCross) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   std::thread th(&EventBase::loopForever, &eb);
   SCOPE_EXIT {
     eb.terminateLoopSoon();
@@ -1374,7 +1552,8 @@ TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitCross) {
 }
 
 TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitWithin) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   std::thread th(&EventBase::loopForever, &eb);
   SCOPE_EXIT {
     eb.terminateLoopSoon();
@@ -1387,11 +1566,43 @@ TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitWithin) {
   });
 }
 
-TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadNotLooping) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+TYPED_TEST_P(
+    EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitNotLooping) {
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
   auto mutated = false;
   eb.runImmediatelyOrRunInEventBaseThreadAndWait([&] { mutated = true; });
   EXPECT_TRUE(mutated);
+}
+
+TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadCross) {
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
+  std::thread th(&EventBase::loopForever, &eb);
+  SCOPE_EXIT {
+    eb.terminateLoopSoon();
+    th.join();
+  };
+  // wait for loop to start
+  eb.runInEventBaseThreadAndWait([] {});
+  Baton<> baton1, baton2;
+  EXPECT_FALSE(eb.isInEventBaseThread());
+
+  eb.runImmediatelyOrRunInEventBaseThread([&] {
+    baton1.wait();
+    baton2.post();
+  });
+  EXPECT_FALSE(baton2.ready());
+  baton1.post();
+  EXPECT_TRUE(baton2.try_wait_for(std::chrono::milliseconds(100)));
+}
+
+TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadNotLooping) {
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eb = *evbPtr;
+  Baton<> baton;
+  eb.runImmediatelyOrRunInEventBaseThread([&] { baton.post(); });
+  EXPECT_TRUE(baton.ready());
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -1416,9 +1627,7 @@ class CountedLoopCallback : public EventBase::LoopCallback {
     }
   }
 
-  unsigned int getCount() const {
-    return count_;
-  }
+  unsigned int getCount() const { return count_; }
 
  private:
   EventBase* eventBase_;
@@ -1430,7 +1639,8 @@ class CountedLoopCallback : public EventBase::LoopCallback {
 // Test that EventBase::loop() doesn't exit while there are
 // still LoopCallbacks remaining to be invoked.
 TYPED_TEST_P(EventBaseTest, RepeatedRunInLoop) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eventBase);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eventBase = *evbPtr;
 
   CountedLoopCallback c(&eventBase, 10);
   eventBase.runInLoop(&c);
@@ -1445,10 +1655,9 @@ TYPED_TEST_P(EventBaseTest, RepeatedRunInLoop) {
 
 // Test that EventBase::loop() works as expected without time measurements.
 TYPED_TEST_P(EventBaseTest, RunInLoopNoTimeMeasurement) {
-  auto backend = TypeParam::getBackend();
-  SKIP_IF(!backend) << "Backend not available";
-
-  EventBase eventBase(std::move(backend), false);
+  auto evbPtr =
+      this->makeEventBase(EventBase::Options().setSkipTimeMeasurement(true));
+  folly::EventBase& eventBase = *evbPtr;
 
   CountedLoopCallback c(&eventBase, 10);
   eventBase.runInLoop(&c);
@@ -1463,7 +1672,8 @@ TYPED_TEST_P(EventBaseTest, RunInLoopNoTimeMeasurement) {
 
 // Test runInLoop() calls with terminateLoopSoon()
 TYPED_TEST_P(EventBaseTest, RunInLoopStopLoop) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eventBase);
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eventBase = *evbPtr;
 
   CountedLoopCallback c1(&eventBase, 20);
   CountedLoopCallback c2(
@@ -1490,45 +1700,82 @@ TYPED_TEST_P(EventBaseTest, RunInLoopStopLoop) {
   ASSERT_LE(c1.getCount(), 11);
 }
 
-TYPED_TEST_P(EventBaseTest, messageAvailableException) {
-  auto backend = TypeParam::getBackend();
-  SKIP_IF(!backend) << "Backend not available";
-  auto deadManWalking = [backend = std::move(backend)]() mutable {
-    EventBase eventBase(std::move(backend));
+// Test loopPoll() call sequence
+TYPED_TEST_P(EventBaseTest, RunPollLoop) {
+  auto evbPtr = this->makeEventBase();
+  folly::EventBase& eventBase = *evbPtr;
+  std::atomic<bool> running = true;
+  int calls = 0;
+
+  CountedLoopCallback c1(&eventBase, 20);
+  CountedLoopCallback c2(
+      &eventBase, 10, [eb = &eventBase, running = &running]() {
+        eb->terminateLoopSoon();
+        running->store(false);
+      });
+
+  eventBase.runInLoop(&c1);
+  eventBase.runInLoop(&c2);
+  ASSERT_EQ(c1.getCount(), 20);
+  ASSERT_EQ(c2.getCount(), 10);
+
+  eventBase.loopPollSetup();
+  while (running.load()) {
+    calls++;
+    eventBase.loopPoll();
+  }
+  eventBase.loopPollCleanup();
+
+  // We expect multiple iterations of the loop to happen, since loopPoll has non
+  // blocking semantics, we should call loopPoll multiple times
+  ASSERT_GT(calls, 1);
+}
+
+TYPED_TEST_P(EventBaseTest, PidCheck) {
+  auto evbPtr = this->makeEventBase();
+
+  auto deadManWalking = [&]() { evbPtr->loopForever(); };
+  EXPECT_DEATH(deadManWalking(), "Pid mismatch");
+}
+
+TYPED_TEST_P(EventBaseTest, MessageAvailableException) {
+  auto evbPtr = this->makeEventBase();
+
+  auto deadManWalking = [this] {
+    auto evb = this->makeEventBase();
     std::thread t([&] {
       // Call this from another thread to force use of NotificationQueue in
       // runInEventBaseThread
-      eventBase.runInEventBaseThread(
-          []() { throw std::runtime_error("boom"); });
+      evb->runInEventBaseThread([]() { throw std::runtime_error("boom"); });
     });
     t.join();
-    eventBase.loopForever();
+    evb->loopForever();
   };
-  EXPECT_DEATH(deadManWalking(), ".*");
+  EXPECT_DEATH(deadManWalking(), "boom");
 }
 
 TYPED_TEST_P(EventBaseTest, TryRunningAfterTerminate) {
-  auto backend = TypeParam::getBackend();
-  SKIP_IF(!backend) << "Backend not available";
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& eventBase = *eventBasePtr;
 
   bool ran = false;
-  {
-    EventBase eventBase(std::move(backend));
-    CountedLoopCallback c1(
-        &eventBase, 1, std::bind(&EventBase::terminateLoopSoon, &eventBase));
-    eventBase.runInLoop(&c1);
-    eventBase.loopForever();
-    eventBase.runInEventBaseThread([&]() { ran = true; });
+  CountedLoopCallback c1(
+      &eventBase, 1, std::bind(&EventBase::terminateLoopSoon, &eventBase));
+  eventBase.runInLoop(&c1);
+  eventBase.loopForever();
+  eventBase.runInEventBaseThread([&]() { ran = true; });
 
-    ASSERT_FALSE(ran);
-  }
+  ASSERT_FALSE(ran);
+
+  eventBasePtr.reset();
   // Loop callbacks are triggered on EventBase destruction
   ASSERT_TRUE(ran);
 }
 
 // Test cancelling runInLoop() callbacks
 TYPED_TEST_P(EventBaseTest, CancelRunInLoop) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eventBase);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& eventBase = *eventBasePtr;
 
   CountedLoopCallback c1(&eventBase, 20);
   CountedLoopCallback c2(&eventBase, 20);
@@ -1623,12 +1870,8 @@ class TerminateTestCallback : public EventBase::LoopCallback,
     registerHandler(READ);
   }
 
-  uint32_t getLoopInvocations() const {
-    return loopInvocations_;
-  }
-  uint32_t getEventInvocations() const {
-    return eventInvocations_;
-  }
+  uint32_t getLoopInvocations() const { return loopInvocations_; }
+  uint32_t getEventInvocations() const { return eventInvocations_; }
 
  private:
   EventBase* eventBase_;
@@ -1649,7 +1892,8 @@ class TerminateTestCallback : public EventBase::LoopCallback,
  * registered, but a loop callback installed a new fd handler.
  */
 TYPED_TEST_P(EventBaseTest, LoopTermination) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eventBase);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& eventBase = *eventBasePtr;
 
   // Open a pipe and close the write end,
   // so the read endpoint will be readable
@@ -1678,7 +1922,8 @@ TYPED_TEST_P(EventBaseTest, LoopTermination) {
 
 TYPED_TEST_P(EventBaseTest, CallbackOrderTest) {
   size_t num = 0;
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& evb = *eventBasePtr;
 
   evb.runInEventBaseThread([&]() {
     std::thread t([&]() {
@@ -1703,7 +1948,8 @@ TYPED_TEST_P(EventBaseTest, CallbackOrderTest) {
 
 TYPED_TEST_P(EventBaseTest, AlwaysEnqueueCallbackOrderTest) {
   size_t num = 0;
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& evb = *eventBasePtr;
 
   evb.runInEventBaseThread([&]() {
     std::thread t([&]() {
@@ -1726,10 +1972,11 @@ TYPED_TEST_P(EventBaseTest, AlwaysEnqueueCallbackOrderTest) {
   EXPECT_EQ(num, 2);
 }
 
-TYPED_TEST_P(EventBaseTest1, InternalExternalCallbackOrderTest) {
+TYPED_TEST_P(EventBaseTest, InternalExternalCallbackOrderTest) {
   size_t counter = 0;
 
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& evb = *eventBasePtr;
 
   std::vector<size_t> calls;
 
@@ -1761,8 +2008,7 @@ namespace {
 class IdleTimeTimeoutSeries : public AsyncTimeout {
  public:
   explicit IdleTimeTimeoutSeries(
-      EventBase* base,
-      std::deque<std::size_t>& timeout)
+      EventBase* base, std::deque<std::size_t>& timeout)
       : AsyncTimeout(base), timeouts_(0), timeout_(timeout) {
     scheduleTimeout(1);
   }
@@ -1784,9 +2030,7 @@ class IdleTimeTimeoutSeries : public AsyncTimeout {
     }
   }
 
-  int getTimeouts() const {
-    return timeouts_;
-  }
+  int getTimeouts() const { return timeouts_; }
 
  private:
   int timeouts_;
@@ -1804,7 +2048,8 @@ class IdleTimeTimeoutSeries : public AsyncTimeout {
  * caused the loop time to decay.
  */
 TYPED_TEST_P(EventBaseTest, IdleTime) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(eventBase);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& eventBase = *eventBasePtr;
   std::deque<std::size_t> timeouts0(4, 8080);
   timeouts0.push_front(8000);
   timeouts0.push_back(14000);
@@ -1820,25 +2065,17 @@ TYPED_TEST_P(EventBaseTest, IdleTime) {
   eventBase.loopOnce(EVLOOP_NONBLOCK);
   eventBase.setLoadAvgMsec(std::chrono::milliseconds(1000));
   eventBase.resetLoadAvg(5900.0);
-  auto testStart = std::chrono::steady_clock::now();
 
   int latencyCallbacks = 0;
   eventBase.setMaxLatency(std::chrono::microseconds(6000), [&]() {
     ++latencyCallbacks;
-    if (latencyCallbacks != 1) {
-      FAIL() << "Unexpected latency callback";
-    }
-
-    if (tos0.getTimeouts() < 6) {
+    if (latencyCallbacks != 1 || tos0.getTimeouts() < 6) {
       // This could only happen if the host this test is running
       // on is heavily loaded.
-      int64_t usElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                              std::chrono::steady_clock::now() - testStart)
-                              .count();
-      EXPECT_LE(43800, usElapsed);
       hostOverloaded = true;
       return;
     }
+
     EXPECT_EQ(6, tos0.getTimeouts());
     EXPECT_GE(6100, eventBase.getAvgLoopTime() - 1200);
     EXPECT_LE(6100, eventBase.getAvgLoopTime() + 1200);
@@ -1862,6 +2099,44 @@ TYPED_TEST_P(EventBaseTest, IdleTime) {
   ASSERT_EQ(21, tos->getTimeouts());
 }
 
+TYPED_TEST_P(EventBaseTest, MaxLatencyUndamped) {
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& eb = *eventBasePtr;
+  int maxDurationViolations = 0;
+  eb.setMaxLatency(
+      std::chrono::milliseconds{1}, [&]() { maxDurationViolations++; }, false);
+  eb.runInLoop(
+      [&]() {
+        /* sleep override */ std::this_thread::sleep_for(
+            std::chrono::microseconds{1001});
+        eb.terminateLoopSoon();
+      },
+      true);
+  eb.loop();
+  ASSERT_EQ(maxDurationViolations, 1);
+}
+
+TYPED_TEST_P(EventBaseTest, UnsetMaxLatencyUndamped) {
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& eb = *eventBasePtr;
+  int maxDurationViolations = 0;
+  eb.setMaxLatency(
+      std::chrono::milliseconds{1}, [&]() { maxDurationViolations++; }, false);
+  // Immediately unset it and make sure the counter isn't incremented. If the
+  // function gets called, this will raise an std::bad_function_call.
+  std::function<void()> bad_func = nullptr;
+  eb.setMaxLatency(std::chrono::milliseconds{0}, bad_func, false);
+  eb.runInLoop(
+      [&]() {
+        /* sleep override */ std::this_thread::sleep_for(
+            std::chrono::microseconds{1001});
+        eb.terminateLoopSoon();
+      },
+      true);
+  eb.loop();
+  ASSERT_EQ(maxDurationViolations, 0);
+}
+
 /**
  * Test that thisLoop functionality works with terminateLoopSoon
  */
@@ -1870,7 +2145,8 @@ TYPED_TEST_P(EventBaseTest, ThisLoop) {
   bool runThisLoop = false;
 
   {
-    FOLLY_SKIP_IF_NULLPTR_BACKEND(eb);
+    auto eventBasePtr = this->makeEventBase();
+    folly::EventBase& eb = *eventBasePtr;
     eb.runInLoop(
         [&]() {
           eb.terminateLoopSoon();
@@ -1891,9 +2167,9 @@ TYPED_TEST_P(EventBaseTest, ThisLoop) {
 }
 
 TYPED_TEST_P(EventBaseTest, EventBaseThreadLoop) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(base);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& base = *eventBasePtr;
   bool ran = false;
-
   base.runInEventBaseThread([&]() { ran = true; });
   base.loop();
 
@@ -1901,7 +2177,8 @@ TYPED_TEST_P(EventBaseTest, EventBaseThreadLoop) {
 }
 
 TYPED_TEST_P(EventBaseTest, EventBaseThreadName) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(base);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& base = *eventBasePtr;
   base.setName("foo");
   base.loop();
 
@@ -1909,7 +2186,8 @@ TYPED_TEST_P(EventBaseTest, EventBaseThreadName) {
 }
 
 TYPED_TEST_P(EventBaseTest, RunBeforeLoop) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(base);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& base = *eventBasePtr;
   CountedLoopCallback cb(&base, 1, [&]() { base.terminateLoopSoon(); });
   base.runBeforeLoop(&cb);
   base.loopForever();
@@ -1917,7 +2195,8 @@ TYPED_TEST_P(EventBaseTest, RunBeforeLoop) {
 }
 
 TYPED_TEST_P(EventBaseTest, RunBeforeLoopWait) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(base);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& base = *eventBasePtr;
   CountedLoopCallback cb(&base, 1);
   base.tryRunAfterDelay([&]() { base.terminateLoopSoon(); }, 500);
   base.runBeforeLoop(&cb);
@@ -1933,14 +2212,13 @@ class PipeHandler : public EventHandler {
   PipeHandler(EventBase* eventBase, int fd)
       : EventHandler(eventBase, NetworkSocket::fromFd(fd)) {}
 
-  void handlerReady(uint16_t /* events */) noexcept override {
-    abort();
-  }
+  void handlerReady(uint16_t /* events */) noexcept override { abort(); }
 };
 } // namespace
 
 TYPED_TEST_P(EventBaseTest, StopBeforeLoop) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& evb = *eventBasePtr;
 
   // Give the evb something to do.
   int p[2];
@@ -1966,25 +2244,43 @@ TYPED_TEST_P(EventBaseTest, RunCallbacksOnDestruction) {
   bool ran = false;
 
   {
-    FOLLY_SKIP_IF_NULLPTR_BACKEND(base);
-    base.runInEventBaseThread([&]() { ran = true; });
+    auto eventBasePtr = this->makeEventBase();
+    eventBasePtr->runInEventBaseThread([&]() { ran = true; });
   }
 
   ASSERT_TRUE(ran);
 }
 
+TYPED_TEST_P(EventBaseTest, RunCallbacksPreDestruction) {
+  bool ranPreDestruction = false;
+  bool ranOnDestruction = false;
+  auto evbPtr = this->makeEventBase();
+  // Prevents the EventBase destruction from completing, but the pre destruction
+  // callbacks should still be called.
+  auto loopKeepAlive = getKeepAliveToken(*evbPtr);
+  evbPtr->runOnDestruction([&] { ranOnDestruction = true; });
+  evbPtr->runOnDestructionStart([&] {
+    ASSERT_FALSE(ranOnDestruction);
+    ranPreDestruction = true;
+    loopKeepAlive.reset();
+  });
+  evbPtr.reset();
+  ASSERT_TRUE(ranPreDestruction);
+  ASSERT_TRUE(ranOnDestruction);
+}
+
 TYPED_TEST_P(EventBaseTest, LoopKeepAlive) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+  auto evbPtr = this->makeEventBase();
 
   bool done = false;
-  std::thread t([&, loopKeepAlive = getKeepAliveToken(evb)]() mutable {
+  std::thread t([&, loopKeepAlive = getKeepAliveToken(*evbPtr)]() mutable {
     /* sleep override */ std::this_thread::sleep_for(
         std::chrono::milliseconds(100));
-    evb.runInEventBaseThread(
+    evbPtr->runInEventBaseThread(
         [&done, loopKeepAlive = std::move(loopKeepAlive)] { done = true; });
   });
 
-  evb.loop();
+  evbPtr->loop();
 
   ASSERT_TRUE(done);
 
@@ -1992,21 +2288,21 @@ TYPED_TEST_P(EventBaseTest, LoopKeepAlive) {
 }
 
 TYPED_TEST_P(EventBaseTest, LoopKeepAliveInLoop) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+  auto evbPtr = this->makeEventBase();
 
   bool done = false;
   std::thread t;
 
-  evb.runInEventBaseThread([&] {
-    t = std::thread([&, loopKeepAlive = getKeepAliveToken(evb)]() mutable {
+  evbPtr->runInEventBaseThread([&] {
+    t = std::thread([&, loopKeepAlive = getKeepAliveToken(*evbPtr)]() mutable {
       /* sleep override */ std::this_thread::sleep_for(
           std::chrono::milliseconds(100));
-      evb.runInEventBaseThread(
+      evbPtr->runInEventBaseThread(
           [&done, loopKeepAlive = std::move(loopKeepAlive)] { done = true; });
     });
   });
 
-  evb.loop();
+  evbPtr->loop();
 
   ASSERT_TRUE(done);
 
@@ -2014,21 +2310,18 @@ TYPED_TEST_P(EventBaseTest, LoopKeepAliveInLoop) {
 }
 
 TYPED_TEST_P(EventBaseTest, LoopKeepAliveWithLoopForever) {
-  auto backend = TypeParam::getBackend();
-  SKIP_IF(!backend) << "Backend not available";
-  std::unique_ptr<EventBase> evb =
-      std::make_unique<EventBase>(std::move(backend));
+  auto evbPtr = this->makeEventBase();
 
   bool done = false;
 
   std::thread evThread([&] {
-    evb->loopForever();
-    evb.reset();
+    evbPtr->loopForever();
+    evbPtr.reset();
     done = true;
   });
 
   {
-    auto* ev = evb.get();
+    auto* ev = evbPtr.get();
     Executor::KeepAlive<EventBase> keepAlive;
     ev->runInEventBaseThreadAndWait(
         [&ev, &keepAlive] { keepAlive = getKeepAliveToken(ev); });
@@ -2045,23 +2338,20 @@ TYPED_TEST_P(EventBaseTest, LoopKeepAliveWithLoopForever) {
 }
 
 TYPED_TEST_P(EventBaseTest, LoopKeepAliveShutdown) {
-  auto backend = TypeParam::getBackend();
-  SKIP_IF(!backend) << "Backend not available";
-
-  auto evb = std::make_unique<EventBase>(std::move(backend));
+  auto evbPtr = this->makeEventBase();
 
   bool done = false;
 
   std::thread t([&done,
-                 loopKeepAlive = getKeepAliveToken(evb.get()),
-                 evbPtr = evb.get()]() mutable {
+                 loopKeepAlive = getKeepAliveToken(evbPtr.get()),
+                 evbPtrRaw = evbPtr.get()]() mutable {
     /* sleep override */ std::this_thread::sleep_for(
         std::chrono::milliseconds(100));
-    evbPtr->runInEventBaseThread(
+    evbPtrRaw->runInEventBaseThread(
         [&done, loopKeepAlive = std::move(loopKeepAlive)] { done = true; });
   });
 
-  evb.reset();
+  evbPtr.reset();
 
   ASSERT_TRUE(done);
 
@@ -2069,9 +2359,7 @@ TYPED_TEST_P(EventBaseTest, LoopKeepAliveShutdown) {
 }
 
 TYPED_TEST_P(EventBaseTest, LoopKeepAliveAtomic) {
-  auto backend = TypeParam::getBackend();
-  SKIP_IF(!backend) << "Backend not available";
-  auto evb = std::make_unique<EventBase>(std::move(backend));
+  auto evbPtr = this->makeEventBase();
 
   static constexpr size_t kNumThreads = 100;
   static constexpr size_t kNumTasks = 100;
@@ -2085,10 +2373,12 @@ TYPED_TEST_P(EventBaseTest, LoopKeepAliveAtomic) {
   }
 
   for (size_t i = 0; i < kNumThreads; ++i) {
-    ts.emplace_back([evbPtr = evb.get(), batonPtr = batons[i].get(), &done] {
+    ts.emplace_back([evbPtrRaw = evbPtr.get(),
+                     batonPtr = batons[i].get(),
+                     &done] {
       std::vector<Executor::KeepAlive<EventBase>> keepAlives;
       for (size_t j = 0; j < kNumTasks; ++j) {
-        keepAlives.emplace_back(getKeepAliveToken(evbPtr));
+        keepAlives.emplace_back(getKeepAliveToken(evbPtrRaw));
       }
 
       batonPtr->post();
@@ -2096,7 +2386,7 @@ TYPED_TEST_P(EventBaseTest, LoopKeepAliveAtomic) {
       /* sleep override */ std::this_thread::sleep_for(std::chrono::seconds(1));
 
       for (auto& keepAlive : keepAlives) {
-        evbPtr->runInEventBaseThread(
+        evbPtrRaw->runInEventBaseThread(
             [&done, keepAlive = std::move(keepAlive)]() { ++done; });
       }
     });
@@ -2106,7 +2396,7 @@ TYPED_TEST_P(EventBaseTest, LoopKeepAliveAtomic) {
     baton->wait();
   }
 
-  evb.reset();
+  evbPtr.reset();
 
   EXPECT_EQ(kNumThreads * kNumTasks, done);
 
@@ -2116,25 +2406,46 @@ TYPED_TEST_P(EventBaseTest, LoopKeepAliveAtomic) {
 }
 
 TYPED_TEST_P(EventBaseTest, LoopKeepAliveCast) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
-  Executor::KeepAlive<> keepAlive = getKeepAliveToken(evb);
+  auto evbPtr = this->makeEventBase();
+  Executor::KeepAlive<> keepAlive = getKeepAliveToken(*evbPtr);
 }
 
-TYPED_TEST_P(EventBaseTest1, DrivableExecutorTest) {
+TYPED_TEST_P(EventBaseTest, LastLoopKeepAliveTriggeringDestruction) {
+  auto evbPtr = this->makeEventBase();
+  auto& evb = *evbPtr;
+  auto ka = getKeepAliveToken(evb);
+
+  // Busy wait to increase the chance of a race.
+  Baton</* MayBlock */ false> ready;
+  evb.runInEventBaseThread([&] { ready.post(); });
+
+  std::thread t([evbPtr = std::move(evbPtr)]() mutable { evbPtr->loop(); });
+
+  ready.wait();
+  ka.reset();
+  t.join();
+}
+
+TYPED_TEST_P(EventBaseTest, DrivableExecutorTest) {
   folly::Promise<bool> p;
   auto f = p.getFuture();
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(base);
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& base = *eventBasePtr;
   bool finished = false;
 
+  Baton baton;
+
   std::thread t([&] {
+    baton.wait();
     /* sleep override */
-    std::this_thread::sleep_for(std::chrono::microseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     finished = true;
     base.runInEventBaseThread([&]() { p.setValue(true); });
   });
 
   // Ensure drive does not busy wait
   base.drive(); // TODO: fix notification queue init() extra wakeup
+  baton.post();
   base.drive();
   EXPECT_TRUE(finished);
 
@@ -2149,15 +2460,15 @@ TYPED_TEST_P(EventBaseTest1, DrivableExecutorTest) {
   t.join();
 }
 
-TYPED_TEST_P(EventBaseTest1, IOExecutorTest) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(base);
+TYPED_TEST_P(EventBaseTest, IOExecutorTest) {
+  auto evbPtr = this->makeEventBase();
 
   // Ensure EventBase manages itself as an IOExecutor.
-  EXPECT_EQ(base.getEventBase(), &base);
+  EXPECT_EQ(evbPtr->getEventBase(), evbPtr.get());
 }
 
-TYPED_TEST_P(EventBaseTest1, RequestContextTest) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+TYPED_TEST_P(EventBaseTest, RequestContextTest) {
+  auto evbPtr = this->makeEventBase();
   auto defaultCtx = RequestContext::get();
   std::weak_ptr<RequestContext> rctx_weak_ptr;
 
@@ -2166,8 +2477,8 @@ TYPED_TEST_P(EventBaseTest1, RequestContextTest) {
     rctx_weak_ptr = RequestContext::saveContext();
     auto context = RequestContext::get();
     EXPECT_NE(defaultCtx, context);
-    evb.runInLoop([context] { EXPECT_EQ(context, RequestContext::get()); });
-    evb.loop();
+    evbPtr->runInLoop([context] { EXPECT_EQ(context, RequestContext::get()); });
+    evbPtr->loop();
   }
 
   // Ensure that RequestContext created for the scope has been released and
@@ -2177,9 +2488,9 @@ TYPED_TEST_P(EventBaseTest1, RequestContextTest) {
   EXPECT_EQ(defaultCtx, RequestContext::get());
 }
 
-TYPED_TEST_P(EventBaseTest1, CancelLoopCallbackRequestContextTest) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
-  CountedLoopCallback c(&evb, 1);
+TYPED_TEST_P(EventBaseTest, CancelLoopCallbackRequestContextTest) {
+  auto evbPtr = this->makeEventBase();
+  CountedLoopCallback c(evbPtr.get(), 1);
 
   auto defaultCtx = RequestContext::get();
   EXPECT_EQ(defaultCtx, RequestContext::get());
@@ -2190,7 +2501,7 @@ TYPED_TEST_P(EventBaseTest1, CancelLoopCallbackRequestContextTest) {
     rctx_weak_ptr = RequestContext::saveContext();
     auto context = RequestContext::get();
     EXPECT_NE(defaultCtx, context);
-    evb.runInLoop(&c);
+    evbPtr->runInLoop(&c);
     c.cancelLoopCallback();
   }
 
@@ -2201,15 +2512,16 @@ TYPED_TEST_P(EventBaseTest1, CancelLoopCallbackRequestContextTest) {
   EXPECT_EQ(defaultCtx, RequestContext::get());
 }
 
-TYPED_TEST_P(EventBaseTest1, TestStarvation) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
-  std::promise<void> stopRequested;
-  std::promise<void> stopScheduled;
+TYPED_TEST_P(EventBaseTest, TestStarvation) {
+  auto evbPtr = this->makeEventBase();
+
+  Baton<> stopRequested;
+  Baton<> stopScheduled;
   bool stopping{false};
   std::thread t{[&] {
-    stopRequested.get_future().get();
-    evb.add([&]() { stopping = true; });
-    stopScheduled.set_value();
+    stopRequested.wait();
+    evbPtr->add([&]() { stopping = true; });
+    stopScheduled.post();
   }};
 
   size_t num{0};
@@ -2220,74 +2532,221 @@ TYPED_TEST_P(EventBaseTest1, TestStarvation) {
     }
 
     if (++num == 1000) {
-      stopRequested.set_value();
-      stopScheduled.get_future().get();
+      stopRequested.post();
+      stopScheduled.wait();
     }
 
-    evb.add(fn);
+    evbPtr->add(fn);
   };
 
-  evb.add(fn);
-  evb.loop();
+  evbPtr->add(fn);
+  evbPtr->loop();
 
   EXPECT_EQ(1000, num);
   t.join();
 }
 
-TYPED_TEST_P(EventBaseTest1, RunOnDestructionBasic) {
+TYPED_TEST_P(EventBaseTest, RunOnDestructionBasic) {
   bool ranOnDestruction = false;
   {
-    FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
-    evb.runOnDestruction([&ranOnDestruction] { ranOnDestruction = true; });
+    auto evbPtr = this->makeEventBase();
+    evbPtr->runOnDestruction([&ranOnDestruction] { ranOnDestruction = true; });
   }
   EXPECT_TRUE(ranOnDestruction);
 }
 
-TYPED_TEST_P(EventBaseTest1, RunOnDestructionCancelled) {
+TYPED_TEST_P(EventBaseTest, RunOnDestructionCancelled) {
   struct Callback : EventBase::OnDestructionCallback {
     bool ranOnDestruction{false};
 
-    void onEventBaseDestruction() noexcept final {
-      ranOnDestruction = true;
-    }
+    void onEventBaseDestruction() noexcept final { ranOnDestruction = true; }
   };
 
   auto cb = std::make_unique<Callback>();
   {
-    FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
-    evb.runOnDestruction(*cb);
+    auto evbPtr = this->makeEventBase();
+    evbPtr->runOnDestruction(*cb);
     EXPECT_TRUE(cb->cancel());
   }
   EXPECT_FALSE(cb->ranOnDestruction);
   EXPECT_FALSE(cb->cancel());
 }
 
-TYPED_TEST_P(EventBaseTest1, RunOnDestructionAfterHandleDestroyed) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+TYPED_TEST_P(EventBaseTest, RunOnDestructionAfterHandleDestroyed) {
+  auto evbPtr = this->makeEventBase();
   {
     bool ranOnDestruction = false;
     auto* cb = new EventBase::FunctionOnDestructionCallback(
         [&ranOnDestruction] { ranOnDestruction = true; });
-    evb.runOnDestruction(*cb);
+    evbPtr->runOnDestruction(*cb);
     EXPECT_TRUE(cb->cancel());
     delete cb;
   }
 }
 
-TYPED_TEST_P(EventBaseTest1, RunOnDestructionAddCallbackWithinCallback) {
+TYPED_TEST_P(EventBaseTest, RunOnDestructionAddCallbackWithinCallback) {
   size_t callbacksCalled = 0;
   {
-    FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
-    evb.runOnDestruction([&] {
+    auto evbPtr = this->makeEventBase();
+    evbPtr->runOnDestruction([&] {
       ++callbacksCalled;
-      evb.runOnDestruction([&] { ++callbacksCalled; });
+      evbPtr->runOnDestruction([&] { ++callbacksCalled; });
     });
   }
   EXPECT_EQ(2, callbacksCalled);
 }
 
-REGISTER_TYPED_TEST_CASE_P(
+TYPED_TEST_P(EventBaseTest, EventBaseExecutionObserver) {
+  auto eventBasePtr = this->makeEventBase();
+  folly::EventBase& base = *eventBasePtr;
+  bool ranBeforeLoop = false;
+  bool ran = false;
+  TestObserver observer;
+  base.addExecutionObserver(&observer);
+
+  CountedLoopCallback cb(&base, 1, [&]() { ranBeforeLoop = true; });
+  base.runBeforeLoop(&cb);
+
+  base.runInEventBaseThread(
+      [&]() { base.runInEventBaseThread([&]() { ran = true; }); });
+  base.loop();
+
+  ASSERT_TRUE(ranBeforeLoop);
+  ASSERT_TRUE(ran);
+  ASSERT_EQ(0, observer.nestedStart_);
+  ASSERT_EQ(4, observer.numStartingCalled_);
+  ASSERT_EQ(4, observer.numStoppedCalled_);
+}
+
+TYPED_TEST_P(EventBaseTest, EventBaseObserver) {
+  auto evbPtr = this->makeEventBase();
+  auto observer1 = std::make_shared<TestEventBaseObserver>(2);
+  evbPtr->setObserver(observer1);
+  evbPtr->loopOnce();
+  evbPtr->loopOnce();
+  ASSERT_EQ(1, observer1->getNumTimesCalled());
+  evbPtr->loopOnce();
+  evbPtr->loopOnce();
+  evbPtr->loopOnce();
+  auto observer2 = std::make_shared<TestEventBaseObserver>(1);
+  evbPtr->setObserver(observer2);
+  evbPtr->loopOnce();
+  ASSERT_EQ(1, observer2->getNumTimesCalled());
+}
+
+TYPED_TEST_P(EventBaseTest, LoopRearmsNotificationQueue) {
+  auto evbPtr = this->makeEventBase();
+  std::atomic<size_t> n = 0;
+  evbPtr->runInEventBaseThread([&]() { n = 1; });
+  evbPtr->loopOnce();
+  EXPECT_EQ(n.load(), 1);
+  // The notification queue is rearmed through a loop callback, ensure that the
+  // loop executes it.
+  EXPECT_EQ(evbPtr->getNumLoopCallbacks(), 0);
+}
+
+TYPED_TEST_P(EventBaseTest, GetThreadIdCollector) {
+  auto evbPtr = this->makeEventBase();
+  auto* collector = evbPtr->getThreadIdCollector();
+  ASSERT_TRUE(collector != nullptr);
+
+  pid_t tid;
+  Baton<> ready;
+  Baton<> unblock;
+  evbPtr->runInEventBaseThread([&] {
+    tid = getOSThreadID();
+    ready.post();
+    unblock.wait(); // Wait until we acquire the keepalive.
+  });
+
+  EXPECT_THAT(collector->collectThreadIds().threadIds, testing::IsEmpty());
+
+  std::thread t{[&] { evbPtr->loopOnce(); }};
+
+  ready.wait();
+  auto ids = collector->collectThreadIds();
+  EXPECT_THAT(ids.threadIds, testing::ElementsAre(tid));
+  unblock.post();
+
+  // Until we release ids, the loop cannot complete.
+  /* sleep override */ std::this_thread::sleep_for(
+      std::chrono::milliseconds(100));
+  EXPECT_TRUE(evbPtr->isRunning());
+  // But things should eventually complete when released.
+  ids = {};
+  t.join();
+  EXPECT_FALSE(evbPtr->isRunning());
+  EXPECT_THAT(collector->collectThreadIds().threadIds, testing::IsEmpty());
+}
+
+TYPED_TEST_P(EventBaseTest, Suspension) {
+  using LoopStatus = EventBase::LoopStatus;
+
+  auto evbPtr = this->makeEventBase();
+  SKIP_IF(evbPtr->getBackend()->getPollableFd() == -1);
+
+  struct RepeatingBeforeLoopCallback : public EventBase::LoopCallback {
+    explicit RepeatingBeforeLoopCallback(EventBase& e) : evb(e) {}
+
+    void runLoopCallback() noexcept override {
+      ++count;
+      evb.runBeforeLoop(this);
+    }
+
+    EventBase& evb;
+    size_t count = 0;
+  };
+
+  RepeatingBeforeLoopCallback cb(*evbPtr);
+  evbPtr->runBeforeLoop(&cb);
+
+  auto loopAndExpectStatus = [&](LoopStatus expected) {
+    auto status = evbPtr->loopWithSuspension();
+    EXPECT_TRUE(status == expected)
+        << static_cast<int>(status) << " != " << static_cast<int>(expected);
+  };
+
+  folly::Executor::KeepAlive<> ka{evbPtr.get()};
+  // KeepAlive prevents loop to complete.
+  loopAndExpectStatus(LoopStatus::kSuspended);
+  // Fine to call again, run-before callbacks not invoked.
+  auto loops = cb.count;
+  loopAndExpectStatus(LoopStatus::kSuspended);
+  EXPECT_EQ(cb.count, loops);
+
+  // While suspended, the loop appears as running, but not in the current
+  // thread.
+  EXPECT_TRUE(evbPtr->isRunning());
+  EXPECT_FALSE(evbPtr->isInEventBaseThread());
+  EXPECT_FALSE(evbPtr->inRunningEventBaseThread());
+
+  bool called = false;
+  evbPtr->runInEventBaseThread([&] { called = true; });
+  loopAndExpectStatus(LoopStatus::kSuspended);
+  EXPECT_TRUE(called);
+
+  // We can make the loop complete (once) with terminateLoopSoon().
+  evbPtr->terminateLoopSoon();
+  loopAndExpectStatus(LoopStatus::kDone);
+  loopAndExpectStatus(LoopStatus::kSuspended);
+
+  // Once the keepalive is released the loop can complete every time.
+  ka.reset();
+  loopAndExpectStatus(LoopStatus::kDone);
+  loopAndExpectStatus(LoopStatus::kDone);
+
+  EXPECT_FALSE(evbPtr->isRunning());
+  EXPECT_TRUE(evbPtr->isInEventBaseThread());
+  EXPECT_FALSE(evbPtr->inRunningEventBaseThread());
+}
+
+struct BackendProviderBase {
+  static bool isIoUringBackend() { return false; }
+};
+
+REGISTER_TYPED_TEST_SUITE_P(
     EventBaseTest,
+    EventBaseThread,
     ReadEvent,
     ReadPersist,
     ReadImmediate,
@@ -2301,6 +2760,7 @@ REGISTER_TYPED_TEST_CASE_P(
     ReadPartial,
     WritePartial,
     DestroyingHandler,
+    HandlerSideEffects,
     RunAfterDelay,
     RunAfterDelayDestruction,
     BasicTimeouts,
@@ -2314,33 +2774,41 @@ REGISTER_TYPED_TEST_CASE_P(
     RunInEventBaseThreadAndWait,
     RunImmediatelyOrRunInEventBaseThreadAndWaitCross,
     RunImmediatelyOrRunInEventBaseThreadAndWaitWithin,
+    RunImmediatelyOrRunInEventBaseThreadAndWaitNotLooping,
+    RunImmediatelyOrRunInEventBaseThreadCross,
     RunImmediatelyOrRunInEventBaseThreadNotLooping,
     RepeatedRunInLoop,
     RunInLoopNoTimeMeasurement,
     RunInLoopStopLoop,
-    messageAvailableException,
+    RunPollLoop,
+    MessageAvailableException,
     TryRunningAfterTerminate,
     CancelRunInLoop,
     LoopTermination,
     CallbackOrderTest,
     AlwaysEnqueueCallbackOrderTest,
     IdleTime,
+    MaxLatencyUndamped,
+    UnsetMaxLatencyUndamped,
     ThisLoop,
     EventBaseThreadLoop,
     EventBaseThreadName,
     RunBeforeLoop,
     RunBeforeLoopWait,
     StopBeforeLoop,
+    RunCallbacksPreDestruction,
     RunCallbacksOnDestruction,
     LoopKeepAlive,
     LoopKeepAliveInLoop,
     LoopKeepAliveWithLoopForever,
     LoopKeepAliveShutdown,
     LoopKeepAliveAtomic,
-    LoopKeepAliveCast);
-
-REGISTER_TYPED_TEST_CASE_P(
-    EventBaseTest1,
+    LoopKeepAliveCast,
+    LastLoopKeepAliveTriggeringDestruction,
+    EventBaseObserver,
+    LoopRearmsNotificationQueue,
+    GetThreadIdCollector,
+    Suspension,
     DrivableExecutorTest,
     IOExecutorTest,
     RequestContextTest,
@@ -2350,6 +2818,9 @@ REGISTER_TYPED_TEST_CASE_P(
     RunOnDestructionCancelled,
     RunOnDestructionAfterHandleDestroyed,
     RunOnDestructionAddCallbackWithinCallback,
-    InternalExternalCallbackOrderTest);
+    InternalExternalCallbackOrderTest,
+    PidCheck,
+    EventBaseExecutionObserver);
+
 } // namespace test
 } // namespace folly

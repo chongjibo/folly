@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,9 +64,7 @@ class ZeroCopyTestAsyncSocket {
     }
   }
 
-  ~ZeroCopyTestAsyncSocket() {
-    clearBuffers();
-  }
+  ~ZeroCopyTestAsyncSocket() { clearBuffers(); }
 
   void connect(const folly::SocketAddress& remote) {
     if (sock_) {
@@ -213,10 +211,7 @@ class ZeroCopyTestAsyncSocket {
 class ZeroCopyTestServer : public folly::AsyncServerSocket::AcceptCallback {
  public:
   explicit ZeroCopyTestServer(
-      folly::EventBase* evb,
-      int numLoops,
-      size_t bufferSize,
-      bool zeroCopy)
+      folly::EventBase* evb, int numLoops, size_t bufferSize, bool zeroCopy)
       : evb_(evb),
         numLoops_(numLoops),
         bufferSize_(bufferSize),
@@ -228,13 +223,14 @@ class ZeroCopyTestServer : public folly::AsyncServerSocket::AcceptCallback {
 
   void connectionAccepted(
       folly::NetworkSocket fd,
-      const folly::SocketAddress& /* unused */) noexcept override {
+      const folly::SocketAddress& /* unused */,
+      AcceptInfo /* info */) noexcept override {
     auto client = std::make_shared<ZeroCopyTestAsyncSocket>(
         nullptr, evb_, fd, numLoops_, bufferSize_, zeroCopy_);
     clients_[client.get()] = client;
   }
 
-  void acceptError(const std::exception&) noexcept override {}
+  void acceptError(folly::exception_wrapper) noexcept override {}
 
  private:
   folly::EventBase* evb_;
@@ -251,10 +247,7 @@ class ZeroCopyTestServer : public folly::AsyncServerSocket::AcceptCallback {
 class ZeroCopyTest {
  public:
   explicit ZeroCopyTest(
-      size_t numClients,
-      int numLoops,
-      bool zeroCopy,
-      size_t bufferSize);
+      size_t numClients, int numLoops, bool zeroCopy, size_t bufferSize);
   bool run();
 
  private:

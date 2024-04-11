@@ -5,18 +5,27 @@ shipit_project = mvfst
 shipit_fbcode_builder = true
 
 [git]
-repo_url = https://github.com/facebookincubator/mvfst.git
+repo_url = https://github.com/facebook/mvfst.git
 
 [build]
 builder = cmake
 subdir = .
 
-[cmake.defines]
+[cmake.defines.test=on]
+BUILD_TESTS = ON
+
+[cmake.defines.all(os=windows, test=on)]
+BUILD_TESTS = OFF
+
+[cmake.defines.test=off]
 BUILD_TESTS = OFF
 
 [dependencies]
 folly
 fizz
+
+[dependencies.all(test=on, not(os=windows))]
+googletest
 
 [shipit.pathmap]
 fbcode/quic/public_root = .

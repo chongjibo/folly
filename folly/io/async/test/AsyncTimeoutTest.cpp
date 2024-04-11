@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,20 @@
  */
 
 #include <folly/io/async/AsyncTimeout.h>
+
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GTest.h>
 
 namespace folly {
+
+TEST(AsyncTimeout, destroy) {
+  std::optional<EventBase> manager{std::in_place};
+  auto observer = AsyncTimeout::make(manager.value(), []() noexcept {});
+  observer->scheduleTimeout(std::chrono::milliseconds(100));
+  EXPECT_EQ(observer->isScheduled(), true);
+  manager.reset();
+  EXPECT_EQ(observer->isScheduled(), false);
+}
 
 TEST(AsyncTimeout, make) {
   int value = 0;
@@ -26,7 +36,7 @@ TEST(AsyncTimeout, make) {
   EventBase manager;
 
   auto observer = AsyncTimeout::make(
-      manager, [&value, expected ]() noexcept { value = expected; });
+      manager, [&value, expected]() noexcept { value = expected; });
 
   observer->scheduleTimeout(std::chrono::milliseconds(100));
 
@@ -41,7 +51,7 @@ TEST(AsyncTimeout, schedule) {
   EventBase manager;
 
   auto observer = AsyncTimeout::schedule(
-      std::chrono::milliseconds(100), manager, [&value, expected ]() noexcept {
+      std::chrono::milliseconds(100), manager, [&value, expected]() noexcept {
         value = expected;
       });
 
@@ -50,13 +60,13 @@ TEST(AsyncTimeout, schedule) {
   EXPECT_EQ(expected, value);
 }
 
-TEST(AsyncTimeout, schedule_immediate) {
+TEST(AsyncTimeout, scheduleImmediate) {
   int value = 0;
   int expected = 10;
   EventBase manager;
 
   auto observer = AsyncTimeout::schedule(
-      std::chrono::milliseconds(0), manager, [&value, expected ]() noexcept {
+      std::chrono::milliseconds(0), manager, [&value, expected]() noexcept {
         value = expected;
       });
 
@@ -64,13 +74,13 @@ TEST(AsyncTimeout, schedule_immediate) {
   EXPECT_EQ(expected, value);
 }
 
-TEST(AsyncTimeout, cancel_make) {
+TEST(AsyncTimeout, cancelMake) {
   int value = 0;
   int expected = 10;
   EventBase manager;
 
   auto observer = AsyncTimeout::make(
-      manager, [&value, expected ]() noexcept { value = expected; });
+      manager, [&value, expected]() noexcept { value = expected; });
 
   std::weak_ptr<RequestContext> rctx_weak_ptr;
 
@@ -90,7 +100,7 @@ TEST(AsyncTimeout, cancel_make) {
   EXPECT_NE(expected, value);
 }
 
-TEST(AsyncTimeout, cancel_schedule) {
+TEST(AsyncTimeout, cancelSchedule) {
   int value = 0;
   int expected = 10;
   EventBase manager;
@@ -102,9 +112,9 @@ TEST(AsyncTimeout, cancel_schedule) {
     rctx_weak_ptr = RequestContext::saveContext();
 
     observer = AsyncTimeout::schedule(
-        std::chrono::milliseconds(100),
-        manager,
-        [&value, expected ]() noexcept { value = expected; });
+        std::chrono::milliseconds(100), manager, [&value, expected]() noexcept {
+          value = expected;
+        });
 
     observer->cancelTimeout();
   }

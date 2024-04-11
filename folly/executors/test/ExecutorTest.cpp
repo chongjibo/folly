@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,9 +20,6 @@
 #include <folly/futures/Future.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
-
-// TODO(jsedgwick) move this test to executors/test/ once the tested executors
-// have all moved
 
 using namespace folly;
 
@@ -181,7 +178,7 @@ TEST(ManualExecutor, getViaDoesNotDeadlock) {
                .via(&west);
   std::thread t([&] {
     baton.post();
-    f.getVia(&west);
+    std::move(f).getVia(&west);
   });
   baton.wait();
   east.run();
@@ -255,9 +252,7 @@ TEST(Executor, Runnable) {
   size_t counter = 0;
   struct Runnable {
     std::function<void()> fn;
-    void operator()() {
-      fn();
-    }
+    void operator()() { fn(); }
   };
   Runnable f;
   f.fn = [&] { counter++; };
@@ -279,9 +274,7 @@ TEST(Executor, ThrowableThen) {
 
 class CrappyExecutor : public Executor {
  public:
-  void add(Func /* f */) override {
-    throw std::runtime_error("bad");
-  }
+  void add(Func /* f */) override { throw std::runtime_error("bad"); }
 };
 
 TEST(Executor, CrappyExecutor) {
@@ -297,9 +290,7 @@ TEST(Executor, CrappyExecutor) {
 
 class DoNothingExecutor : public Executor {
  public:
-  void add(Func f) override {
-    storedFunc_ = std::move(f);
-  }
+  void add(Func f) override { storedFunc_ = std::move(f); }
 
  private:
   Func storedFunc_;

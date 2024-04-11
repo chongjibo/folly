@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,24 +16,30 @@
 
 #pragma once
 
+#include <limits.h>
+#include <stddef.h>
+
+#include <chrono>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <variant>
+#include <vector>
+
+#include <folly/ExceptionWrapper.h>
 #include <folly/SocketAddress.h>
 #include <folly/String.h>
+#include <folly/experimental/observer/Observer.h>
 #include <folly/io/ShutdownSocketSet.h>
 #include <folly/io/async/AsyncSocketBase.h>
 #include <folly/io/async/AsyncTimeout.h>
 #include <folly/io/async/DelayedDestruction.h>
 #include <folly/io/async/EventBase.h>
+#include <folly/io/async/EventBaseAtomicNotificationQueue.h>
 #include <folly/io/async/EventHandler.h>
-#include <folly/io/async/NotificationQueue.h>
 #include <folly/net/NetOps.h>
 #include <folly/net/NetworkSocket.h>
 #include <folly/portability/Sockets.h>
-
-#include <limits.h>
-#include <stddef.h>
-#include <exception>
-#include <memory>
-#include <vector>
 
 // Due to the way kernel headers are included, this may or may not be defined.
 // Number pulled from 3.10 kernel headers.
@@ -48,25 +54,28 @@
 namespace folly {
 
 /**
- * A listening socket that asynchronously informs a callback whenever a new
- * connection has been accepted.
+ * AsyncServerSocket is a listening socket that asynchronously informs a
+ * callback whenever a new connection has been accepted.
  *
  * Unlike most async interfaces that always invoke their callback in the same
  * EventBase thread, AsyncServerSocket is unusual in that it can distribute
  * the callbacks across multiple EventBase threads.
- *
+
  * This supports a common use case for network servers to distribute incoming
  * connections across a number of EventBase threads.  (Servers typically run
  * with one EventBase thread per CPU.)
- *
+
  * Despite being able to invoke callbacks in multiple EventBase threads,
  * AsyncServerSocket still has one "primary" EventBase.  Operations that
  * modify the AsyncServerSocket state may only be performed from the primary
  * EventBase thread.
+ *
  */
 class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
  public:
   typedef std::unique_ptr<AsyncServerSocket, Destructor> UniquePtr;
+  using CallbackAssignFunction =
+      std::function<int(AsyncServerSocket*, NetworkSocket)>;
   // Disallow copy, move, and default construction.
   AsyncServerSocket(AsyncServerSocket&&) = delete;
 
@@ -85,8 +94,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
      * is accepted using the system accept()/accept4() APIs.
      */
     virtual void onConnectionAccepted(
-        const NetworkSocket socket,
-        const SocketAddress& addr) noexcept = 0;
+        const NetworkSocket socket, const SocketAddress& addr) noexcept = 0;
 
     /**
      * onConnectionAcceptError() is called when an error occurred accepting
@@ -100,23 +108,22 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
      */
     virtual void onConnectionDropped(
         const NetworkSocket socket,
-        const SocketAddress& addr) noexcept = 0;
+        const SocketAddress& addr,
+        const std::string& errorMsg = "") noexcept = 0;
 
     /**
      * onConnectionEnqueuedForAcceptorCallback() is called when the
      * connection is successfully enqueued for an AcceptCallback to pick up.
      */
     virtual void onConnectionEnqueuedForAcceptorCallback(
-        const NetworkSocket socket,
-        const SocketAddress& addr) noexcept = 0;
+        const NetworkSocket socket, const SocketAddress& addr) noexcept = 0;
 
     /**
      * onConnectionDequeuedByAcceptorCallback() is called when the
      * connection is successfully dequeued by an AcceptCallback.
      */
     virtual void onConnectionDequeuedByAcceptorCallback(
-        const NetworkSocket socket,
-        const SocketAddress& addr) noexcept = 0;
+        const NetworkSocket socket, const SocketAddress& addr) noexcept = 0;
 
     /**
      * onBackoffStarted is called when the socket has successfully started
@@ -139,7 +146,11 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
 
   class AcceptCallback {
    public:
-    virtual ~AcceptCallback() = default;
+    struct AcceptInfo {
+      std::chrono::steady_clock::time_point timeBeforeEnqueue;
+    };
+
+    virtual ~AcceptCallback();
 
     /**
      * connectionAccepted() is called whenever a new client connection is
@@ -156,10 +167,14 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
      * @param clientAddr  A reference to a SocketAddress struct containing the
      *                    client's address.  This struct is only guaranteed to
      *                    remain valid until connectionAccepted() returns.
+     * @param info        A simple structure that contains auxiliary information
+     *                    about this accepted socket, for example, when it's
+     *                    getting pushed into the waiting queue.
      */
     virtual void connectionAccepted(
         NetworkSocket fd,
-        const SocketAddress& clientAddr) noexcept = 0;
+        const SocketAddress& clientAddr,
+        AcceptInfo info) noexcept = 0;
 
     /**
      * acceptError() is called if an error occurs while accepting.
@@ -171,7 +186,19 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
      *
      * @param ex  An exception representing the error.
      */
-    virtual void acceptError(const std::exception& ex) noexcept = 0;
+
+    // TODO(T81599451): Remove the acceptError(const std::exception&)
+    // after migration and remove compile warning supression.
+    FOLLY_PUSH_WARNING
+    FOLLY_GNU_DISABLE_WARNING("-Woverloaded-virtual")
+    virtual void acceptError(exception_wrapper ew) noexcept {
+      auto ex = ew.get_exception<std::exception>();
+      FOLLY_SAFE_CHECK(ex, "no exception");
+      acceptError(*ex);
+    }
+
+    virtual void acceptError(const std::exception& /* unused */) noexcept {}
+    FOLLY_POP_WARNING
 
     /**
      * acceptStarted() will be called in the callback's EventBase thread
@@ -209,6 +236,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   static const uint32_t kDefaultMaxAcceptAtOnce = 30;
   static const uint32_t kDefaultCallbackAcceptAtOnce = 5;
   static const uint32_t kDefaultMaxMessagesInQueue = 1024;
+
   /**
    * Create a new AsyncServerSocket with the specified EventBase.
    *
@@ -224,6 +252,8 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    *
    * This passes in the correct destructor object, since AsyncServerSocket's
    * destructor is protected and cannot be invoked directly.
+   *
+   * @param evb  The EventBase to use for driving the asynchronous I/O.
    */
   static std::shared_ptr<AsyncServerSocket> newSocket(
       EventBase* evb = nullptr) {
@@ -258,6 +288,9 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    * This may only be called if the AsyncServerSocket is not already attached
    * to a EventBase.  The AsyncServerSocket must be attached to a EventBase
    * before it can begin accepting connections.
+   *
+   * @param eventBase The EventBase to attach to for driving the asynchronous
+   * I/O.
    */
   void attachEventBase(EventBase* eventBase);
 
@@ -272,9 +305,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   /**
    * Get the EventBase used by this socket.
    */
-  EventBase* getEventBase() const override {
-    return eventBase_;
-  }
+  EventBase* getEventBase() const override { return eventBase_; }
 
   /**
    * Create a AsyncServerSocket from an existing socket file descriptor.
@@ -293,8 +324,15 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    *
    * On error a AsyncSocketException will be thrown and the caller will retain
    * ownership of the file descriptor.
+   *
+   * @param fd existing socket's file descriptor
    */
   void useExistingSocket(NetworkSocket fd);
+
+  /**
+   * Create a AsyncServerSocket from existing socket file descriptors.
+   * @param fds vector of sockets file descriptors
+   */
   void useExistingSockets(const std::vector<NetworkSocket>& fds);
 
   /**
@@ -309,7 +347,9 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   }
 
   /**
-   * Backwards compatible getSocket, warns if > 1 socket
+   * Backwards compatible getSocket
+   *
+   * warns if there are more than one socket
    */
   NetworkSocket getNetworkSocket() const {
     if (sockets_.size() > 1) {
@@ -323,11 +363,19 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
     }
   }
 
-  /* enable zerocopy support for the server sockets - the s = accept sockets
-   * inherit it
+  /**
+   * sets the callback assign function
+   */
+  void setCallbackAssignFunction(CallbackAssignFunction&& func) {
+    callbackAssignFunc_ = std::move(func);
+  }
+
+  /**
+   * enable zerocopy support for the server sockets -
+   * the s = accept sockets inherit it
    */
   bool setZeroCopy(bool enable);
-
+  using IPAddressIfNamePair = std::pair<IPAddress, std::string>;
   /**
    * Bind to the specified address.
    *
@@ -338,6 +386,15 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   virtual void bind(const SocketAddress& address);
 
   /**
+   * Bind to the specified address/if name
+   *
+   * This must be called from the primary EventBase thread.
+   *
+   * Throws AsyncSocketException on error.
+   */
+  virtual void bind(const SocketAddress& address, const std::string& ifName);
+
+  /**
    * Bind to the specified port for the specified addresses.
    *
    * This must be called from the primary EventBase thread.
@@ -345,6 +402,16 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    * Throws AsyncSocketException on error.
    */
   virtual void bind(const std::vector<IPAddress>& ipAddresses, uint16_t port);
+
+  /**
+   * Bind to the specified port for the specified addresses/if names.
+   *
+   * This must be called from the primary EventBase thread.
+   *
+   * Throws AsyncSocketException on error.
+   */
+  virtual void bind(
+      const std::vector<IPAddressIfNamePair>& addresses, uint16_t port);
 
   /**
    * Bind to the specified port.
@@ -507,7 +574,9 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
 
   /**
    * Shutdown the listen socket and notify all callbacks that accept has
-   * stopped, but don't close the socket.  This invokes shutdown(2) with the
+   * stopped
+   *
+   * This call doesn't close the socket. it invokes shutdown(2) with the
    * supplied argument.  Passing -1 will close the socket now.  Otherwise, the
    * close will be delayed until this object is destroyed.
    *
@@ -524,9 +593,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    * Get the maximum number of connections that will be accepted each time
    * around the event loop.
    */
-  uint32_t getMaxAcceptAtOnce() const {
-    return maxAcceptAtOnce_;
-  }
+  uint32_t getMaxAcceptAtOnce() const { return maxAcceptAtOnce_; }
 
   /**
    * Set the maximum number of connections that will be accepted each time
@@ -542,35 +609,52 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    * pauseAccepting() to temporarily pause accepting when your server is
    * overloaded, and then use startAccepting() later to resume accepting.
    */
-  void setMaxAcceptAtOnce(uint32_t numConns) {
-    maxAcceptAtOnce_ = numConns;
+  void setMaxAcceptAtOnce(uint32_t numConns) { maxAcceptAtOnce_ = numConns; }
+
+  /**
+   * Get the duration after which new connection messages will be dropped from
+   * the NotificationQueue if it has not started processing yet.
+   */
+  const folly::observer::AtomicObserver<std::chrono::nanoseconds>&
+  getQueueTimeout() const {
+    return queueTimeout_;
+  }
+
+  /**
+   * Set the duration after which new connection messages will be dropped from
+   * the NotificationQueue if it has not started processing yet.
+   *
+   * This avoids the NotificationQueue from processing messages where the client
+   * socket has probably timed out already, or will time out before a response
+   * can be sent.
+   *
+   * The default value (of 0) means that messages will never expire.
+   */
+  void setQueueTimeout(
+      folly::observer::Observer<std::chrono::nanoseconds> duration) {
+    queueTimeout_ = duration;
+  }
+  void setQueueTimeout(std::chrono::nanoseconds duration) {
+    setQueueTimeout(folly::observer::makeStaticObserver(duration));
   }
 
   /**
    * Get the maximum number of unprocessed messages which a NotificationQueue
    * can hold.
    */
-  uint32_t getMaxNumMessagesInQueue() const {
-    return maxNumMsgsInQueue_;
-  }
+  uint32_t getMaxNumMessagesInQueue() const { return maxNumMsgsInQueue_; }
 
   /**
    * Set the maximum number of unprocessed messages in NotificationQueue.
    * No new message will be sent to that NotificationQueue if there are more
    * than such number of unprocessed messages in that queue.
-   *
-   * Only works if called before addAcceptCallback.
    */
-  void setMaxNumMessagesInQueue(uint32_t num) {
-    maxNumMsgsInQueue_ = num;
-  }
+  void setMaxNumMessagesInQueue(uint32_t num) { maxNumMsgsInQueue_ = num; }
 
   /**
    * Get the speed of adjusting connection accept rate.
    */
-  double getAcceptRateAdjustSpeed() const {
-    return acceptRateAdjustSpeed_;
-  }
+  double getAcceptRateAdjustSpeed() const { return acceptRateAdjustSpeed_; }
 
   /**
    * Set the speed of adjusting connection accept rate.
@@ -583,10 +667,20 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    * Enable/Disable TOS reflection for the server socket
    */
   void setTosReflect(bool enable);
+  /**
+   * Get TOS reflection for server socket
+   */
+  bool getTosReflect() { return tosReflect_; }
 
-  bool getTosReflect() {
-    return tosReflect_;
-  }
+  /**
+   * Set default TOS for listener socket
+   */
+  void setListenerTos(uint32_t tos);
+
+  /**
+   * Get default TOS for listener socket
+   */
+  uint32_t getListenerTos() const { return listenerTos_; }
 
   /**
    * Get the number of connections dropped by the AsyncServerSocket
@@ -610,7 +704,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
     int64_t numMsgs = 0;
     for (const auto& callback : callbacks_) {
       if (callback.consumer) {
-        numMsgs += callback.consumer->getQueue()->size();
+        numMsgs += callback.consumer->getQueue().size();
       }
     }
     return numMsgs;
@@ -646,9 +740,7 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   /**
    * Get whether or not SO_KEEPALIVE is enabled on the server socket.
    */
-  bool getKeepAliveEnabled() const {
-    return keepAliveEnabled_;
-  }
+  bool getKeepAliveEnabled() const { return keepAliveEnabled_; }
 
   /**
    * Set whether or not SO_REUSEPORT should be enabled on the server socket,
@@ -676,26 +768,27 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   }
 
   /**
+   * Set whether or not SO_REUSEADDR should be enabled on the server socket,
+   * allowing multiple sockets binds to the same <address>:<port>
+   * It's enabled by default.
+   */
+  void setEnableReuseAddr(bool enable);
+
+  /**
    * Get whether or not SO_REUSEPORT is enabled on the server socket.
    */
-  bool getReusePortEnabled_() const {
-    return reusePortEnabled_;
-  }
+  bool getReusePortEnabled_() const { return reusePortEnabled_; }
 
   /**
    * Set whether or not the socket should close during exec() (FD_CLOEXEC). By
    * default, this is enabled
    */
-  void setCloseOnExec(bool closeOnExec) {
-    closeOnExec_ = closeOnExec;
-  }
+  void setCloseOnExec(bool closeOnExec) { closeOnExec_ = closeOnExec; }
 
   /**
    * Get whether or not FD_CLOEXEC is enabled on the server socket.
    */
-  bool getCloseOnExec() const {
-    return closeOnExec_;
-  }
+  bool getCloseOnExec() const { return closeOnExec_; }
 
   /**
    * Tries to enable TFO if the machine supports it.
@@ -708,16 +801,12 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   /**
    * Do not attempt the transparent TLS handshake
    */
-  void disableTransparentTls() {
-    noTransparentTls_ = true;
-  }
+  void disableTransparentTls() { noTransparentTls_ = true; }
 
   /**
    * Get whether or not the socket is accepting new connections
    */
-  bool getAccepting() const {
-    return accepting_;
-  }
+  bool getAccepting() const { return accepting_; }
 
   /**
    * Set the ConnectionEventCallback
@@ -734,6 +823,12 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
     return connectionEventCallback_;
   }
 
+  /**
+   * Index of the callback with the same EVB as the current
+   * AsyncServerSocket instance, if any
+   */
+  int getLocalCallbackIndex() const { return localCallbackIndex_; }
+
  protected:
   /**
    * Protected destructor.
@@ -743,15 +838,32 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   ~AsyncServerSocket() override;
 
  private:
-  enum class MessageType { MSG_NEW_CONN = 0, MSG_ERROR = 1 };
+  class RemoteAcceptor;
 
-  struct QueueMessage {
-    MessageType type;
+  struct NewConnMessage {
     NetworkSocket fd;
-    int err;
-    SocketAddress address;
-    std::string msg;
+    SocketAddress clientAddr;
+    std::chrono::steady_clock::time_point deadline;
+    std::chrono::steady_clock::time_point timeBeforeEnqueue;
+
+    bool isExpired() const {
+      return deadline.time_since_epoch().count() != 0 &&
+          std::chrono::steady_clock::now() > deadline;
+    }
+
+    AtomicNotificationQueueTaskStatus operator()(
+        RemoteAcceptor& acceptor) noexcept;
   };
+
+  struct ErrorMessage {
+    int err;
+    std::string msg;
+
+    AtomicNotificationQueueTaskStatus operator()(
+        RemoteAcceptor& acceptor) noexcept;
+  };
+
+  using QueueMessage = std::variant<NewConnMessage, ErrorMessage>;
 
   /**
    * A class to receive notifications to invoke AcceptCallback objects
@@ -762,30 +874,40 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
    * receives notification of new sockets via a NotificationQueue,
    * and then invokes the AcceptCallback.
    */
-  class RemoteAcceptor : private NotificationQueue<QueueMessage>::Consumer {
+  class RemoteAcceptor {
+    struct Consumer {
+      AtomicNotificationQueueTaskStatus operator()(
+          QueueMessage&& msg) noexcept {
+        return std::visit(
+            [this](auto&& visitMsg) { return visitMsg(acceptor_); }, msg);
+      }
+
+      explicit Consumer(RemoteAcceptor& acceptor) : acceptor_(acceptor) {}
+      RemoteAcceptor& acceptor_;
+    };
+
+    friend NewConnMessage;
+    friend ErrorMessage;
+
    public:
+    using Queue = EventBaseAtomicNotificationQueue<QueueMessage, Consumer>;
+
     explicit RemoteAcceptor(
         AcceptCallback* callback,
         ConnectionEventCallback* connectionEventCallback)
         : callback_(callback),
-          connectionEventCallback_(connectionEventCallback) {}
+          connectionEventCallback_(connectionEventCallback),
+          queue_(Consumer(*this)) {}
 
-    ~RemoteAcceptor() override = default;
-
-    void start(EventBase* eventBase, uint32_t maxAtOnce, uint32_t maxInQueue);
+    void start(EventBase* eventBase, uint32_t maxAtOnce);
     void stop(EventBase* eventBase, AcceptCallback* callback);
 
-    void messageAvailable(QueueMessage&& msg) noexcept override;
-
-    NotificationQueue<QueueMessage>* getQueue() {
-      return &queue_;
-    }
+    Queue& getQueue() { return queue_; }
 
    private:
     AcceptCallback* callback_;
     ConnectionEventCallback* connectionEventCallback_;
-
-    NotificationQueue<QueueMessage> queue_;
+    Queue queue_;
   };
 
   /**
@@ -804,21 +926,29 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
 
   class BackoffTimeout;
 
-  virtual void
-  handlerReady(uint16_t events, NetworkSocket fd, sa_family_t family) noexcept;
+  virtual void handlerReady(
+      uint16_t events, NetworkSocket fd, sa_family_t family) noexcept;
 
   NetworkSocket createSocket(int family);
   void setupSocket(NetworkSocket fd, int family);
+  void bindInternal(const SocketAddress& address, const std::string& ifName);
   void bindSocket(
       NetworkSocket fd,
       const SocketAddress& address,
-      bool isExistingSocket);
+      bool isExistingSocket,
+      const std::string& ifName);
   void dispatchSocket(NetworkSocket socket, SocketAddress&& address);
   void dispatchError(const char* msg, int errnoValue);
   void enterBackoff();
   void backoffTimeoutExpired();
 
-  CallbackInfo* nextCallback() {
+  CallbackInfo* nextCallback(NetworkSocket socket = NetworkSocket()) {
+    if (callbackAssignFunc_ && socket != NetworkSocket()) {
+      auto num = callbackAssignFunc_(this, socket);
+      if (num >= 0) {
+        return &callbacks_[num % callbacks_.size()];
+      }
+    }
     CallbackInfo* info = &callbacks_[callbackIndex_];
 
     ++callbackIndex_;
@@ -886,8 +1016,12 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   uint32_t callbackIndex_;
   BackoffTimeout* backoffTimeout_;
   std::vector<CallbackInfo> callbacks_;
+  CallbackAssignFunction callbackAssignFunc_;
+  int localCallbackIndex_{-1};
   bool keepAliveEnabled_;
   bool reusePortEnabled_{false};
+  // SO_REUSEADDR is enabled by default
+  bool enableReuseAddr_{true};
   bool closeOnExec_;
   bool tfo_{false};
   bool noTransparentTls_{false};
@@ -895,7 +1029,10 @@ class AsyncServerSocket : public DelayedDestruction, public AsyncSocketBase {
   std::weak_ptr<ShutdownSocketSet> wShutdownSocketSet_;
   ConnectionEventCallback* connectionEventCallback_{nullptr};
   bool tosReflect_{false};
+  uint32_t listenerTos_{0};
   bool zeroCopyVal_{false};
+  folly::observer::AtomicObserver<std::chrono::nanoseconds> queueTimeout_{
+      folly::observer::makeStaticObserver(std::chrono::nanoseconds::zero())};
 };
 
 } // namespace folly

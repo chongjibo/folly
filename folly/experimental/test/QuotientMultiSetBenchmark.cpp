@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,8 @@ DEFINE_double(load_factor, 0.95, "Load factor of the multiset");
 
 #if FOLLY_QUOTIENT_MULTI_SET_SUPPORTED
 
+using std::string;
+
 namespace {
 
 static const unsigned int kRunsPerIteration = 5000000;
@@ -48,7 +50,7 @@ std::mt19937 rng;
 
 // Uniformly distributed keys.
 std::vector<uint64_t> uniform;
-std::string qmsData;
+string qmsData;
 
 uint64_t maxValue(uint32_t nbits) {
   return nbits == 64 ? std::numeric_limits<uint64_t>::max()
@@ -74,7 +76,7 @@ void buildQuotientMultiSet(std::vector<uint64_t>& keys) {
     }
   }
   builder.close(buff);
-  qmsData = buff.move()->coalesce().toString();
+  qmsData = buff.move()->to<string>();
 }
 
 std::vector<uint64_t> makeLookupKeys(size_t n, double hitRate) {
@@ -95,7 +97,7 @@ const folly::F14FastSet<uint64_t>& getF14Baseline() {
   folly::BenchmarkSuspender guard;
   static const auto set = [] {
     folly::F14FastSet<uint64_t> ret(uniform.begin(), uniform.end());
-    LOG(INFO) << folly::format(
+    LOG(INFO) << folly::sformat(
         "Built F14FastSet, size: {}, space: {}",
         ret.size(),
         folly::prettyPrint(
@@ -106,13 +108,13 @@ const folly::F14FastSet<uint64_t>& getF14Baseline() {
 }
 
 using EFEncoder =
-    folly::compression::EliasFanoEncoderV2<uint64_t, uint64_t, 128, 128>;
+    folly::compression::EliasFanoEncoder<uint64_t, uint64_t, 128, 128>;
 
 const folly::compression::MutableEliasFanoCompressedList& getEFBaseline() {
   folly::BenchmarkSuspender guard;
   static auto list = [] {
     auto ret = EFEncoder::encode(uniform.begin(), uniform.end());
-    LOG(INFO) << folly::format(
+    LOG(INFO) << folly::sformat(
         "Built Elias-Fano list, space: {}",
         folly::prettyPrint(
             ret.data.size(), folly::PrettyType::PRETTY_BYTES_IEC));
@@ -207,7 +209,7 @@ void benchmarkSetup() {
   boost::sort::spreadsort::integer_sort(uniform.begin(), uniform.end());
   buildQuotientMultiSet(uniform);
 
-  LOG(INFO) << folly::format(
+  LOG(INFO) << folly::sformat(
       "Built QuotientMultiSet, space: {}",
       folly::prettyPrint(qmsData.size(), folly::PrettyType::PRETTY_BYTES_IEC));
 }
@@ -390,7 +392,7 @@ BENCHMARK_MULTI(EliasFanoGetRandomSerialized) {
 #endif // FOLLY_QUOTIENT_MULTI_SET_SUPPORTED
 
 int main(int argc, char** argv) {
-  folly::init(&argc, &argv);
+  folly::Init init(&argc, &argv);
 
 #if FOLLY_QUOTIENT_MULTI_SET_SUPPORTED
   benchmarkSetup();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,13 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
 #include <folly/Optional.h>
 #include <folly/ScopeGuard.h>
 #include <folly/executors/ManualExecutor.h>
 #include <folly/experimental/coro/Baton.h>
 #include <folly/experimental/coro/BlockingWait.h>
+#include <folly/experimental/coro/Coroutine.h>
 #include <folly/experimental/coro/Invoke.h>
-#include <folly/experimental/coro/Utils.h>
 #include <folly/fibers/FiberManager.h>
 #include <folly/fibers/FiberManagerMap.h>
 #include <folly/portability/GTest.h>
@@ -32,28 +30,30 @@
 #include <memory>
 #include <type_traits>
 
+#if FOLLY_HAS_COROUTINES
+
 static_assert(
     std::is_same<
         decltype(folly::coro::blockingWait(
-            std::declval<folly::coro::AwaitableReady<void>>())),
+            std::declval<folly::coro::ready_awaitable<>>())),
         void>::value,
     "");
 static_assert(
     std::is_same<
         decltype(folly::coro::blockingWait(
-            std::declval<folly::coro::AwaitableReady<int>>())),
+            std::declval<folly::coro::ready_awaitable<int>>())),
         int>::value,
     "");
 static_assert(
     std::is_same<
         decltype(folly::coro::blockingWait(
-            std::declval<folly::coro::AwaitableReady<int&>>())),
+            std::declval<folly::coro::ready_awaitable<int&>>())),
         int&>::value,
     "");
 static_assert(
     std::is_same<
         decltype(folly::coro::blockingWait(
-            std::declval<folly::coro::AwaitableReady<int&&>>())),
+            std::declval<folly::coro::ready_awaitable<int&&>>())),
         int>::value,
     "blockingWait() should convert rvalue-reference-returning awaitables "
     "into a returned prvalue to avoid potential lifetime issues since "
@@ -64,22 +64,22 @@ static_assert(
 class BlockingWaitTest : public testing::Test {};
 
 TEST_F(BlockingWaitTest, SynchronousCompletionVoidResult) {
-  folly::coro::blockingWait(folly::coro::AwaitableReady<void>{});
+  folly::coro::blockingWait(folly::coro::ready_awaitable<>{});
 }
 
 TEST_F(BlockingWaitTest, SynchronousCompletionPRValueResult) {
   EXPECT_EQ(
-      123, folly::coro::blockingWait(folly::coro::AwaitableReady<int>{123}));
+      123, folly::coro::blockingWait(folly::coro::ready_awaitable<int>{123}));
   EXPECT_EQ(
       "hello",
       folly::coro::blockingWait(
-          folly::coro::AwaitableReady<std::string>("hello")));
+          folly::coro::ready_awaitable<std::string>("hello")));
 }
 
 TEST_F(BlockingWaitTest, SynchronousCompletionLValueResult) {
   int value = 123;
   int& result =
-      folly::coro::blockingWait(folly::coro::AwaitableReady<int&>{value});
+      folly::coro::blockingWait(folly::coro::ready_awaitable<int&>{value});
   EXPECT_EQ(&value, &result);
   EXPECT_EQ(123, result);
 }
@@ -91,7 +91,7 @@ TEST_F(BlockingWaitTest, SynchronousCompletionRValueResult) {
   // Should return a prvalue which will lifetime-extend when assigned to an
   // auto&& local variable.
   auto&& result = folly::coro::blockingWait(
-      folly::coro::AwaitableReady<std::unique_ptr<int>&&>{std::move(p)});
+      folly::coro::ready_awaitable<std::unique_ptr<int>&&>{std::move(p)});
 
   EXPECT_EQ(ptr, result.get());
   EXPECT_FALSE(p);
@@ -101,23 +101,17 @@ struct TrickyAwaitable {
   struct Awaiter {
     std::unique_ptr<int> value_;
 
-    bool await_ready() const {
-      return false;
-    }
+    bool await_ready() const { return false; }
 
-    bool await_suspend(std::experimental::coroutine_handle<>) {
+    bool await_suspend(folly::coro::coroutine_handle<>) {
       value_ = std::make_unique<int>(42);
       return false;
     }
 
-    std::unique_ptr<int>&& await_resume() {
-      return std::move(value_);
-    }
+    std::unique_ptr<int>&& await_resume() { return std::move(value_); }
   };
 
-  Awaiter operator co_await() {
-    return {};
-  }
+  Awaiter operator co_await() { return {}; }
 };
 
 TEST_F(BlockingWaitTest, ReturnRvalueReferenceFromAwaiter) {
@@ -134,9 +128,7 @@ TEST_F(BlockingWaitTest, ReturnRvalueReferenceFromAwaiter) {
 TEST_F(BlockingWaitTest, AsynchronousCompletionOnAnotherThread) {
   folly::coro::Baton baton;
   std::thread t{[&] { baton.post(); }};
-  SCOPE_EXIT {
-    t.join();
-  };
+  SCOPE_EXIT { t.join(); };
   folly::coro::blockingWait(baton);
 }
 
@@ -146,16 +138,13 @@ class SimplePromise {
   class WaitOperation {
    public:
     explicit WaitOperation(
-        folly::coro::Baton& baton,
-        folly::Optional<T>& value) noexcept
+        folly::coro::Baton& baton, folly::Optional<T>& value) noexcept
         : awaiter_(baton), value_(value) {}
 
-    bool await_ready() {
-      return awaiter_.await_ready();
-    }
+    bool await_ready() { return awaiter_.await_ready(); }
 
     template <typename Promise>
-    auto await_suspend(std::experimental::coroutine_handle<Promise> h) {
+    auto await_suspend(folly::coro::coroutine_handle<Promise> h) {
       return awaiter_.await_suspend(h);
     }
 
@@ -171,9 +160,7 @@ class SimplePromise {
 
   SimplePromise() = default;
 
-  WaitOperation operator co_await() {
-    return WaitOperation{baton_, value_};
-  }
+  WaitOperation operator co_await() { return WaitOperation{baton_, value_}; }
 
   template <typename... Args>
   void emplace(Args&&... args) {
@@ -189,9 +176,7 @@ class SimplePromise {
 TEST_F(BlockingWaitTest, WaitOnSimpleAsyncPromise) {
   SimplePromise<std::string> p;
   std::thread t{[&] { p.emplace("hello coroutines!"); }};
-  SCOPE_EXIT {
-    t.join();
-  };
+  SCOPE_EXIT { t.join(); };
   auto result = folly::coro::blockingWait(p);
   EXPECT_EQ("hello coroutines!", result);
 }
@@ -206,9 +191,7 @@ struct MoveCounting {
 TEST_F(BlockingWaitTest, WaitOnMoveOnlyAsyncPromise) {
   SimplePromise<MoveCounting> p;
   std::thread t{[&] { p.emplace(); }};
-  SCOPE_EXIT {
-    t.join();
-  };
+  SCOPE_EXIT { t.join(); };
   auto result = folly::coro::blockingWait(p);
 
   // Number of move-constructions:
@@ -220,11 +203,11 @@ TEST_F(BlockingWaitTest, WaitOnMoveOnlyAsyncPromise) {
 }
 
 TEST_F(BlockingWaitTest, moveCountingAwaitableReady) {
-  folly::coro::AwaitableReady<MoveCounting> awaitable{MoveCounting{}};
+  folly::coro::ready_awaitable<MoveCounting> awaitable{MoveCounting{}};
   auto result = folly::coro::blockingWait(awaitable);
 
   // Moves:
-  // 1. Move value into AwaitableReady
+  // 1. Move value into ready_awaitable
   // 2. Move value to await_resume() return-value
   // 3. Move value to Try<T>
   // 4. Move value to blockingWait() return-value
@@ -292,8 +275,7 @@ TEST_F(BlockingWaitTest, WaitTaskInFiberException) {
           } catch (const ExpectedException&) {
             return true;
           }
-        })
-          .getVia(&evb));
+        }).getVia(&evb));
 }
 
 TEST_F(BlockingWaitTest, WaitOnSemiFuture) {

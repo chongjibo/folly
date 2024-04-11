@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,6 @@
 
 #include <folly/Synchronized.h>
 
-#include <folly/Benchmark.h>
-#include <folly/portability/GTest.h>
-
 #include <algorithm>
 #include <condition_variable>
 #include <map>
@@ -27,8 +24,10 @@
 #include <shared_mutex>
 #include <thread>
 
+#include <folly/Benchmark.h>
+#include <folly/portability/GTest.h>
+
 using namespace folly;
-using namespace folly::detail;
 
 DEFINE_uint64(iterations, 100, "The number of iterations with lock held");
 

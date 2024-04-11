@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ class LoopController {
 
   /**
    * Called by FiberManager to schedule the loop function run
-   * at some point in the futufre.
+   * at some point in the future.
    */
   virtual void schedule() = 0;
 
@@ -68,6 +68,14 @@ class LoopController {
    * Executor backing the timer is already destroyed).
    */
   virtual HHWheelTimer* timer() = 0;
+
+  /**
+   * Should return true only if is the same thread that is (if called from
+   * within runLoop()) or will be calling runLoop() or a thread that is
+   * syncronized with the thread that will be calling runLoop() (i.e. the
+   * currently executing "task" has to be completed before runLoop() is called).
+   */
+  virtual bool isInLoopThread() = 0;
 };
 } // namespace fibers
 } // namespace folly

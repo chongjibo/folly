@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,24 @@
  */
 
 #include <folly/io/SocketOptionMap.h>
-#include <folly/net/NetworkSocket.h>
 
 #include <errno.h>
+
+#include <folly/net/NetworkSocket.h>
 
 namespace folly {
 
 const SocketOptionMap emptySocketOptionMap;
 
-int SocketOptionKey::apply(NetworkSocket fd, int val) const {
-  return netops::setsockopt(fd, level, optname, &val, sizeof(val));
+int SocketOptionKey::apply(
+    NetworkSocket fd, const SocketOptionValue& val) const {
+  if (val.hasInt()) {
+    int32_t intVal = val.asInt();
+    return netops::setsockopt(fd, level, optname, &intVal, sizeof(intVal));
+  } else {
+    std::string strVal = val.asString();
+    return netops::setsockopt(fd, level, optname, strVal.data(), strVal.size());
+  }
 }
 
 int applySocketOptions(

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -165,11 +165,7 @@ TEST(FutureSplitter, splitFutureFailure) {
       p.getSemiFuture().via(&InlineExecutor::instance()));
   auto f1 = sp.getFuture();
   EXPECT_FALSE(f1.isReady());
-  try {
-    throw std::runtime_error("Oops");
-  } catch (std::exception& e) {
-    p.setException(exception_wrapper(std::current_exception(), e));
-  }
+  p.setException(exception_wrapper{std::runtime_error("Oops")});
   EXPECT_TRUE(f1.isReady());
   EXPECT_TRUE(f1.hasException());
   auto f2 = sp.getFuture();
@@ -179,9 +175,7 @@ TEST(FutureSplitter, splitFutureFailure) {
 
 TEST(FutureSplitter, lifetime) {
   struct ManualExecutorWithPriority : folly::ManualExecutor {
-    void addWithPriority(Func func, int8_t) override {
-      add(std::move(func));
-    }
+    void addWithPriority(Func func, int8_t) override { add(std::move(func)); }
   };
   ManualExecutorWithPriority ex;
   auto ka = folly::ExecutorWithPriority::create(

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,16 @@
  * limitations under the License.
  */
 
-#include <iostream>
-
-#include <folly/Overload.h>
 #include <folly/functional/ApplyTuple.h>
-#include <folly/portability/GTest.h>
 
+#include <algorithm>
 #include <array>
+#include <iostream>
 #include <memory>
 #include <utility>
+
+#include <folly/Overload.h>
+#include <folly/portability/GTest.h>
 
 namespace {
 
@@ -33,13 +34,9 @@ void func(int a, int b, double c) {
 }
 
 struct Wat {
-  void func(int a, int b, double c) {
-    ::func(a, b, c);
-  }
+  void func(int a, int b, double c) { ::func(a, b, c); }
 
-  double retVal(int a, double b) {
-    return a + b;
-  }
+  double retVal(int a, double b) { return a + b; }
 
   Wat() {}
   Wat(Wat const&) = delete;
@@ -48,25 +45,17 @@ struct Wat {
 };
 
 struct Overloaded {
-  int func(int) {
-    return 0;
-  }
-  bool func(bool) {
-    return true;
-  }
+  int func(int) { return 0; }
+  bool func(bool) { return true; }
 };
 
 struct Func {
-  int operator()() const {
-    return 1;
-  }
+  int operator()() const { return 1; }
 };
 
 struct CopyCount {
   CopyCount() {}
-  CopyCount(CopyCount const&) {
-    std::cout << "copy count copy ctor\n";
-  }
+  CopyCount(CopyCount const&) { std::cout << "copy count copy ctor\n"; }
 };
 
 void anotherFunc(CopyCount const&) {}
@@ -91,9 +80,7 @@ struct GuardObj : GuardObjBase {
         f_(std::move(g.f_)),
         args_(std::move(g.args_)) {}
 
-  ~GuardObj() {
-    folly::apply(f_, args_);
-  }
+  ~GuardObj() { folly::apply(f_, args_); }
 
   GuardObj(const GuardObj&) = delete;
   GuardObj& operator=(const GuardObj&) = delete;
@@ -105,8 +92,7 @@ struct GuardObj : GuardObjBase {
 
 template <class F, class... Args>
 GuardObj<typename std::decay<F>::type, std::tuple<Args...>> guard(
-    F&& f,
-    Args&&... args) {
+    F&& f, Args&&... args) {
   return GuardObj<typename std::decay<F>::type, std::tuple<Args...>>(
       std::forward<F>(f), std::tuple<Args...>(std::forward<Args>(args)...));
 }
@@ -176,12 +162,8 @@ TEST(ApplyTuple, Mutable) {
 TEST(ApplyTuple, ConstOverloads) {
   struct ConstOverloaded {
     ConstOverloaded() {}
-    int operator()() {
-      return 101;
-    }
-    int operator()() const {
-      return 102;
-    }
+    int operator()() { return 101; }
+    int operator()() const { return 102; }
   };
 
   ConstOverloaded covl;
@@ -201,15 +183,9 @@ TEST(ApplyTuple, ConstOverloads) {
 TEST(ApplyTuple, RefOverloads) {
   struct RefOverloaded {
     RefOverloaded() {}
-    int operator()() & {
-      return 201;
-    }
-    int operator()() const& {
-      return 202;
-    }
-    int operator()() && {
-      return 203;
-    }
+    int operator()() & { return 201; }
+    int operator()() const& { return 202; }
+    int operator()() && { return 203; }
   };
 
   RefOverloaded rovl;
@@ -230,12 +206,8 @@ TEST(ApplyTuple, RefOverloads) {
 
 struct MemberFunc {
   int x;
-  int getX() const {
-    return x;
-  }
-  void setX(int xx) {
-    x = xx;
-  }
+  int getX() const { return x; }
+  void setX(int xx) { x = xx; }
 };
 
 TEST(ApplyTuple, MemberFunction) {
@@ -407,27 +379,6 @@ struct S {
 };
 } // namespace
 
-TEST(MakeFromTupleTest, make_from_tuple) {
-  S expected{42, 1.0, "foobar"};
-
-  // const lvalue ref
-  auto s1 = folly::make_from_tuple<S>(expected.tuple_);
-  EXPECT_EQ(expected.tuple_, s1.tuple_);
-
-  // rvalue ref
-  S sCopy{expected.tuple_};
-  auto s2 = folly::make_from_tuple<S>(std::move(sCopy.tuple_));
-  EXPECT_EQ(expected.tuple_, s2.tuple_);
-  EXPECT_TRUE(std::get<2>(sCopy.tuple_).empty());
-
-  // forward
-  std::string str{"foobar"};
-  auto s3 =
-      folly::make_from_tuple<S>(std::forward_as_tuple(42, 1.0, std::move(str)));
-  EXPECT_EQ(expected.tuple_, s3.tuple_);
-  EXPECT_TRUE(str.empty());
-}
-
 TEST(MakeIndexSequenceFromTuple, Basic) {
   using folly::index_sequence_for_tuple;
   using OneElementTuple = std::tuple<int>;
@@ -530,9 +481,7 @@ TEST(IsApplicableR, Basic) {
 
 TEST(IsNothrowApplicableR, Basic) {
   {
-    auto f = []() noexcept->int {
-      return {};
-    };
+    auto f = []() noexcept -> int { return {}; };
     using F = decltype(f);
     EXPECT_TRUE((folly::is_nothrow_applicable_r_v<double, F, std::tuple<>>));
     EXPECT_FALSE(
@@ -559,9 +508,9 @@ TEST(ForwardTuple, Basic) {
                std::tuple<int&, double&>>::value));
   EXPECT_EQ(folly::forward_tuple(tuple), tuple);
   EXPECT_TRUE((std::is_same<
-               decltype(folly::forward_tuple(folly::as_const(tuple))),
+               decltype(folly::forward_tuple(std::as_const(tuple))),
                std::tuple<const int&, const double&>>::value));
-  EXPECT_EQ(folly::forward_tuple(folly::as_const(tuple)), tuple);
+  EXPECT_EQ(folly::forward_tuple(std::as_const(tuple)), tuple);
 
   EXPECT_TRUE((std::is_same<
                decltype(folly::forward_tuple(std::move(tuple))),
@@ -572,14 +521,13 @@ TEST(ForwardTuple, Basic) {
 #else
   constexpr bool before_lwg2485 = false;
 #endif
-  EXPECT_TRUE(
-      (std::is_same<
-          decltype(folly::forward_tuple(std::move(folly::as_const(tuple)))),
-          std::conditional_t<
-              before_lwg2485,
-              std::tuple<const int&, const double&>,
-              std::tuple<const int&&, const double&&>>>::value));
-  EXPECT_EQ(folly::forward_tuple(std::move(folly::as_const(tuple))), tuple);
+  EXPECT_TRUE((std::is_same<
+               decltype(folly::forward_tuple(std::move(std::as_const(tuple)))),
+               std::conditional_t<
+                   before_lwg2485,
+                   std::tuple<const int&, const double&>,
+                   std::tuple<const int&&, const double&&>>>::value));
+  EXPECT_EQ(folly::forward_tuple(std::move(std::as_const(tuple))), tuple);
 
   auto integer = 1;
   auto floating_point = 2.0;

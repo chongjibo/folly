@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/executors/GlobalThreadPoolList.h>
+#include <folly/system/ThreadId.h>
 
 #include <memory>
 #include <string>
@@ -27,17 +28,21 @@
 
 namespace folly {
 
-namespace {
+namespace debugger_detail {
 
 class ThreadListHook {
  public:
-  ThreadListHook(ThreadPoolListHook* poolId, std::thread::id threadId);
+  ThreadListHook(
+      ThreadPoolListHook* poolId,
+      std::thread::id threadId,
+      uint64_t osThreadId);
   ~ThreadListHook();
 
  private:
   ThreadListHook() = default;
   ThreadPoolListHook* poolId_;
   std::thread::id threadId_;
+  uint64_t osThreadId_;
 };
 
 class GlobalThreadPoolListImpl {
@@ -50,17 +55,19 @@ class GlobalThreadPoolListImpl {
 
   void registerThreadPoolThread(
       ThreadPoolListHook* threadPoolId,
-      std::thread::id threadId);
+      std::thread::id threadId,
+      uint64_t osThreadId);
 
   void unregisterThreadPoolThread(
-      ThreadPoolListHook* threadPoolId,
-      std::thread::id threadId);
+      ThreadPoolListHook* threadPoolId, std::thread::id threadId);
 
  private:
   struct PoolInfo {
     ThreadPoolListHook* addr;
     std::string name;
     std::vector<std::thread::id> threads;
+    // separate data structure for backwards compatibility
+    std::vector<uint64_t> osThreadIds;
   };
 
   struct Pools {
@@ -68,20 +75,17 @@ class GlobalThreadPoolListImpl {
     // property
     std::vector<PoolInfo> poolsInfo_;
 
-    std::vector<std::thread::id>* FOLLY_NULLABLE
-    getThreadVector(void* threadPoolId) {
+    PoolInfo* FOLLY_NULLABLE getPool(void* threadPoolId) {
       for (auto& elem : vector()) {
         if (elem.addr == threadPoolId) {
-          return &elem.threads;
+          return &elem;
         }
       }
 
       return nullptr;
     }
 
-    std::vector<PoolInfo>& vector() {
-      return poolsInfo_;
-    }
+    std::vector<PoolInfo>& vector() { return poolsInfo_; }
   };
 
   Pools pools_;
@@ -89,7 +93,7 @@ class GlobalThreadPoolListImpl {
 
 class GlobalThreadPoolList {
  public:
-  GlobalThreadPoolList() = default;
+  GlobalThreadPoolList() noexcept { debug = this; }
 
   static GlobalThreadPoolList& instance();
 
@@ -99,21 +103,24 @@ class GlobalThreadPoolList {
 
   void registerThreadPoolThread(
       ThreadPoolListHook* threadPoolId,
-      std::thread::id threadId);
+      std::thread::id threadId,
+      uint64_t osThreadId);
 
   void unregisterThreadPoolThread(
-      ThreadPoolListHook* threadPoolId,
-      std::thread::id threadId);
+      ThreadPoolListHook* threadPoolId, std::thread::id threadId);
 
   GlobalThreadPoolList(GlobalThreadPoolList const&) = delete;
   void operator=(GlobalThreadPoolList const&) = delete;
 
  private:
+  // Make instance() available to the debugger
+  static GlobalThreadPoolList* debug;
+
   folly::Synchronized<GlobalThreadPoolListImpl> globalListImpl_;
   folly::ThreadLocalPtr<ThreadListHook> threadHook_;
 };
 
-} // namespace
+GlobalThreadPoolList* GlobalThreadPoolList::debug;
 
 GlobalThreadPoolList& GlobalThreadPoolList::instance() {
   static folly::Indestructible<GlobalThreadPoolList> ret;
@@ -121,8 +128,7 @@ GlobalThreadPoolList& GlobalThreadPoolList::instance() {
 }
 
 void GlobalThreadPoolList::registerThreadPool(
-    ThreadPoolListHook* threadPoolId,
-    std::string name) {
+    ThreadPoolListHook* threadPoolId, std::string name) {
   globalListImpl_.wlock()->registerThreadPool(threadPoolId, name);
 }
 
@@ -133,24 +139,25 @@ void GlobalThreadPoolList::unregisterThreadPool(
 
 void GlobalThreadPoolList::registerThreadPoolThread(
     ThreadPoolListHook* threadPoolId,
-    std::thread::id threadId) {
+    std::thread::id threadId,
+    uint64_t osThreadId) {
   DCHECK(!threadHook_);
-  threadHook_.reset(make_unique<ThreadListHook>(threadPoolId, threadId));
+  threadHook_.reset(
+      std::make_unique<ThreadListHook>(threadPoolId, threadId, osThreadId));
 
-  globalListImpl_.wlock()->registerThreadPoolThread(threadPoolId, threadId);
+  globalListImpl_.wlock()->registerThreadPoolThread(
+      threadPoolId, threadId, osThreadId);
 }
 
 void GlobalThreadPoolList::unregisterThreadPoolThread(
-    ThreadPoolListHook* threadPoolId,
-    std::thread::id threadId) {
+    ThreadPoolListHook* threadPoolId, std::thread::id threadId) {
   (void)threadPoolId;
   (void)threadId;
   globalListImpl_.wlock()->unregisterThreadPoolThread(threadPoolId, threadId);
 }
 
 void GlobalThreadPoolListImpl::registerThreadPool(
-    ThreadPoolListHook* threadPoolId,
-    std::string name) {
+    ThreadPoolListHook* threadPoolId, std::string name) {
   PoolInfo info;
   info.name = name;
   info.addr = threadPoolId;
@@ -170,31 +177,43 @@ void GlobalThreadPoolListImpl::unregisterThreadPool(
 
 void GlobalThreadPoolListImpl::registerThreadPoolThread(
     ThreadPoolListHook* threadPoolId,
-    std::thread::id threadId) {
-  auto vec = pools_.getThreadVector(threadPoolId);
-  if (vec == nullptr) {
+    std::thread::id threadId,
+    uint64_t osThreadId) {
+  auto* pool = pools_.getPool(threadPoolId);
+  if (pool == nullptr) {
     return;
   }
 
-  vec->push_back(threadId);
+  auto& threads = pool->threads;
+  auto& osids = pool->osThreadIds;
+  threads.push_back(threadId);
+  osids.push_back(osThreadId);
 }
 
 void GlobalThreadPoolListImpl::unregisterThreadPoolThread(
-    ThreadPoolListHook* threadPoolId,
-    std::thread::id threadId) {
-  auto vec = pools_.getThreadVector(threadPoolId);
-  if (vec == nullptr) {
+    ThreadPoolListHook* threadPoolId, std::thread::id threadId) {
+  auto* pool = pools_.getPool(threadPoolId);
+  if (pool == nullptr) {
     return;
   }
 
-  vec->erase(std::remove(vec->begin(), vec->end(), threadId), vec->end());
+  auto& threads = pool->threads;
+  auto& osids = pool->osThreadIds;
+  DCHECK_EQ(threads.size(), osids.size());
+  for (unsigned i = 0; i < threads.size(); ++i) {
+    if (threads[i] == threadId) {
+      threads.erase(threads.begin() + i);
+      osids.erase(osids.begin() + i);
+      break;
+    }
+  }
 }
 
 ThreadListHook::ThreadListHook(
-    ThreadPoolListHook* poolId,
-    std::thread::id threadId) {
+    ThreadPoolListHook* poolId, std::thread::id threadId, uint64_t osThreadId) {
   poolId_ = poolId;
   threadId_ = threadId;
+  osThreadId_ = osThreadId;
 }
 
 ThreadListHook::~ThreadListHook() {
@@ -202,17 +221,21 @@ ThreadListHook::~ThreadListHook() {
       poolId_, threadId_);
 }
 
+} // namespace debugger_detail
+
 ThreadPoolListHook::ThreadPoolListHook(std::string name) {
-  GlobalThreadPoolList::instance().registerThreadPool(this, name);
+  debugger_detail::GlobalThreadPoolList::instance().registerThreadPool(
+      this, name);
 }
 
 ThreadPoolListHook::~ThreadPoolListHook() {
-  GlobalThreadPoolList::instance().unregisterThreadPool(this);
+  debugger_detail::GlobalThreadPoolList::instance().unregisterThreadPool(this);
 }
 
 void ThreadPoolListHook::registerThread() {
-  GlobalThreadPoolList::instance().registerThreadPoolThread(
-      this, std::this_thread::get_id());
+  uint64_t ostid = folly::getOSThreadID();
+  debugger_detail::GlobalThreadPoolList::instance().registerThreadPoolThread(
+      this, std::this_thread::get_id(), ostid);
 }
 
 } // namespace folly

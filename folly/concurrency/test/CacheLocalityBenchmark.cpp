@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,8 +23,19 @@
 #include <glog/logging.h>
 
 #include <folly/Benchmark.h>
+#include <folly/lang/Keep.h>
 
 using namespace folly;
+
+extern "C" FOLLY_KEEP size_t
+check_access_spreader_atomic_current(size_t numStripes) {
+  return AccessSpreader<>::current(numStripes);
+}
+
+extern "C" FOLLY_KEEP size_t
+check_access_spreader_atomic_cached_current(size_t numStripes) {
+  return AccessSpreader<>::cachedCurrent(numStripes);
+}
 
 #define DECLARE_SPREADER_TAG(tag, locality, func)      \
   namespace {                                          \
@@ -47,7 +58,7 @@ using namespace folly;
 DECLARE_SPREADER_TAG(
     ThreadLocalTag,
     CacheLocality::system<>(),
-    folly::FallbackGetcpu<SequentialThreadId<std::atomic>>::getcpu)
+    folly::FallbackGetcpu<SequentialThreadId>::getcpu)
 DECLARE_SPREADER_TAG(
     PthreadSelfTag,
     CacheLocality::system<>(),
@@ -60,8 +71,14 @@ struct CachedCurrentTag {};
 } // namespace
 namespace folly {
 template <>
-size_t AccessSpreader<CachedCurrentTag>::current(size_t numStripes) {
-  return AccessSpreader<std::atomic>::cachedCurrent(numStripes);
+const CacheLocality& CacheLocality::system<CachedCurrentTag>() {
+  return CacheLocality::system<>();
+}
+template <>
+size_t AccessSpreader<CachedCurrentTag>::current(
+    size_t numStripes, const GlobalState& state) {
+  auto& alter = reinterpret_cast<const AccessSpreader::GlobalState&>(state);
+  return AccessSpreader::cachedCurrent(numStripes, alter);
 }
 } // namespace folly
 
@@ -72,9 +89,25 @@ BENCHMARK(AccessSpreaderUse, iters) {
   }
 }
 
+BENCHMARK(StateAccessSpreaderUse, iters) {
+  auto& state = AccessSpreader<>::state();
+  for (unsigned long i = 0; i < iters; ++i) {
+    auto x = AccessSpreader<>::current(16, state);
+    folly::doNotOptimizeAway(x);
+  }
+}
+
 BENCHMARK(CachedAccessSpreaderUse, iters) {
   for (unsigned long i = 0; i < iters; ++i) {
     auto x = AccessSpreader<>::cachedCurrent(16);
+    folly::doNotOptimizeAway(x);
+  }
+}
+
+BENCHMARK(StateCachedAccessSpreaderUse, iters) {
+  auto& state = AccessSpreader<>::state();
+  for (unsigned long i = 0; i < iters; ++i) {
+    auto x = AccessSpreader<>::cachedCurrent(16, state);
     folly::doNotOptimizeAway(x);
   }
 }
@@ -91,6 +124,16 @@ BENCHMARK(CachedAccessSpreaderAtomicIncrement, iters) {
   std::array<std::atomic<int>, 64> values;
   for (unsigned long i = 0; i < iters; ++i) {
     auto x = AccessSpreader<>::cachedCurrent(64);
+    ++values[x];
+    folly::doNotOptimizeAway(values[x]);
+  }
+}
+
+BENCHMARK(StateCachedAccessSpreaderAtomicIncrement, iters) {
+  auto& state = AccessSpreader<>::state();
+  std::array<std::atomic<int>, 64> values;
+  for (unsigned long i = 0; i < iters; ++i) {
+    auto x = AccessSpreader<>::cachedCurrent(64, state);
     ++values[x];
     folly::doNotOptimizeAway(values[x]);
   }
@@ -248,8 +291,8 @@ static void contentionAtWidth(size_t iters, size_t stripes, size_t work) {
   }
 }
 
-static void
-atomicIncrBaseline(size_t iters, size_t work, size_t numThreads = 32) {
+static void atomicIncrBaseline(
+    size_t iters, size_t work, size_t numThreads = 32) {
   folly::BenchmarkSuspender braces;
 
   std::atomic<bool> go(false);
@@ -284,13 +327,13 @@ static void contentionAtWidthGetcpu(size_t iters, size_t stripes, size_t work) {
   contentionAtWidth<std::atomic>(iters, stripes, work);
 }
 
-static void
-contentionAtWidthThreadLocal(size_t iters, size_t stripes, size_t work) {
+static void contentionAtWidthThreadLocal(
+    size_t iters, size_t stripes, size_t work) {
   contentionAtWidth<ThreadLocalTag>(iters, stripes, work);
 }
 
-static void
-contentionAtWidthPthreadSelf(size_t iters, size_t stripes, size_t work) {
+static void contentionAtWidthPthreadSelf(
+    size_t iters, size_t stripes, size_t work) {
   contentionAtWidth<PthreadSelfTag>(iters, stripes, work);
 }
 

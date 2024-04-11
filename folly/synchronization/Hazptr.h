@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,9 +59,9 @@
 ///   protected by hazard pointers.
 /// - The essential components of the hazptr API are:
 ///   o hazptr_holder: Class that owns and manages a hazard pointer.
-///   o get_protected: Mmember function of hazptr_holder. Protects
+///   o protect: Member function of hazptr_holder. Protects
 ///     an object pointed to by an atomic source (if not null).
-///       T* get_protected(const atomic<T*>& src);
+///       T* protect(const atomic<T*>& src);
 ///   o hazptr_obj_base<T>: Base class for protected objects.
 ///   o retire: Member function of hazptr_obj_base that automatically
 ///     reclaims the object when safe.
@@ -84,8 +84,8 @@
 ///
 ///   // Called frequently
 ///   U get_config(V v) {
-///     hazptr_holder h; /* h owns a hazard pointer */
-///     Config* ptr = h.get_protected(config_);
+///     hazptr_holder h = make_hazard_pointer();
+///     Config* ptr = h.protect(config_);
 ///     /* safe to access *ptr as long as it is protected by h */
 ///     return ptr->get_config(v);
 ///     /* h dtor resets and releases the owned hazard pointer,
@@ -112,10 +112,10 @@
 ///   descendants are guaranteed not to use hazard pointers, then it
 ///   can be faster (by ~3 ns.) to use
 ///     hazptr_local<1> h;
-///     Config* ptr = h[0].get_protected(config_);
+///     Config* ptr = h[0].protect(config_);
 ///  than
 ///     hazptr_holder h;
-///     Config* ptr = h.get_protected(config_);
+///     Config* ptr = h.protect(config_);
 ///
 /// Memory Usage
 /// ------------
@@ -187,29 +187,23 @@
 /// - Both can protect linked structures. Hazard pointers needs
 ///   additional link counting with low or moderate overhead for
 ///   update operations, and no overhead for readers. RCU protects
-///   protects linked structures automatically, because it protects
-///   everything.
+///   linked structures automatically, because it implicitly protects
+///   all protectable objects.
 ///
 /// Differences from the Standard Proposal
 /// --------------------------------------
-/// - The latest standard proposal is in wg21.link/p0566.
-/// - This library's API differs from the standard proposal because:
-///   (a) the standard proposal is changing based on committee
-///   feedback, and (b) this library provides additional
-///   fast-evolving features based on usage experience that do not
-///   have corressponding proposed standard wording.
+/// - The latest standard proposal is in wg21.link/p1121. The
+///   substance of the proposal was frozen around October 2017, but
+///   there were subsequent API changes based on committee feadback.
 /// - The main differences are:
 ///   o This library uses an extra atomic template parameter for
 ///     testing and debugging.
 ///   o This library does not support a custom polymorphic allocator
 ///     (C++17) parameter for the hazptr_domain constructor, until
 ///     such support becomes widely available.
-///   o The construction of empty and non-empty hazptr_holder-s are
-///     reversed. This library will conform eventually.
-///   o hazptr_holder member functions get_protected and reset are
-///     called protect and reset_protected, respectively, in the
-///     latest proposal. Will conform eventually.
 ///   o hazptr_array and hazptr_local are not part of the standard
 ///     proposal.
 ///   o Link counting support and protection of linked structures is
 ///     not part of the current standard proposal.
+///   o The standard proposal does not include cohorts and the
+///     associated synchronous reclamation capabilities.

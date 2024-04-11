@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@
 
 #include <folly/Conv.h>
 #include <folly/String.h>
-#include <folly/dynamic.h>
-#include <folly/json.h>
+#include <folly/json/dynamic.h>
+#include <folly/json/json.h>
 #include <folly/lang/SafeAssert.h>
 #include <folly/logging/LogName.h>
 
@@ -64,9 +64,7 @@ std::string dynamicTypename(const dynamic& value) {
  * Throws a LogConfigParseError on other errors.
  */
 bool parseJsonLevel(
-    const dynamic& value,
-    StringPiece categoryName,
-    LogLevel& result) {
+    const dynamic& value, StringPiece categoryName, LogLevel& result) {
   if (value.isString()) {
     auto levelString = value.asString();
     try {
@@ -98,8 +96,7 @@ bool parseJsonLevel(
 }
 
 LogCategoryConfig parseJsonCategoryConfig(
-    const dynamic& value,
-    StringPiece categoryName) {
+    const dynamic& value, StringPiece categoryName) {
   LogCategoryConfig config;
 
   // If the input is not an object, allow it to be
@@ -181,8 +178,7 @@ LogCategoryConfig parseJsonCategoryConfig(
 }
 
 LogHandlerConfig parseJsonHandlerConfig(
-    const dynamic& value,
-    StringPiece handlerName) {
+    const dynamic& value, StringPiece handlerName) {
   if (!value.isObject()) {
     throw LogConfigParseError{to<string>(
         "unexpected data type for configuration of handler \"",
@@ -353,9 +349,7 @@ LogConfig::CategoryConfigMap parseCategoryConfigs(StringPiece value) {
 }
 
 bool splitNameValue(
-    StringPiece input,
-    StringPiece* outName,
-    StringPiece* outValue) {
+    StringPiece input, StringPiece* outName, StringPiece* outValue) {
   size_t equalIndex = input.find('=');
   if (equalIndex == StringPiece::npos) {
     return false;
@@ -382,7 +376,7 @@ std::pair<std::string, LogHandlerConfig> parseHandlerConfig(StringPiece value) {
   }
 
   StringPiece handlerName;
-  Optional<StringPiece> handlerType(in_place);
+  Optional<StringPiece> handlerType(std::in_place);
   if (!splitNameValue(namePortion, &handlerName, &handlerType.value())) {
     handlerName = trimWhitespace(namePortion);
     handlerType = folly::none;

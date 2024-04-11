@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,8 +30,7 @@ namespace {
 
 template <class BaseIter>
 BitIterator<BaseIter> simpleFFS(
-    BitIterator<BaseIter> begin,
-    BitIterator<BaseIter> end) {
+    BitIterator<BaseIter> begin, BitIterator<BaseIter> end) {
   return std::find(begin, end, true);
 }
 
@@ -107,7 +106,7 @@ runRealFFSTest                             19  2.011 s   105.9 ms  9.447
 */
 
 int main(int argc, char** argv) {
-  folly::init(&argc, &argv);
+  folly::Init init(&argc, &argv);
   folly::runBenchmarks();
   return 0;
 }

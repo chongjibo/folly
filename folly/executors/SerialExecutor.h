@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +22,14 @@
 
 #include <folly/concurrency/UnboundedQueue.h>
 #include <folly/executors/GlobalExecutor.h>
-#include <folly/executors/SequencedExecutor.h>
+#include <folly/executors/SerializedExecutor.h>
 #include <folly/io/async/Request.h>
+#include <folly/synchronization/DistributedMutex.h>
+#include <folly/synchronization/RelaxedAtomic.h>
 
 namespace folly {
+
+namespace detail {
 
 /**
  * @class SerialExecutor
@@ -39,46 +43,46 @@ namespace folly {
  * in the parent executor, however strictly non-concurrently and in the order
  * they were added.
  *
- * SerialExecutor tries to schedule its tasks fairly. Every task submitted to
- * it results in one task submitted to the parent executor. Whenever the parent
- * executor executes one of those, one of the tasks submitted to SerialExecutor
- * is marked for execution, which means it will either be executed at once,
- * or if a task is currently being executed already, after that.
+ * When a task is added to the executor while another one is running on the
+ * parent executor, the new task is piggybacked on the running task to save the
+ * cost of scheduling a task on the parent executor. This implies that the
+ * parent executor may observe a smaller number of tasks than those added in the
+ * SerialExecutor.
  *
  * The SerialExecutor may be deleted at any time. All tasks that have been
  * submitted will still be executed with the same guarantees, as long as the
  * parent executor is executing tasks.
  */
-
-class SerialExecutor : public SequencedExecutor {
+template <template <typename> typename Queue>
+class SerialExecutorImpl : public SerializedExecutor {
  public:
-  SerialExecutor(SerialExecutor const&) = delete;
-  SerialExecutor& operator=(SerialExecutor const&) = delete;
-  SerialExecutor(SerialExecutor&&) = delete;
-  SerialExecutor& operator=(SerialExecutor&&) = delete;
+  SerialExecutorImpl(SerialExecutorImpl const&) = delete;
+  SerialExecutorImpl& operator=(SerialExecutorImpl const&) = delete;
+  SerialExecutorImpl(SerialExecutorImpl&&) = delete;
+  SerialExecutorImpl& operator=(SerialExecutorImpl&&) = delete;
 
-  static KeepAlive<SerialExecutor> create(
-      KeepAlive<Executor> parent = getKeepAliveToken(getCPUExecutor().get()));
+  static KeepAlive<SerialExecutorImpl> create(
+      KeepAlive<Executor> parent = getGlobalCPUExecutor());
 
   class Deleter {
    public:
     Deleter() {}
 
-    void operator()(SerialExecutor* executor) {
+    void operator()(SerialExecutorImpl* executor) {
       executor->keepAliveRelease();
     }
 
    private:
-    friend class SerialExecutor;
+    friend class SerialExecutorImpl;
     explicit Deleter(std::shared_ptr<Executor> parent)
         : parent_(std::move(parent)) {}
 
     std::shared_ptr<Executor> parent_;
   };
 
-  using UniquePtr = std::unique_ptr<SerialExecutor, Deleter>;
+  using UniquePtr = std::unique_ptr<SerialExecutorImpl, Deleter>;
   [[deprecated("Replaced by create")]] static UniquePtr createUnique(
-      std::shared_ptr<Executor> parent = getCPUExecutor());
+      std::shared_ptr<Executor> parent);
 
   /**
    * Add one task for execution in the parent executor
@@ -100,31 +104,65 @@ class SerialExecutor : public SequencedExecutor {
     return parent_->getNumPriorities();
   }
 
- protected:
-  bool keepAliveAcquire() override;
-
-  void keepAliveRelease() override;
-
  private:
   struct Task {
     Func func;
     std::shared_ptr<RequestContext> ctx;
   };
 
-  explicit SerialExecutor(KeepAlive<Executor> parent);
-  ~SerialExecutor() override;
+  class Worker;
 
-  void run();
+  explicit SerialExecutorImpl(KeepAlive<Executor> parent);
+  ~SerialExecutorImpl() override;
+
+  bool keepAliveAcquire() noexcept override;
+
+  void keepAliveRelease() noexcept override;
+
+  bool scheduleTask(Func&& func);
+  void worker();
+  void drain();
 
   KeepAlive<Executor> parent_;
   std::atomic<std::size_t> scheduled_{0};
-  /**
-   * Unbounded multi producer single consumer queue where consumers don't block
-   * on dequeue.
-   */
-  folly::UnboundedQueue<Task, false, true, false> queue_;
+  Queue<Task> queue_;
 
   std::atomic<ssize_t> keepAliveCounter_{1};
 };
 
+template <int LgQueueSegmentSize = 8>
+struct SerialExecutorWithUnboundedQueue {
+  // The consumer should only dequeue when the queue is non-empty, so we don't
+  // need blocking.
+  template <typename Task>
+  using queue =
+      folly::UMPSCQueue<Task, /* MayBlock */ false, LgQueueSegmentSize>;
+  using type = SerialExecutorImpl<queue>;
+};
+
+template <class Task>
+class SerialExecutorMPSCQueue;
+
+} // namespace detail
+
+using SerialExecutor =
+    typename detail::SerialExecutorWithUnboundedQueue<>::type;
+
+template <int LgQueueSegmentSize>
+using SerialExecutorWithLgSegmentSize =
+    typename detail::SerialExecutorWithUnboundedQueue<LgQueueSegmentSize>::type;
+
+/**
+ * SerialExecutor implementation that uses a mutex-protected queue. This uses
+ * significantly less memory than SerialExecutor, at the expense of being more
+ * susceptible to contention on add(). This is intended for use cases where
+ * granular SerialExecutors are required, for example one per request. In these
+ * scenarios, there are not many concurrent submitters, so contention is not an
+ * issue, while memory overhead is.
+ */
+using SmallSerialExecutor =
+    detail::SerialExecutorImpl<detail::SerialExecutorMPSCQueue>;
+
 } // namespace folly
+
+#include <folly/executors/SerialExecutor-inl.h>

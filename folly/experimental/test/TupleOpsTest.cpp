@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,9 +42,7 @@ TEST(TupleOps, Copiable) {
 class MovableInt {
  public:
   explicit MovableInt(int value) : value_(value) {}
-  int value() const {
-    return value_;
-  }
+  int value() const { return value_; }
 
   MovableInt(MovableInt&&) = default;
   MovableInt& operator=(MovableInt&&) = default;
@@ -113,7 +111,7 @@ struct TupleTo2;
 // to repeat the conversion for each individual element, then wrap
 // all results with make_tuple.
 template <std::size_t... Ns>
-struct TupleTo2<TemplateSeq<std::size_t, Ns...>> {
+struct TupleTo2<std::index_sequence<Ns...>> {
   template <class U, class T>
   static U convert(const T& input) {
     return std::make_tuple(folly::to<typename std::tuple_element<Ns, U>::type>(
@@ -124,7 +122,7 @@ struct TupleTo2<TemplateSeq<std::size_t, Ns...>> {
 template <
     class U,
     class T,
-    class Seq = typename TemplateTupleRange<U>::type,
+    class Seq = std::make_index_sequence<std::tuple_size_v<T>>,
     class Enable = typename std::enable_if<
         (std::tuple_size<U>::value == std::tuple_size<T>::value)>::type>
 U tupleTo2(const T& input) {

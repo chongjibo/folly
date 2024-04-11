@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,28 +43,18 @@ struct EnvironmentState {
   static EnvironmentState fromCurrentEnvironment();
 
   // Returns an empty EnvironmentState
-  static EnvironmentState empty() {
-    return {};
-  }
+  static EnvironmentState empty() { return {}; }
 
   explicit EnvironmentState(EnvType const& env) : env_(env) {}
   explicit EnvironmentState(EnvType&& env) : env_(std::move(env)) {}
 
   // Get the model environment for querying.
-  EnvType const& operator*() const {
-    return env_;
-  }
-  EnvType const* operator->() const {
-    return &env_;
-  }
+  EnvType const& operator*() const { return env_; }
+  EnvType const* operator->() const { return &env_; }
 
   // Get the model environment for mutation or querying.
-  EnvType& operator*() {
-    return env_;
-  }
-  EnvType* operator->() {
-    return &env_;
-  }
+  EnvType& operator*() { return env_; }
+  EnvType* operator->() { return &env_; }
 
   // Update the process environment with the one in the stored model.
   // Subsequent changes to the model do not alter the process environment. The

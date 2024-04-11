@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,10 @@
  */
 
 #include <folly/fibers/detail/AtomicBatchDispatcher.h>
-#include <folly/Format.h>
+
+#include <cassert>
+
+#include <fmt/core.h>
 
 namespace folly {
 namespace fibers {
@@ -27,24 +30,22 @@ std::string createABDTokenNotDispatchedExMsg(
   assert(numTokensNotDispatched > 0);
   size_t numSeqNumToPrint =
       (numTokensNotDispatched > 10 ? 10 : numTokensNotDispatched);
-  std::string strInputsNotFound =
-      folly::sformat("{}", vecTokensNotDispatched[0]);
+  std::string strInputsNotFound = fmt::format("{}", vecTokensNotDispatched[0]);
   for (size_t i = 1; i < numSeqNumToPrint; ++i) {
-    strInputsNotFound += folly::sformat(", {}", vecTokensNotDispatched[i]);
+    strInputsNotFound += fmt::format(", {}", vecTokensNotDispatched[i]);
   }
   if (numSeqNumToPrint < numTokensNotDispatched) {
     strInputsNotFound += "...";
   }
-  return folly::sformat(
+  return fmt::format(
       "{} input tokens (seq nums: {}) destroyed before calling dispatch",
       numTokensNotDispatched,
       strInputsNotFound);
 }
 
 std::string createUnexpectedNumResultsABDUsageExMsg(
-    size_t numExpectedResults,
-    size_t numActualResults) {
-  return folly::sformat(
+    size_t numExpectedResults, size_t numActualResults) {
+  return fmt::format(
       "Unexpected number of results ({}) returned from dispatch function, "
       "expected ({})",
       numActualResults,

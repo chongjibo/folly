@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,21 @@
 // otherwise they will conflict with what we're getting from ntstatus.h
 #define UMDF_USING_NTSTATUS
 
+#include <folly/ScopeGuard.h>
 #include <folly/portability/Unistd.h>
+
+#if defined(__APPLE__)
+off64_t lseek64(int fh, off64_t off, int orig) {
+  return lseek(fh, off, orig);
+}
+
+ssize_t pread64(int fd, void* buf, size_t count, off64_t offset) {
+  return pread(fd, buf, count, offset);
+}
+
+static_assert(
+    sizeof(off_t) >= 8, "We expect that Mac OS have at least a 64-bit off_t.");
+#endif
 
 #ifdef _WIN32
 
@@ -30,21 +44,37 @@
 #include <folly/portability/Sockets.h>
 #include <folly/portability/Windows.h>
 
+#include <tlhelp32.h> // @manual
+
+template <bool is64Bit, class Offset>
+static Offset seek(int fd, Offset offset, int whence) {
+  Offset res;
+  if (is64Bit) {
+    res = lseek64(fd, offset, whence);
+  } else {
+    res = lseek(fd, offset, whence);
+  }
+  return res;
+}
+
 // Generic wrapper for the p* family of functions.
-template <class F, class... Args>
-static int wrapPositional(F f, int fd, off_t offset, Args... args) {
-  off_t origLoc = lseek(fd, 0, SEEK_CUR);
-  if (origLoc == (off_t)-1) {
+template <bool is64Bit, class F, class Offset, class... Args>
+static int wrapPositional(F f, int fd, Offset offset, Args... args) {
+  Offset origLoc = seek<is64Bit>(fd, 0, SEEK_CUR);
+  if (origLoc == Offset(-1)) {
     return -1;
   }
-  if (lseek(fd, offset, SEEK_SET) == (off_t)-1) {
+
+  Offset moved = seek<is64Bit>(fd, offset, SEEK_SET);
+  if (moved == Offset(-1)) {
     return -1;
   }
 
   int res = (int)f(fd, args...);
 
   int curErrNo = errno;
-  if (lseek(fd, origLoc, SEEK_SET) == (off_t)-1) {
+  Offset afterOperation = seek<is64Bit>(fd, origLoc, SEEK_SET);
+  if (afterOperation == Offset(-1)) {
     if (res == -1) {
       errno = curErrNo;
     }
@@ -58,6 +88,116 @@ static int wrapPositional(F f, int fd, off_t offset, Args... args) {
 namespace folly {
 namespace portability {
 namespace unistd {
+
+namespace {
+
+struct UniqueHandleWrapper {
+  UniqueHandleWrapper(HANDLE handle) : handle_(handle) {}
+
+  HANDLE get() const { return handle_; }
+  bool valid() const { return handle_ != INVALID_HANDLE_VALUE; }
+
+  UniqueHandleWrapper(UniqueHandleWrapper&& other) {
+    handle_ = other.handle_;
+    other.handle_ = INVALID_HANDLE_VALUE;
+  }
+  UniqueHandleWrapper& operator=(UniqueHandleWrapper&& other) {
+    handle_ = other.handle_;
+    other.handle_ = INVALID_HANDLE_VALUE;
+    return *this;
+  }
+
+  UniqueHandleWrapper(const UniqueHandleWrapper& other) = delete;
+  UniqueHandleWrapper& operator=(const UniqueHandleWrapper& other) = delete;
+
+  ~UniqueHandleWrapper() {
+    if (valid()) {
+      CloseHandle(handle_);
+    }
+  }
+
+ private:
+  HANDLE handle_;
+};
+
+struct ProcessHandleWrapper {
+  ProcessHandleWrapper(HANDLE handle)
+      : ProcessHandleWrapper(UniqueHandleWrapper(handle)) {}
+  ProcessHandleWrapper(UniqueHandleWrapper handle)
+      : procHandle_(std::move(handle)) {
+    id_ = procHandle_.valid() ? GetProcessId(procHandle_.get()) : 1;
+  }
+  pid_t id() const { return id_; }
+
+ private:
+  UniqueHandleWrapper procHandle_;
+  pid_t id_;
+};
+
+int64_t getProcessStartTime(HANDLE processHandle) {
+  FILETIME createTime;
+  FILETIME exitTime;
+  FILETIME kernelTime;
+  FILETIME userTime;
+
+  if (GetProcessTimes(
+          processHandle, &createTime, &exitTime, &kernelTime, &userTime) == 0) {
+    return -1; // failed to get process times
+  }
+
+  ULARGE_INTEGER ret;
+  ret.LowPart = createTime.dwLowDateTime;
+  ret.HighPart = createTime.dwHighDateTime;
+
+  return ret.QuadPart;
+}
+
+ProcessHandleWrapper getParentProcessHandle() {
+  DWORD ppid = 1;
+  DWORD pid = GetCurrentProcessId();
+
+  UniqueHandleWrapper hSnapshot =
+      CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (!hSnapshot.valid()) {
+    return INVALID_HANDLE_VALUE;
+  }
+
+  PROCESSENTRY32 pe32;
+  ZeroMemory(&pe32, sizeof(pe32));
+  pe32.dwSize = sizeof(pe32);
+  if (!Process32First(hSnapshot.get(), &pe32)) {
+    return INVALID_HANDLE_VALUE;
+  }
+  do {
+    if (pe32.th32ProcessID == pid) {
+      ppid = pe32.th32ParentProcessID;
+      break;
+    }
+  } while (Process32Next(hSnapshot.get(), &pe32));
+
+  UniqueHandleWrapper parent = OpenProcess(PROCESS_ALL_ACCESS, false, ppid);
+  if (!parent.valid()) {
+    return INVALID_HANDLE_VALUE;
+  }
+
+  // Checking time of parent and child processes.
+  // This is a sanity check in case we query for parent process id
+  // after the parent of this process stopped already and something else
+  // used it PID.
+  // We need this logic because we can't guarantee that parent id hasn't been
+  // reused before getting process handle to this process.
+
+  int64_t currentProcessStartTime = getProcessStartTime(GetCurrentProcess());
+  int64_t parentProcessStartTime = getProcessStartTime(parent.get());
+  if (currentProcessStartTime == -1 || parentProcessStartTime == -1 ||
+      currentProcessStartTime < parentProcessStartTime) {
+    // Can't ensure process is still the same process as parent
+    return INVALID_HANDLE_VALUE;
+  }
+  return std::move(parent);
+}
+} // namespace
+
 int access(char const* fn, int am) {
   return _access(fn, am);
 }
@@ -93,6 +233,10 @@ int fsync(int fd) {
 }
 
 int ftruncate(int fd, off_t len) {
+  off_t origLoc = _lseek(fd, 0, SEEK_CUR);
+  if (origLoc == -1) {
+    return -1;
+  }
   if (_lseek(fd, len, SEEK_SET) == -1) {
     return -1;
   }
@@ -102,6 +246,9 @@ int ftruncate(int fd, off_t len) {
     return -1;
   }
   if (!SetEndOfFile(h)) {
+    return -1;
+  }
+  if (_lseek(fd, origLoc, SEEK_SET) == -1) {
     return -1;
   }
   return 0;
@@ -115,21 +262,19 @@ int getdtablesize() {
   return _getmaxstdio();
 }
 
-int getgid() {
+gid_t getgid() {
   return 1;
 }
 
-pid_t getpid() {
-  return (pid_t)uint64_t(GetCurrentProcessId());
-}
-
-// No major need to implement this, and getting a non-potentially
-// stale ID on windows is a bit involved.
 pid_t getppid() {
-  return (pid_t)1;
+  // ProcessHandleWrapper stores Parent Process Handle inside
+  // This means the parent PID is not going to be reused even if
+  // parent process is no longer exists.
+  static ProcessHandleWrapper wrapper = getParentProcessHandle();
+  return wrapper.id();
 }
 
-int getuid() {
+uid_t getuid() {
   return 1;
 }
 
@@ -145,6 +290,10 @@ off_t lseek(int fh, off_t off, int orig) {
   return _lseek(fh, off, orig);
 }
 
+off64_t lseek64(int fh, off64_t off, int orig) {
+  return _lseeki64(fh, static_cast<int64_t>(off), orig);
+}
+
 int rmdir(const char* path) {
   return _rmdir(path);
 }
@@ -156,11 +305,18 @@ int pipe(int pth[2]) {
 }
 
 ssize_t pread(int fd, void* buf, size_t count, off_t offset) {
-  return wrapPositional(_read, fd, offset, buf, (unsigned int)count);
+  const bool is64Bit = false;
+  return wrapPositional<is64Bit>(_read, fd, offset, buf, (unsigned int)count);
+}
+
+ssize_t pread64(int fd, void* buf, size_t count, off64_t offset) {
+  const bool is64Bit = true;
+  return wrapPositional<is64Bit>(_read, fd, offset, buf, (unsigned int)count);
 }
 
 ssize_t pwrite(int fd, const void* buf, size_t count, off_t offset) {
-  return wrapPositional(_write, fd, offset, buf, (unsigned int)count);
+  const bool is64Bit = false;
+  return wrapPositional<is64Bit>(_write, fd, offset, buf, (unsigned int)count);
 }
 
 ssize_t read(int fh, void* buf, size_t count) {

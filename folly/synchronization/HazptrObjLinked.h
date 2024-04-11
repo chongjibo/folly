@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,13 @@
 
 #pragma once
 
-#include <folly/synchronization/Hazptr-fwd.h>
-#include <folly/synchronization/HazptrObj.h>
+#include <atomic>
+#include <stack>
 
 #include <glog/logging.h>
 
-#include <atomic>
-#include <stack>
+#include <folly/synchronization/Hazptr-fwd.h>
+#include <folly/synchronization/HazptrObj.h>
 
 ///
 /// Classes related to link counted objects and automatic retirement.
@@ -55,13 +55,9 @@ class hazptr_root {
     }
   }
 
-  const Atom<T*>& operator()() const noexcept {
-    return link_;
-  }
+  const Atom<T*>& operator()() const noexcept { return link_; }
 
-  Atom<T*>& operator()() noexcept {
-    return link_;
-  }
+  Atom<T*>& operator()() noexcept { return link_; }
 }; // hazptr_root
 
 /**
@@ -90,31 +86,23 @@ class hazptr_root {
  */
 template <template <typename> class Atom>
 class hazptr_obj_linked : public hazptr_obj<Atom> {
-  using Count = uint32_t;
+  using Count = uint64_t;
 
-  static constexpr Count kRef = 1u;
-  static constexpr Count kLink = 1u << 16;
-  static constexpr Count kRefMask = kLink - 1u;
+  static constexpr Count kRef = Count{1};
+  static constexpr Count kLink = Count{1} << 32;
+  static constexpr Count kRefMask = kLink - Count{1};
   static constexpr Count kLinkMask = ~kRefMask;
 
   Atom<Count> count_{0};
 
  public:
-  void acquire_link() noexcept {
-    count_inc(kLink);
-  }
+  void acquire_link() noexcept { count_inc(kLink); }
 
-  void acquire_link_safe() noexcept {
-    count_inc_safe(kLink);
-  }
+  void acquire_link_safe() noexcept { count_inc_safe(kLink); }
 
-  void acquire_ref() noexcept {
-    count_inc(kRef);
-  }
+  void acquire_ref() noexcept { count_inc(kRef); }
 
-  void acquire_ref_safe() noexcept {
-    count_inc_safe(kRef);
-  }
+  void acquire_ref_safe() noexcept { count_inc_safe(kRef); }
 
  private:
   template <typename, template <typename> class, typename>

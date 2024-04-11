@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,9 +34,7 @@ class LogStreamBuffer : public std::streambuf {
     // that do not use the streaming API.  (e.g., XLOG(INFO, "test ", 1234) )
   }
 
-  bool empty() const {
-    return str_.empty();
-  }
+  bool empty() const { return str_.empty(); }
 
   std::string extractString() {
     str_.resize(pptr() - (&str_.front()));
@@ -66,19 +64,13 @@ class LogStream : public std::ostream {
   // bloat, with minimal benefit--for debug log statements these never even get
   // called in the common case where the log statement is disabled.
   explicit LogStream(LogStreamProcessor* processor);
-  ~LogStream();
+  ~LogStream() override;
 
-  bool empty() const {
-    return buffer_.empty();
-  }
+  bool empty() const { return buffer_.empty(); }
 
-  std::string extractString() {
-    return buffer_.extractString();
-  }
+  std::string extractString() { return buffer_.extractString(); }
 
-  LogStreamProcessor* getProcessor() const {
-    return processor_;
-  }
+  LogStreamProcessor* getProcessor() const { return processor_; }
 
  private:
   LogStreamBuffer buffer_;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,6 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/executors/ManualExecutor.h>
 #include <folly/experimental/coro/Baton.h>
@@ -28,6 +26,8 @@
 #include <folly/portability/GTest.h>
 
 #include <mutex>
+
+#if FOLLY_HAS_COROUTINES
 
 using namespace folly;
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,11 @@ template <class T>
 class DecoratedAsyncTransportWrapper : public folly::AsyncTransport {
  public:
   explicit DecoratedAsyncTransportWrapper(typename T::UniquePtr transport)
-      : transport_(std::move(transport)) {}
+      : transport_(std::move(transport)) {
+    if (FOLLY_LIKELY(nullptr != transport_)) {
+      transport_->decoratingTransport_ = this;
+    }
+  }
 
   const AsyncTransport* getWrappedTransport() const override {
     return transport_.get();
@@ -76,13 +80,9 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransport {
     transport_->attachEventBase(eventBase);
   }
 
-  void close() override {
-    transport_->close();
-  }
+  void close() override { transport_->close(); }
 
-  void closeNow() override {
-    transport_->closeNow();
-  }
+  void closeNow() override { transport_->closeNow(); }
 
   void closeWithReset() override {
     transport_->closeWithReset();
@@ -92,17 +92,11 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransport {
     closeNow();
   }
 
-  bool connecting() const override {
-    return transport_->connecting();
-  }
+  bool connecting() const override { return transport_->connecting(); }
 
-  void detachEventBase() override {
-    transport_->detachEventBase();
-  }
+  void detachEventBase() override { transport_->detachEventBase(); }
 
-  bool error() const override {
-    return transport_->error();
-  }
+  bool error() const override { return transport_->error(); }
 
   size_t getAppBytesReceived() const override {
     return transport_->getAppBytesReceived();
@@ -132,25 +126,17 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransport {
     return transport_->getSendTimeout();
   }
 
-  bool good() const override {
-    return transport_->good();
-  }
+  bool good() const override { return transport_->good(); }
 
-  bool isDetachable() const override {
-    return transport_->isDetachable();
-  }
+  bool isDetachable() const override { return transport_->isDetachable(); }
 
   bool isEorTrackingEnabled() const override {
     return transport_->isEorTrackingEnabled();
   }
 
-  bool readable() const override {
-    return transport_->readable();
-  }
+  bool readable() const override { return transport_->readable(); }
 
-  bool writable() const override {
-    return transport_->writable();
-  }
+  bool writable() const override { return transport_->writable(); }
 
   void setEorTracking(bool track) override {
     return transport_->setEorTracking(track);
@@ -160,13 +146,9 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransport {
     transport_->setSendTimeout(timeoutInMs);
   }
 
-  void shutdownWrite() override {
-    transport_->shutdownWrite();
-  }
+  void shutdownWrite() override { transport_->shutdownWrite(); }
 
-  void shutdownWriteNow() override {
-    transport_->shutdownWriteNow();
-  }
+  void shutdownWriteNow() override { transport_->shutdownWriteNow(); }
 
   std::string getApplicationProtocol() const noexcept override {
     return transport_->getApplicationProtocol();
@@ -176,9 +158,15 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransport {
     return transport_->getSecurityProtocol();
   }
 
-  bool isReplaySafe() const override {
-    return transport_->isReplaySafe();
+  std::unique_ptr<IOBuf> getExportedKeyingMaterial(
+      folly::StringPiece label,
+      std::unique_ptr<IOBuf> context,
+      uint16_t length) const override {
+    return transport_->getExportedKeyingMaterial(
+        label, std::move(context), length);
   }
+
+  bool isReplaySafe() const override { return transport_->isReplaySafe(); }
 
   void setReplaySafetyCallback(
       folly::AsyncTransport::ReplaySafetyCallback* callback) override {
@@ -189,20 +177,44 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransport {
     return transport_->getPeerCertificate();
   }
 
+  void dropPeerCertificate() noexcept override {
+    transport_->dropPeerCertificate();
+  }
+
   const AsyncTransportCertificate* getSelfCertificate() const override {
     return transport_->getSelfCertificate();
+  }
+
+  void dropSelfCertificate() noexcept override {
+    transport_->dropSelfCertificate();
   }
 
   bool setZeroCopy(bool enable) override {
     return transport_->setZeroCopy(enable);
   }
 
-  bool getZeroCopy() const override {
-    return transport_->getZeroCopy();
-  }
+  bool getZeroCopy() const override { return transport_->getZeroCopy(); }
 
   void setZeroCopyEnableFunc(ZeroCopyEnableFunc func) override {
     transport_->setZeroCopyEnableFunc(func);
+  }
+
+  AsyncTransport::UniquePtr tryExchangeWrappedTransport(
+      AsyncTransport::UniquePtr& transport) override {
+    if (transport_) {
+      transport_->decoratingTransport_ = nullptr;
+    }
+    if (transport) {
+      transport->decoratingTransport_ = this;
+    }
+    return std::exchange(transport_, std::move(transport));
+  }
+
+  void destroy() override {
+    if (transport_) {
+      transport_->decoratingTransport_ = nullptr;
+    }
+    folly::AsyncTransport::destroy();
   }
 
  protected:

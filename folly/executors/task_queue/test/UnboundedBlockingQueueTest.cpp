@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,15 @@
  */
 
 #include <folly/executors/task_queue/UnboundedBlockingQueue.h>
+
+#include <thread>
+
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
-#include <thread>
 
 using namespace folly;
 
-TEST(UnboundedQueuee, push_pop) {
+TEST(UnboundedQueuee, pushPop) {
   UnboundedBlockingQueue<int> q;
   q.add(42);
   EXPECT_EQ(42, q.take());
@@ -35,7 +37,7 @@ TEST(UnboundedBlockingQueue, size) {
   EXPECT_EQ(0, q.size());
 }
 
-TEST(UnboundedBlockingQueue, concurrent_push_pop) {
+TEST(UnboundedBlockingQueue, concurrentPushPop) {
   UnboundedBlockingQueue<int> q;
   Baton<> b1, b2;
   std::thread t([&] {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -92,7 +92,8 @@ void Promise<T, BatonT>::setWith(F&& func) {
 
 template <class T, class BatonT>
 template <class F>
-typename Promise<T, BatonT>::value_type Promise<T, BatonT>::await(F&& func) {
+typename Promise<T, BatonT>::value_type Promise<T, BatonT>::await_async(
+    F&& func) {
   folly::Try<value_type> result;
   std::exception_ptr funcException;
 
@@ -107,7 +108,7 @@ typename Promise<T, BatonT>::value_type Promise<T, BatonT>::await(F&& func) {
     }
   });
 
-  if (UNLIKELY(funcException != nullptr)) {
+  if (FOLLY_UNLIKELY(funcException != nullptr)) {
     std::rethrow_exception(funcException);
   }
 

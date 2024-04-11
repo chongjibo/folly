@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -69,9 +69,7 @@ class RecordIOWriter {
    * Return the position in the file where the next byte will be written.
    * Conservative, as stuff can be written at any time from another thread.
    */
-  off_t filePos() const {
-    return filePos_;
-  }
+  off_t filePos() const { return filePos_; }
 
  private:
   File file_;
@@ -159,8 +157,8 @@ struct RecordInfo {
   uint32_t fileId;
   ByteRange record;
 };
-RecordInfo
-findRecord(ByteRange searchRange, ByteRange wholeRange, uint32_t fileId);
+RecordInfo findRecord(
+    ByteRange searchRange, ByteRange wholeRange, uint32_t fileId);
 
 /**
  * Search for the first valid record in range.

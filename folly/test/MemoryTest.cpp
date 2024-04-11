@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,9 @@
 
 #include <folly/ConstexprMath.h>
 #include <folly/String.h>
+#include <folly/lang/Keep.h>
 #include <folly/memory/Arena.h>
+#include <folly/portability/Asm.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 
@@ -35,17 +37,6 @@ static constexpr std::size_t kTooBig = folly::constexpr_max(
     std::size_t{std::numeric_limits<uint32_t>::max()},
     std::size_t{1} << (8 * sizeof(std::size_t) - 14));
 
-TEST(allocateBytes, simple) {
-  auto p = allocateBytes(10);
-  EXPECT_TRUE(p != nullptr);
-  deallocateBytes(p, 10);
-}
-
-TEST(allocateBytes, zero) {
-  auto p = allocateBytes(0);
-  deallocateBytes(p, 0);
-}
-
 TEST(operatorNewDelete, zero) {
   auto p = ::operator new(0);
   EXPECT_TRUE(p != nullptr);
@@ -53,7 +44,7 @@ TEST(operatorNewDelete, zero) {
 }
 
 #if __cpp_sized_deallocation
-TEST(operatorNewDelete, sized_zero) {
+TEST(operatorNewDelete, sizedZero) {
   std::size_t n = 0;
   auto p = ::operator new(n);
   EXPECT_TRUE(p != nullptr);
@@ -61,10 +52,11 @@ TEST(operatorNewDelete, sized_zero) {
 }
 #endif
 
-TEST(aligned_malloc, examples) {
+TEST(alignedMalloc, examples) {
   auto trial = [](size_t align) {
     auto const ptr = aligned_malloc(1, align);
-    return (aligned_free(ptr), uintptr_t(ptr));
+    auto const addr = reinterpret_cast<uintptr_t>(ptr);
+    return (aligned_free(ptr), addr);
   };
 
   if (!kIsSanitize) { // asan allocator raises SIGABRT instead
@@ -76,29 +68,128 @@ TEST(aligned_malloc, examples) {
   EXPECT_EQ(0, trial(8192) % 8192);
 }
 
-TEST(make_unique, compatible_with_std_make_unique) {
-  //  HACK: To enforce that `folly::` is imported here.
-  to_shared_ptr(std::unique_ptr<std::string>());
-
-  using namespace std;
-  make_unique<string>("hello, world");
+TEST(toSharedPtrAliasing, example) {
+  auto sp = folly::copy_to_shared_ptr(std::tuple{3, 4});
+  auto a = folly::to_shared_ptr_aliasing(sp, &std::get<1>(*sp));
+  EXPECT_EQ(4, *a);
 }
 
-TEST(to_weak_ptr, example) {
+TEST(toWeakPtr, example) {
   auto s = std::make_shared<int>(17);
   EXPECT_EQ(1, s.use_count());
   EXPECT_EQ(2, (to_weak_ptr(s).lock(), s.use_count())) << "lvalue";
   EXPECT_EQ(3, (to_weak_ptr(decltype(s)(s)).lock(), s.use_count())) << "rvalue";
 }
 
-TEST(copy_to_unique_ptr, example) {
+// These are here to make it easy to double-check the assembly
+// for to_weak_ptr_aliasing
+extern "C" FOLLY_KEEP void check_to_weak_ptr_aliasing(
+    std::shared_ptr<void> const& s, void* a) {
+  auto w = folly::to_weak_ptr_aliasing(s, a);
+  asm_volatile_memory();
+  asm_volatile_pause();
+}
+extern "C" FOLLY_KEEP void check_to_weak_ptr_aliasing_fallback(
+    std::shared_ptr<void> const& s, void* a) {
+  auto w = folly::to_weak_ptr(std::shared_ptr<void>(s, a));
+  asm_volatile_memory();
+  asm_volatile_pause();
+}
+
+TEST(toWeakPtrAliasing, active) {
+  using S = std::pair<int, int>;
+
+  auto s = std::make_shared<S>();
+  s->first = 10;
+  s->second = 20;
+  EXPECT_EQ(s.use_count(), 1);
+  auto w = folly::to_weak_ptr_aliasing(s, &s->second);
+  EXPECT_EQ(s.use_count(), 1);
+  EXPECT_EQ(*w.lock(), s->second);
+  auto locked = w.lock();
+  EXPECT_EQ(s.use_count(), 2);
+  locked.reset();
+
+  auto w2 = w;
+  EXPECT_EQ(*w2.lock(), s->second);
+  w2.reset();
+
+  auto w3 = std::move(w);
+  EXPECT_EQ(*w3.lock(), s->second);
+
+  std::shared_ptr<int> s2(s, &s->second);
+  std::shared_ptr<int> s3 = w3.lock();
+  EXPECT_TRUE(s2 == s3);
+  EXPECT_FALSE(s2.owner_before(s));
+  EXPECT_FALSE(s.owner_before(s2));
+  EXPECT_FALSE(w3.owner_before(s));
+  EXPECT_FALSE(s.owner_before(w3));
+
+  s.reset();
+  s2.reset();
+  s3.reset();
+  EXPECT_TRUE(w3.expired());
+}
+
+TEST(toWeakPtrAliasing, inactive) {
+  using S = std::pair<int, int>;
+
+  std::shared_ptr<S> s;
+  EXPECT_EQ(s.use_count(), 0);
+  S tmp;
+  auto w = folly::to_weak_ptr_aliasing(s, &tmp.second);
+  EXPECT_EQ(s.use_count(), 0);
+  EXPECT_EQ(w.use_count(), 0);
+  EXPECT_TRUE(w.expired());
+  auto locked = w.lock();
+  EXPECT_EQ(locked.get(), nullptr);
+  EXPECT_EQ(locked.use_count(), 0);
+}
+
+TEST(copyToUniquePtr, example) {
   std::unique_ptr<int> s = copy_to_unique_ptr(17);
   EXPECT_EQ(17, *s);
 }
 
-TEST(copy_to_shared_ptr, example) {
+TEST(copyToSharedPtr, example) {
   std::shared_ptr<int> s = copy_to_shared_ptr(17);
   EXPECT_EQ(17, *s);
+}
+
+TEST(copyThroughUniquePtr, example) {
+  std::unique_ptr<int> p = std::make_unique<int>(17);
+  std::unique_ptr<int> s = copy_through_unique_ptr(p);
+  EXPECT_EQ(17, *s);
+  EXPECT_EQ(17, *p);
+
+  p.reset();
+  s = copy_through_unique_ptr(p);
+  EXPECT_EQ(s, nullptr);
+}
+
+TEST(toErasedUniquePtr, example) {
+  erased_unique_ptr ptr = empty_erased_unique_ptr();
+
+  ptr = to_erased_unique_ptr(new int(42));
+  EXPECT_EQ(42, *static_cast<int*>(ptr.get()));
+
+  ptr = to_erased_unique_ptr(new std::string("foo"));
+  EXPECT_EQ("foo", *static_cast<std::string*>(ptr.get()));
+
+  struct {
+    int i;
+  } s;
+  ptr = to_erased_unique_ptr(new decltype(s){42});
+  EXPECT_EQ(42, static_cast<decltype(s)*>(ptr.get())->i);
+
+  ptr = to_erased_unique_ptr(std::make_unique<int>(42));
+  EXPECT_EQ(42, *static_cast<int*>(ptr.get()));
+
+  ptr = make_erased_unique<std::string>(7, 'a');
+  EXPECT_EQ("aaaaaaa", *static_cast<std::string*>(ptr.get()));
+
+  ptr = copy_to_erased_unique_ptr(std::string("bbbbbbb"));
+  EXPECT_EQ("bbbbbbb", *static_cast<std::string*>(ptr.get()));
 }
 
 TEST(SysAllocator, equality) {
@@ -108,10 +199,18 @@ TEST(SysAllocator, equality) {
   EXPECT_FALSE(a != b);
 }
 
-TEST(SysAllocator, allocate_unique) {
+TEST(SysAllocator, allocateUnique) {
   using Alloc = SysAllocator<float>;
   Alloc const alloc;
   auto ptr = allocate_unique<float>(alloc, 3.);
+  EXPECT_EQ(3., *ptr);
+}
+
+TEST(SysAllocator, allocateUniqueDifferentType) {
+  using Alloc = SysAllocator<char>;
+  Alloc const alloc;
+  std::unique_ptr<float, allocator_delete<SysAllocator<float>>> ptr =
+      allocate_unique<float>(alloc, 3.);
   EXPECT_EQ(3., *ptr);
 }
 
@@ -124,7 +223,7 @@ TEST(SysAllocator, vector) {
   EXPECT_THAT(nums, testing::ElementsAreArray({3., 5.}));
 }
 
-TEST(SysAllocator, bad_alloc) {
+TEST(SysAllocator, badAlloc) {
   using Alloc = SysAllocator<float>;
   Alloc const alloc;
   std::vector<float, Alloc> nums(alloc);
@@ -133,22 +232,23 @@ TEST(SysAllocator, bad_alloc) {
   }
 }
 
-TEST(AlignedSysAllocator, equality_fixed) {
+TEST(AlignedSysAllocator, equalityFixed) {
   using Alloc = AlignedSysAllocator<float, FixedAlign<1024>>;
   Alloc const a, b;
   EXPECT_TRUE(a == b);
   EXPECT_FALSE(a != b);
 }
 
-TEST(AlignedSysAllocator, allocate_unique_fixed) {
+TEST(AlignedSysAllocator, allocateUniqueFixed) {
   using Alloc = AlignedSysAllocator<float, FixedAlign<1024>>;
   Alloc const alloc;
-  auto ptr = allocate_unique<float>(alloc, 3.);
+  std::unique_ptr<float, allocator_delete<Alloc>> ptr =
+      allocate_unique<float>(alloc, 3.);
   EXPECT_EQ(3., *ptr);
   EXPECT_EQ(0, std::uintptr_t(ptr.get()) % 1024);
 }
 
-TEST(AlignedSysAllocator, undersized_fixed) {
+TEST(AlignedSysAllocator, undersizedFixed) {
   constexpr auto align = has_extended_alignment ? 1024 : max_align_v;
   struct alignas(align) Big {
     float value;
@@ -160,7 +260,7 @@ TEST(AlignedSysAllocator, undersized_fixed) {
   EXPECT_EQ(0, std::uintptr_t(ptr.get()) % align);
 }
 
-TEST(AlignedSysAllocator, vector_fixed) {
+TEST(AlignedSysAllocator, vectorFixed) {
   using Alloc = AlignedSysAllocator<float, FixedAlign<1024>>;
   Alloc const alloc;
   std::vector<float, Alloc> nums(alloc);
@@ -170,7 +270,7 @@ TEST(AlignedSysAllocator, vector_fixed) {
   EXPECT_EQ(0, std::uintptr_t(nums.data()) % 1024);
 }
 
-TEST(AlignedSysAllocator, bad_alloc_fixed) {
+TEST(AlignedSysAllocator, badAllocFixed) {
   using Alloc = AlignedSysAllocator<float, FixedAlign<1024>>;
   Alloc const alloc;
   std::vector<float, Alloc> nums(alloc);
@@ -179,7 +279,7 @@ TEST(AlignedSysAllocator, bad_alloc_fixed) {
   }
 }
 
-TEST(AlignedSysAllocator, equality_default) {
+TEST(AlignedSysAllocator, equalityDefault) {
   using Alloc = AlignedSysAllocator<float>;
   Alloc const a(1024), b(1024), c(512);
   EXPECT_TRUE(a == b);
@@ -188,7 +288,7 @@ TEST(AlignedSysAllocator, equality_default) {
   EXPECT_TRUE(a != c);
 }
 
-TEST(AlignedSysAllocator, allocate_unique_default) {
+TEST(AlignedSysAllocator, allocateUniqueDefault) {
   using Alloc = AlignedSysAllocator<float>;
   Alloc const alloc(1024);
   auto ptr = allocate_unique<float>(alloc, 3.);
@@ -196,7 +296,7 @@ TEST(AlignedSysAllocator, allocate_unique_default) {
   EXPECT_EQ(0, std::uintptr_t(ptr.get()) % 1024);
 }
 
-TEST(AlignedSysAllocator, undersized_default) {
+TEST(AlignedSysAllocator, undersizedDefault) {
   constexpr auto align = has_extended_alignment ? 1024 : max_align_v;
   struct alignas(align) Big {
     float value;
@@ -208,7 +308,7 @@ TEST(AlignedSysAllocator, undersized_default) {
   EXPECT_EQ(0, std::uintptr_t(ptr.get()) % align);
 }
 
-TEST(AlignedSysAllocator, vector_default) {
+TEST(AlignedSysAllocator, vectorDefault) {
   using Alloc = AlignedSysAllocator<float>;
   Alloc const alloc(1024);
   std::vector<float, Alloc> nums(alloc);
@@ -218,7 +318,7 @@ TEST(AlignedSysAllocator, vector_default) {
   EXPECT_EQ(0, std::uintptr_t(nums.data()) % 1024);
 }
 
-TEST(AlignedSysAllocator, bad_alloc_default) {
+TEST(AlignedSysAllocator, badAllocDefault) {
   using Alloc = AlignedSysAllocator<float>;
   Alloc const alloc(1024);
   std::vector<float, Alloc> nums(alloc);
@@ -227,14 +327,14 @@ TEST(AlignedSysAllocator, bad_alloc_default) {
   }
 }
 
-TEST(AlignedSysAllocator, converting_constructor) {
+TEST(AlignedSysAllocator, convertingConstructor) {
   using Alloc1 = AlignedSysAllocator<float>;
   using Alloc2 = AlignedSysAllocator<double>;
   Alloc1 const alloc1(1024);
   Alloc2 const alloc2(alloc1);
 }
 
-TEST(allocate_sys_buffer, compiles) {
+TEST(allocateSysBuffer, compiles) {
   auto buf = allocate_sys_buffer(256);
   //  Freed at the end of the scope.
 }
@@ -244,20 +344,41 @@ struct CountedAllocatorStats {
 };
 
 template <typename T>
-class CountedAllocator : public std::allocator<T> {
+class CountedAllocator {
  private:
   CountedAllocatorStats* stats_;
+  std::allocator<T> alloc;
 
  public:
+  using value_type = T;
+  constexpr CountedAllocator(CountedAllocator const&) = default;
+  CountedAllocator<T>& operator=(CountedAllocator const&) = default;
+
+  template <typename U, std::enable_if_t<!std::is_same<U, T>::value, int> = 0>
+  /* implicit */ constexpr CountedAllocator(
+      CountedAllocator<U> const& other) noexcept
+      : stats_(other.stats_) {}
+
   explicit CountedAllocator(CountedAllocatorStats& stats) noexcept
       : stats_(&stats) {}
+
+  T* allocate(size_t count) { return alloc.allocate(count); }
   void deallocate(T* p, size_t n) {
-    std::allocator<T>::deallocate(p, n);
+    alloc.deallocate(p, n);
     ++stats_->deallocates;
   }
 };
 
-TEST(allocate_unique, ctor_failure) {
+template <class T, class U>
+bool operator==(const CountedAllocator<T>&, const CountedAllocator<U>&) {
+  return true;
+}
+template <class T, class U>
+bool operator!=(const CountedAllocator<T>&, const CountedAllocator<U>&) {
+  return false;
+}
+
+TEST(allocateUnique, ctorFailure) {
   struct CtorThrows {
     explicit CtorThrows(bool cond) {
       if (cond) {
@@ -410,9 +531,7 @@ struct ExpectingAlloc {
     return std::allocator<T>{}.allocate(n);
   }
 
-  void deallocate(T* p, std::size_t n) {
-    std::allocator<T>{}.deallocate(p, n);
-  }
+  void deallocate(T* p, std::size_t n) { std::allocator<T>{}.deallocate(p, n); }
 
   std::size_t expectedSize_;
   std::size_t expectedCount_;

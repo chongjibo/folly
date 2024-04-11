@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -70,7 +70,7 @@ SetupStackAndTest(64_frames)                               728.65ns    1.37M
 */
 
 int main(int argc, char* argv[]) {
-  folly::init(&argc, &argv, true);
+  folly::Init init(&argc, &argv, true);
   folly::runBenchmarks();
   return 0;
 }

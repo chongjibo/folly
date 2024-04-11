@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,9 @@
 
 #include <folly/IntrusiveList.h>
 #include <folly/Synchronized.h>
+#include <folly/experimental/coro/Task.h>
 #include <folly/fibers/Baton.h>
 #include <folly/futures/Future.h>
-#if FOLLY_HAS_COROUTINES
-#include <folly/experimental/coro/Task.h>
-#endif
 
 #include <deque>
 
@@ -32,6 +30,10 @@ namespace fibers {
 /*
  * Fiber-compatible semaphore. Will safely block fibers that wait when no
  * tokens are available and wake fibers when signalled.
+ *
+ * Fair. Waiters are awoken in FIFO order. (Note: whether the callers see FIFO
+ * order depends on the executors, wrapping async types, and the existence of
+ * happens-before relationships between async wait operations.)
  */
 class Semaphore {
  public:
@@ -72,6 +74,12 @@ class Semaphore {
    */
   bool try_wait(Waiter& waiter);
 
+  /**
+   * If the semaphore has capacity, removes a token and returns true. Otherwise
+   * returns false and leaves the semaphore unchanged.
+   */
+  bool try_wait();
+
 #if FOLLY_HAS_COROUTINES
 
   /*
@@ -94,16 +102,14 @@ class Semaphore {
 
 #endif
 
-#if FOLLY_FUTURE_USING_FIBER
-
   /*
    * Wait for capacity in the semaphore.
    */
   SemiFuture<Unit> future_wait();
 
-#endif
-
   size_t getCapacity() const;
+
+  size_t getAvailableTokens() const;
 
  private:
   bool waitSlow(Waiter& waiter);

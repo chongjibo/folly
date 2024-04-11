@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,9 +32,7 @@ using namespace ::folly::crypto;
 void benchmarkBlake2b(size_t inputSize, size_t n) {
   std::array<uint8_t, crypto_generichash_blake2b_BYTES_MAX> result;
   std::vector<uint8_t> input;
-  BENCHMARK_SUSPEND {
-    input.resize(inputSize);
-  };
+  BENCHMARK_SUSPEND { input.resize(inputSize); };
   for (size_t i = 0; i < static_cast<size_t>(n); ++i) {
     int res = crypto_generichash_blake2b(
         result.data(), sizeof(result), input.data(), input.size(), nullptr, 0);
@@ -157,7 +155,7 @@ BENCHMARK_RELATIVE(blake2xb_1000b_in_4096b_out, n) {
 }
 
 int main(int argc, char** argv) {
-  folly::init(&argc, &argv);
+  folly::Init init(&argc, &argv);
   folly::runBenchmarks();
   return 0;
 }

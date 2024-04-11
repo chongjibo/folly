@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,19 +24,22 @@
 
 namespace folly {
 
+class InlineLikeExecutor : public virtual Executor {
+ public:
+  virtual ~InlineLikeExecutor() override {}
+};
+
 /// When work is "queued", execute it immediately inline.
 /// Usually when you think you want this, you actually want a
 /// QueuedImmediateExecutor.
-class InlineExecutor : public Executor {
+class InlineExecutor : public InlineLikeExecutor {
  public:
   FOLLY_ERASE static InlineExecutor& instance() noexcept {
     auto const value = cache.load(std::memory_order_acquire);
     return value ? *value : instance_slow();
   }
 
-  void add(Func f) override {
-    f();
-  }
+  void add(Func f) override { f(); }
 
  private:
   FOLLY_COLD static InlineExecutor& instance_slow() noexcept;

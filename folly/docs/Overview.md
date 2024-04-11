@@ -10,7 +10,7 @@ a brief description of each.
 Simple arena for memory allocation: multiple allocations get freed all
 at once. With threaded version.
 
-#### [`AtomicHashMap.h`, `AtomicHashArray.h`](AtomicHashMap.md), `AtomicHashArray.h`, `AtomicLinkedList.h`, ...
+#### [`AtomicHashMap.h`](AtomicHashMap.md), `AtomicHashArray.h`, `AtomicLinkedList.h`, ...
 
 High-performance atomic data-structures. Many of these are built with very specific
 tradeoffs and constraints in mind that make them faster than their more general
@@ -41,7 +41,7 @@ interface.
 
 An implementation of the structure described in [A Provably Correct
 Scalable Concurrent Skip
-List](http://www.cs.tau.ac.il/~shanir/nir-pubs-web/Papers/OPODIS2006-BA.pdf)
+List](http://people.csail.mit.edu/shanir/publications/OPODIS2006-BA.pdf)
 by Herlihy et al.
 
 #### [`Conv.h`](Conv.md)
@@ -55,14 +55,14 @@ Pretty-printing C++ types.
 
 #### `DiscriminatedPtr.h`
 
-Similar to `boost::variant`, but restricted to pointers only. Uses the
+Similar to `std::variant`, but restricted to pointers only. Uses the
 highest-order unused 16 bits in a pointer as discriminator. So
 `sizeof(DiscriminatedPtr<int, string, Widget>) == sizeof(void*)`.
 
 #### [`dynamic.h`](Dynamic.md)
 
 Dynamically-typed object, created with JSON objects in mind. `DynamicConverter.h` is
-a utility for effeciently converting from a `dynamic` to a more concrete structure when
+a utility for efficiently converting from a `dynamic` to a more concrete structure when
 the scheme is known (e.g. json -> `map<int,int>`).
 
 #### `EvictingCacheMap.h`
@@ -86,11 +86,11 @@ A C++ abstraction around files.
 
 Rabin fingerprinting.
 
-### [`Function.h`](Function.md)
+#### [`Function.h`](Function.md)
 
 A polymorphic wrapper for callables similar to `std::function` but not copyable and therefore able to wrap non-copyable callables, such as lambdas that capture move-only types like `std::unique_ptr` or `folly::Promise`.
 
-### [`futures/`](Futures.md)
+#### [`futures/`](Futures.md)
 
 Futures is a framework for expressing asynchronous code in C++ using the Promise/Future pattern.
 
@@ -109,7 +109,7 @@ processing sequences of values efficiently in C++ akin to C#'s LINQ.
 encoding](http://www.ir.uwaterloo.ca/book/addenda-06-index-compression.html)
 for 32-bit values.
 
-#### `IpAddress.h`
+#### `IPAddress.h`
 
 A collection of utilities to deal with IPAddresses, including ipv4 and ipv6.
 
@@ -159,7 +159,7 @@ chain several queues together with processing steps in between.
 #### [`PackedSyncPtr.h`](PackedSyncPtr.md)
 
 A highly specialized data structure consisting of a pointer, a 1-bit
-spin lock, and a 15-bit integral, all inside one 64-bit word.
+spin lock, and a 15-bit integer, all inside one 64-bit word.
 
 #### [`Poly.h`](Poly.md)
 
@@ -213,8 +213,9 @@ Collections similar to `std::map` but implemented as sorted vectors.
 
 #### `stats/`
 
-A collection of efficient utilities for collecting statistics (often of
-time series data).
+A collection of efficient utilities for collecting statistics:
+* time series counters, gauges, histograms, and quantiles;
+* single-pass mean and variance.
 
 #### `StlAllocator.h`
 

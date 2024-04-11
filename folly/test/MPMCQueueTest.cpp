@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,16 @@
  */
 
 #include <folly/MPMCQueue.h>
+
+#include <functional>
+#include <memory>
+#include <string>
+#include <thread>
+#include <utility>
+
+#include <boost/intrusive_ptr.hpp>
+#include <boost/thread/barrier.hpp>
+
 #include <folly/Format.h>
 #include <folly/Memory.h>
 #include <folly/portability/GTest.h>
@@ -23,13 +33,6 @@
 #include <folly/portability/Unistd.h>
 #include <folly/stop_watch.h>
 #include <folly/test/DeterministicSchedule.h>
-
-#include <boost/intrusive_ptr.hpp>
-#include <boost/thread/barrier.hpp>
-#include <functional>
-#include <memory>
-#include <thread>
-#include <utility>
 
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_1(boost::intrusive_ptr)
 
@@ -42,7 +45,6 @@ using std::vector;
 using std::chrono::milliseconds;
 using std::chrono::seconds;
 using std::chrono::steady_clock;
-using std::chrono::time_point;
 
 typedef DeterministicSchedule DSched;
 
@@ -95,13 +97,13 @@ TEST(MPMCQueue, sequencer) {
   run_mt_sequencer_test<std::atomic>(100, 10000, -100);
 }
 
-TEST(MPMCQueue, sequencer_emulated_futex) {
+TEST(MPMCQueue, sequencerEmulatedFutex) {
   run_mt_sequencer_test<EmulatedFutexAtomic>(1, 100, 0);
   run_mt_sequencer_test<EmulatedFutexAtomic>(2, 100000, -100);
   run_mt_sequencer_test<EmulatedFutexAtomic>(100, 10000, -100);
 }
 
-TEST(MPMCQueue, sequencer_deterministic) {
+TEST(MPMCQueue, sequencerDeterministic) {
   DSched sched(DSched::uniform(0));
   run_mt_sequencer_test<DeterministicAtomic>(1, 100, -50);
   run_mt_sequencer_test<DeterministicAtomic>(2, 10000, (1 << 29) - 100);
@@ -125,19 +127,15 @@ void runElementTypeTest(T&& src) {
 }
 
 struct RefCounted {
-  static FOLLY_TLS int active_instances;
+  static thread_local int active_instances;
 
   mutable std::atomic<int> rc;
 
-  RefCounted() : rc(0) {
-    ++active_instances;
-  }
+  RefCounted() : rc(0) { ++active_instances; }
 
-  ~RefCounted() {
-    --active_instances;
-  }
+  ~RefCounted() { --active_instances; }
 };
-FOLLY_TLS int RefCounted::active_instances;
+thread_local int RefCounted::active_instances;
 
 void intrusive_ptr_add_ref(RefCounted const* p) {
   p->rc++;
@@ -149,7 +147,7 @@ void intrusive_ptr_release(RefCounted const* p) {
   }
 }
 
-TEST(MPMCQueue, lots_of_element_types) {
+TEST(MPMCQueue, lotsOfElementTypes) {
   runElementTypeTest(10);
   runElementTypeTest(string("abc"));
   runElementTypeTest(std::make_pair(10, string("def")));
@@ -160,7 +158,7 @@ TEST(MPMCQueue, lots_of_element_types) {
   EXPECT_EQ(RefCounted::active_instances, 0);
 }
 
-TEST(MPMCQueue, lots_of_element_types_dynamic) {
+TEST(MPMCQueue, lotsOfElementTypesDynamic) {
   runElementTypeTest<true>(10);
   runElementTypeTest<true>(string("abc"));
   runElementTypeTest<true>(std::make_pair(10, string("def")));
@@ -171,7 +169,7 @@ TEST(MPMCQueue, lots_of_element_types_dynamic) {
   EXPECT_EQ(RefCounted::active_instances, 0);
 }
 
-TEST(MPMCQueue, single_thread_enqdeq) {
+TEST(MPMCQueue, singleThreadEnqdeq) {
   // Non-dynamic version only.
   // False positive for dynamic version. Capacity can be temporarily
   // higher than specified.
@@ -204,7 +202,7 @@ TEST(MPMCQueue, single_thread_enqdeq) {
   }
 }
 
-TEST(MPMCQueue, tryenq_capacity_test) {
+TEST(MPMCQueue, tryenqCapacityTest) {
   // Non-dynamic version only.
   // False positive for dynamic version. Capacity can be temporarily
   // higher than specified.
@@ -217,7 +215,7 @@ TEST(MPMCQueue, tryenq_capacity_test) {
   }
 }
 
-TEST(MPMCQueue, enq_capacity_test) {
+TEST(MPMCQueue, enqCapacityTest) {
   // Non-dynamic version only.
   // False positive for dynamic version. Capacity can be temporarily
   // higher than specified.
@@ -294,7 +292,7 @@ void runTryEnqDeqTest(int numThreads, int numOps) {
   EXPECT_EQ(n * (n - 1) / 2 - sum, 0);
 }
 
-TEST(MPMCQueue, mt_try_enq_deq) {
+TEST(MPMCQueue, mtTryEnqDeq) {
   int nts[] = {1, 3, 100};
 
   int n = 100000;
@@ -303,7 +301,7 @@ TEST(MPMCQueue, mt_try_enq_deq) {
   }
 }
 
-TEST(MPMCQueue, mt_try_enq_deq_dynamic) {
+TEST(MPMCQueue, mtTryEnqDeqDynamic) {
   int nts[] = {1, 3, 100};
 
   int n = 100000;
@@ -312,7 +310,7 @@ TEST(MPMCQueue, mt_try_enq_deq_dynamic) {
   }
 }
 
-TEST(MPMCQueue, mt_try_enq_deq_emulated_futex) {
+TEST(MPMCQueue, mtTryEnqDeqEmulatedFutex) {
   int nts[] = {1, 3, 100};
 
   int n = 100000;
@@ -321,7 +319,7 @@ TEST(MPMCQueue, mt_try_enq_deq_emulated_futex) {
   }
 }
 
-TEST(MPMCQueue, mt_try_enq_deq_emulated_futex_dynamic) {
+TEST(MPMCQueue, mtTryEnqDeqEmulatedFutexDynamic) {
   int nts[] = {1, 3, 100};
 
   int n = 100000;
@@ -330,7 +328,7 @@ TEST(MPMCQueue, mt_try_enq_deq_emulated_futex_dynamic) {
   }
 }
 
-TEST(MPMCQueue, mt_try_enq_deq_deterministic) {
+TEST(MPMCQueue, mtTryEnqDeqDeterministic) {
   int nts[] = {3, 10};
 
   long seed = 0;
@@ -377,29 +375,19 @@ struct BlockingWriteCaller : public WriteMethodCaller<Q> {
     q.blockingWrite(i);
     return true;
   }
-  string methodName() override {
-    return "blockingWrite";
-  }
+  string methodName() override { return "blockingWrite"; }
 };
 
 template <typename Q>
 struct WriteIfNotFullCaller : public WriteMethodCaller<Q> {
-  bool callWrite(Q& q, int i) override {
-    return q.writeIfNotFull(i);
-  }
-  string methodName() override {
-    return "writeIfNotFull";
-  }
+  bool callWrite(Q& q, int i) override { return q.writeIfNotFull(i); }
+  string methodName() override { return "writeIfNotFull"; }
 };
 
 template <typename Q>
 struct WriteCaller : public WriteMethodCaller<Q> {
-  bool callWrite(Q& q, int i) override {
-    return q.write(i);
-  }
-  string methodName() override {
-    return "write";
-  }
+  bool callWrite(Q& q, int i) override { return q.write(i); }
+  string methodName() override { return "write"; }
 };
 
 template <
@@ -602,11 +590,13 @@ void runMtProdConsDeterministicDynamic(
   }
 }
 
-TEST(MPMCQueue, mt_prod_cons_deterministic) {
+// This is a benchmark, not a test
+TEST(MPMCQueue, DISABLEDMtProdConsDeterministic) {
   runMtProdConsDeterministic(0);
 }
 
-TEST(MPMCQueue, mt_prod_cons_deterministic_dynamic) {
+// This is a benchmark, not a test
+TEST(MPMCQueue, DISABLEDMtProdConsDeterministicDynamic) {
   runMtProdConsDeterministic<true>(0);
 }
 
@@ -618,7 +608,8 @@ void setFromEnv(T& var, const char* envvar) {
   }
 }
 
-TEST(MPMCQueue, mt_prod_cons_deterministic_dynamic_with_arguments) {
+// This is a benchmark, not a test
+TEST(MPMCQueue, DISABLEDMtProdConsDeterministicDynamicWithArguments) {
   long seed = 0;
   uint32_t prods = 10;
   uint32_t cons = 10;
@@ -667,11 +658,13 @@ void runMtProdCons() {
   }
 }
 
-TEST(MPMCQueue, mt_prod_cons) {
+// This is a benchmark, not a test
+TEST(MPMCQueue, DISABLEDMtProdCons) {
   runMtProdCons();
 }
 
-TEST(MPMCQueue, mt_prod_cons_dynamic) {
+// This is a benchmark, not a test
+TEST(MPMCQueue, DISABLEDMtProdConsDynamic) {
   runMtProdCons</* Dynamic = */ true>();
 }
 
@@ -679,7 +672,7 @@ template <bool Dynamic = false>
 void runMtProdConsEmulatedFutex() {
   using QueueType = MPMCQueue<int, EmulatedFutexAtomic, Dynamic>;
 
-  int n = 100000;
+  const int n = 100000 / (folly::kIsSanitizeThread ? 10 : 1);
   vector<unique_ptr<WriteMethodCaller<QueueType>>> callers;
   callers.emplace_back(std::make_unique<BlockingWriteCaller<QueueType>>());
   callers.emplace_back(std::make_unique<WriteIfNotFullCaller<QueueType>>());
@@ -701,11 +694,11 @@ void runMtProdConsEmulatedFutex() {
   }
 }
 
-TEST(MPMCQueue, mt_prod_cons_emulated_futex) {
+TEST(MPMCQueue, mtProdConsEmulatedFutex) {
   runMtProdConsEmulatedFutex();
 }
 
-TEST(MPMCQueue, mt_prod_cons_emulated_futex_dynamic) {
+TEST(MPMCQueue, mtProdConsEmulatedFutexDynamic) {
   runMtProdConsEmulatedFutex</* Dynamic = */ true>();
 }
 
@@ -771,13 +764,13 @@ void runMtNeverFail(std::vector<int>& nts, int n) {
 // tryWriteUntil() operations may fail in transient conditions related
 // to expansion.
 
-TEST(MPMCQueue, mt_never_fail) {
+TEST(MPMCQueue, mtNeverFail) {
   std::vector<int> nts{1, 3, 100};
   int n = 100000;
   runMtNeverFail<std::atomic>(nts, n);
 }
 
-TEST(MPMCQueue, mt_never_fail_emulated_futex) {
+TEST(MPMCQueue, mtNeverFailEmulatedFutex) {
   std::vector<int> nts{1, 3, 100};
   int n = 100000;
   runMtNeverFail<EmulatedFutexAtomic>(nts, n);
@@ -798,7 +791,7 @@ void runMtNeverFailDeterministic(std::vector<int>& nts, int n, long seed) {
   }
 }
 
-TEST(MPMCQueue, mt_never_fail_deterministic) {
+TEST(MPMCQueue, mtNeverFailDeterministic) {
   std::vector<int> nts{3, 10};
   long seed = 0; // nowMicro() % 10000;
   int n = 1000;
@@ -865,7 +858,7 @@ void runMtNeverFailUntilSystem(std::vector<int>& nts, int n) {
   }
 }
 
-TEST(MPMCQueue, mt_never_fail_until_system) {
+TEST(MPMCQueue, mtNeverFailUntilSystem) {
   std::vector<int> nts{1, 3, 100};
   int n = 100000;
   runMtNeverFailUntilSystem(nts, n);
@@ -882,7 +875,7 @@ void runMtNeverFailUntilSteady(std::vector<int>& nts, int n) {
   }
 }
 
-TEST(MPMCQueue, mt_never_fail_until_steady) {
+TEST(MPMCQueue, mtNeverFailUntilSteady) {
   std::vector<int> nts{1, 3, 100};
   int n = 100000;
   runMtNeverFailUntilSteady(nts, n);
@@ -900,8 +893,8 @@ enum LifecycleEvent {
   MAX_LIFECYCLE_EVENT
 };
 
-static FOLLY_TLS int lc_counts[MAX_LIFECYCLE_EVENT];
-static FOLLY_TLS int lc_prev[MAX_LIFECYCLE_EVENT];
+static thread_local int lc_counts[MAX_LIFECYCLE_EVENT];
+static thread_local int lc_prev[MAX_LIFECYCLE_EVENT];
 
 static int lc_outstanding() {
   return lc_counts[DEFAULT_CONSTRUCTOR] + lc_counts[COPY_CONSTRUCTOR] +
@@ -934,9 +927,7 @@ struct Lifecycle {
 
   bool constructed;
 
-  Lifecycle() noexcept : constructed(true) {
-    ++lc_counts[DEFAULT_CONSTRUCTOR];
-  }
+  Lifecycle() noexcept : constructed(true) { ++lc_counts[DEFAULT_CONSTRUCTOR]; }
 
   explicit Lifecycle(int /* n */, char const* /* s */) noexcept
       : constructed(true) {
@@ -1044,11 +1035,11 @@ void runPerfectForwardingTest() {
   EXPECT_EQ(lc_outstanding(), 0);
 }
 
-TEST(MPMCQueue, perfect_forwarding) {
+TEST(MPMCQueue, perfectForwarding) {
   runPerfectForwardingTest<std::false_type>();
 }
 
-TEST(MPMCQueue, perfect_forwarding_relocatable) {
+TEST(MPMCQueue, perfectForwardingRelocatable) {
   runPerfectForwardingTest<std::true_type>();
 }
 
@@ -1117,15 +1108,15 @@ void run_queue_moving() {
   LIFECYCLE_STEP(DESTRUCTOR);
 }
 
-TEST(MPMCQueue, queue_moving) {
+TEST(MPMCQueue, queueMoving) {
   run_queue_moving();
 }
 
-TEST(MPMCQueue, queue_moving_dynamic) {
+TEST(MPMCQueue, queueMovingDynamic) {
   run_queue_moving<true>();
 }
 
-TEST(MPMCQueue, explicit_zero_capacity_fail) {
+TEST(MPMCQueue, explicitZeroCapacityFail) {
   ASSERT_THROW(MPMCQueue<int> cq(0), std::invalid_argument);
 
   using DynamicMPMCQueueInt = MPMCQueue<int, std::atomic, true>;
@@ -1205,19 +1196,19 @@ void testTryWriteUntil() {
   EXPECT_TRUE(watch.elapsed(wait));
 }
 
-TEST(MPMCQueue, try_read_until) {
+TEST(MPMCQueue, tryReadUntil) {
   testTryReadUntil<false>();
 }
 
-TEST(MPMCQueue, try_read_until_dynamic) {
+TEST(MPMCQueue, tryReadUntilDynamic) {
   testTryReadUntil<true>();
 }
 
-TEST(MPMCQueue, try_write_until) {
+TEST(MPMCQueue, tryWriteUntil) {
   testTryWriteUntil<false>();
 }
 
-TEST(MPMCQueue, try_write_until_dynamic) {
+TEST(MPMCQueue, tryWriteUntilDynamic) {
   testTryWriteUntil<true>();
 }
 
@@ -1229,12 +1220,12 @@ void testTimeout(MPMCQueue<int, std::atomic, Dynamic>& q) {
       std::chrono::system_clock::now() + std::chrono::microseconds(10000), 2);
 }
 
-TEST(MPMCQueue, try_write_until_timeout) {
+TEST(MPMCQueue, tryWriteUntilTimeout) {
   folly::MPMCQueue<int, std::atomic, false> queue(1);
   testTimeout<false>(queue);
 }
 
-TEST(MPMCQueue, must_fail_try_write_until_dynamic) {
+TEST(MPMCQueue, mustFailTryWriteUntilDynamic) {
   folly::MPMCQueue<int, std::atomic, true> queue(200, 1, 2);
   testTimeout<true>(queue);
 }

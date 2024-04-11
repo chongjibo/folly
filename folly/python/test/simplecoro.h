@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,14 @@
  */
 
 #pragma once
-#include <folly/experimental/coro/Task.h>
+
+#include <chrono>
 #include <cstdint>
+
+#include <folly/CancellationToken.h>
+#include <folly/experimental/coro/Baton.h>
+#include <folly/experimental/coro/Task.h>
+#include <folly/futures/Future.h>
 
 namespace folly {
 namespace python {
@@ -28,6 +34,21 @@ folly::coro::Task<uint64_t> coro_getValueX5(uint64_t val) {
   }
   co_return val * 5;
 }
+
+folly::coro::Task<uint64_t> coro_returnFiveAfterCancelled() {
+  folly::coro::Baton baton;
+  const folly::CancellationToken& ct =
+      co_await folly::coro::co_current_cancellation_token;
+  folly::CancellationCallback cb{ct, [&] { baton.post(); }};
+  co_await baton;
+  co_return 5;
+}
+
+coro::Task<uint64_t> coro_sleepThenEcho(uint32_t sleepMs, uint64_t echoVal) {
+  co_await folly::futures::sleep(std::chrono::milliseconds{sleepMs});
+  co_return echoVal;
+}
+
 } // namespace test
 } // namespace python
 } // namespace folly

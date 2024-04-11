@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ TEST(TimedDrivableExecutor, drainIsNotStable) {
   EXPECT_EQ(count, 2);
 }
 
-TEST(TimedDrivableExecutor, try_drive) {
+TEST(TimedDrivableExecutor, tryDrive) {
   size_t count = 0;
   TimedDrivableExecutor x;
   auto f1 = [&]() { count++; };
@@ -59,7 +59,7 @@ TEST(TimedDrivableExecutor, try_drive) {
   EXPECT_EQ(count, 1);
 }
 
-TEST(TimedDrivableExecutor, try_drive_for) {
+TEST(TimedDrivableExecutor, tryDriveFor) {
   size_t count = 0;
   TimedDrivableExecutor x;
   auto f1 = [&]() { count++; };
@@ -70,7 +70,7 @@ TEST(TimedDrivableExecutor, try_drive_for) {
   EXPECT_EQ(count, 1);
 }
 
-TEST(TimedDrivableExecutor, try_drive_until) {
+TEST(TimedDrivableExecutor, tryDriveUntil) {
   size_t count = 0;
   TimedDrivableExecutor x;
   auto f1 = [&]() { count++; };

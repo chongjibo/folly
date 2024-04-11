@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
-#include <folly/lang/Bits.h>
-#include <sodium.h>
 #include <cstring>
 #include <stdexcept>
 
+#include <sodium.h>
+
 #include <folly/experimental/crypto/detail/LtHashInternal.h>
+#include <folly/lang/Bits.h>
 
 namespace folly {
 namespace crypto {
@@ -125,7 +126,8 @@ constexpr size_t getChecksumSizeBytes() {
 } // namespace detail
 
 template <std::size_t B, std::size_t N>
-LtHash<B, N>::LtHash(const folly::IOBuf& initialChecksum) : checksum_{} {
+LtHash<B, N>::LtHash(const folly::IOBuf& initialChecksum)
+    : checksum_{}, key_{folly::none} {
   static_assert(N > 999, "element count must be at least 1000");
   static_assert(
       B == 16 || B == 20 || B == 32,
@@ -149,7 +151,7 @@ LtHash<B, N>::LtHash(const folly::IOBuf& initialChecksum) : checksum_{} {
 
 template <std::size_t B, std::size_t N>
 LtHash<B, N>::LtHash(std::unique_ptr<folly::IOBuf> initialChecksum)
-    : checksum_{} {
+    : checksum_{}, key_{folly::none} {
   // Make sure libsodium is initialized, but only do it once.
   static const int sodiumInitResult = []() { return sodium_init(); }();
 
@@ -161,12 +163,14 @@ LtHash<B, N>::LtHash(std::unique_ptr<folly::IOBuf> initialChecksum)
 }
 
 template <std::size_t B, std::size_t N>
-LtHash<B, N>::LtHash(const LtHash<B, N>& that) : checksum_{} {
+LtHash<B, N>::LtHash(const LtHash<B, N>& that)
+    : checksum_{}, key_{folly::none} {
   // Note: we don't need to initialize libsodium in the copy constructor, since
   // before a copy constructor is called, at least one object of this type must
   // be constructed without using a copy constructor, so we know that libsodium
   // must have been initialized already.
   setChecksum(that.checksum_);
+  key_ = that.key_;
 }
 
 template <std::size_t B, std::size_t N>
@@ -180,11 +184,38 @@ LtHash<B, N>& LtHash<B, N>::operator=(const LtHash<B, N>& that) {
     // copy the contents.
     setChecksum(that.checksum_);
   }
+  key_ = that.key_;
   return *this;
 }
 
 template <std::size_t B, std::size_t N>
+LtHash<B, N>::~LtHash() {
+  clearKey(); // securely erase the old key if there is one
+}
+
+template <std::size_t B, std::size_t N>
+void LtHash<B, N>::setKey(folly::ByteRange key) {
+  if (key.size() < crypto_generichash_blake2b_KEYBYTES_MIN ||
+      key.size() > crypto_generichash_blake2b_KEYBYTES_MAX) {
+    throw std::runtime_error("invalid key size");
+  }
+  clearKey(); // securely erase the old key if there is one
+  key_ = std::vector<uint8_t>{key.begin(), key.end()};
+}
+
+template <std::size_t B, std::size_t N>
+void LtHash<B, N>::clearKey() {
+  if (key_.has_value()) {
+    sodium_memzero(key_->data(), key_->size());
+    key_ = folly::none;
+  }
+}
+
+template <std::size_t B, std::size_t N>
 LtHash<B, N>& LtHash<B, N>::operator+=(const LtHash<B, N>& rhs) {
+  if (!keysEqual(*this, rhs)) {
+    throw std::runtime_error("Cannot add 2 LtHashes with different keys");
+  }
   detail::MathOperation<detail::MathEngine::AUTO>::add(
       detail::Bits<B>::kDataMask(),
       B,
@@ -196,6 +227,9 @@ LtHash<B, N>& LtHash<B, N>::operator+=(const LtHash<B, N>& rhs) {
 
 template <std::size_t B, std::size_t N>
 LtHash<B, N>& LtHash<B, N>::operator-=(const LtHash<B, N>& rhs) {
+  if (!keysEqual(*this, rhs)) {
+    throw std::runtime_error("Cannot subtract 2 LtHashes with different keys");
+  }
   detail::MathOperation<detail::MathEngine::AUTO>::sub(
       detail::Bits<B>::kDataMask(),
       B,
@@ -308,7 +342,11 @@ void LtHash<B, N>::hashObject(
     Args&&... moreRanges) {
   CHECK_EQ(getChecksumSizeBytes(), out.size());
   Blake2xb digest;
-  digest.init(out.size());
+  if (key_.has_value()) {
+    digest.init(out.size(), folly::range(*key_));
+  } else {
+    digest.init(out.size());
+  }
   updateDigest(digest, firstRange, std::forward<Args>(moreRanges)...);
   digest.finish(out);
   if /* constexpr */ (detail::Bits<B>::needsPadding()) {
@@ -320,9 +358,7 @@ void LtHash<B, N>::hashObject(
 template <std::size_t B, std::size_t N>
 template <typename... Args>
 void LtHash<B, N>::updateDigest(
-    Blake2xb& digest,
-    folly::ByteRange firstRange,
-    Args&&... moreRanges) {
+    Blake2xb& digest, folly::ByteRange firstRange, Args&&... moreRanges) {
   digest.update(firstRange);
   updateDigest(digest, std::forward<Args>(moreRanges)...);
 }
@@ -333,8 +369,7 @@ void LtHash<B, N>::updateDigest(Blake2xb& /* digest */) {}
 template <std::size_t B, std::size_t N>
 template <typename... Args>
 LtHash<B, N>& LtHash<B, N>::addObject(
-    folly::ByteRange firstRange,
-    Args&&... moreRanges) {
+    folly::ByteRange firstRange, Args&&... moreRanges) {
   // hash obj and add to elements of checksum
   using H = std::array<unsigned char, getChecksumSizeBytes()>;
   alignas(detail::kCacheLineSize) H h;
@@ -352,8 +387,7 @@ LtHash<B, N>& LtHash<B, N>::addObject(
 template <std::size_t B, std::size_t N>
 template <typename... Args>
 LtHash<B, N>& LtHash<B, N>::removeObject(
-    folly::ByteRange firstRange,
-    Args&&... moreRanges) {
+    folly::ByteRange firstRange, Args&&... moreRanges) {
   // hash obj and subtract from elements of checksum
   using H = std::array<unsigned char, getChecksumSizeBytes()>;
   alignas(detail::kCacheLineSize) H h;
@@ -405,6 +439,21 @@ std::unique_ptr<folly::IOBuf> LtHash<B, N>::getChecksum() const {
   result->append(checksum_.length());
   std::memcpy(result->writableData(), checksum_.data(), checksum_.length());
   return result;
+}
+
+// static
+template <std::size_t B, std::size_t N>
+bool LtHash<B, N>::keysEqual(const LtHash<B, N>& h1, const LtHash<B, N>& h2) {
+  if (h1.key_.has_value() != h2.key_.has_value()) {
+    return false;
+  }
+  if (!h1.key_.has_value()) {
+    return true; // both LtHashes have empty keys
+  }
+  if (h1.key_->size() != h2.key_->size()) {
+    return false;
+  }
+  return sodium_memcmp(h1.key_->data(), h2.key_->data(), h1.key_->size()) == 0;
 }
 
 } // namespace crypto

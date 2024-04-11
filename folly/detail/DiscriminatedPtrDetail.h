@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -78,8 +78,7 @@ template <typename T, typename... Types>
 struct SameType<T, Types...> {
   typedef T type;
   static_assert(
-      IsSameType<T, Types...>::value,
-      "Not all types in pack are the same");
+      IsSameType<T, Types...>::value, "Not all types in pack are the same");
 };
 
 // Determine the result type of applying a visitor of type V on a pointer

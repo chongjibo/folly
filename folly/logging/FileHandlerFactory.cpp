@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ class FileHandlerFactory::WriterFactory
       throw std::invalid_argument("no path specified for file handler");
     }
     return fileWriterFactory_.createWriter(
-        File{path_, O_WRONLY | O_APPEND | O_CREAT});
+        File{path_, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC});
   }
 
   std::string path_;

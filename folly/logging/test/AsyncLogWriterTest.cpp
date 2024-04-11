@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,19 @@
 
 #include <folly/logging/AsyncLogWriter.h>
 
+#include <iostream>
+
 #include <folly/logging/LoggerDB.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/test/TestUtils.h>
-#include <iostream>
 
 using namespace folly;
 
 namespace {
 static bool* expectedMessage;
 void handleLoggingError(
-    StringPiece /* file */,
-    int /* lineNumber */,
-    std::string&& msg) {
+    StringPiece /* file */, int /* lineNumber */, std::string&& msg) {
   if (folly::kIsDebug) {
     std::cerr << msg << std::endl;
   } else {
@@ -40,9 +39,7 @@ void handleLoggingError(
 class NoCleanUpLogWriter : public AsyncLogWriter {
   void performIO(const std::vector<std::string>&, size_t) override {}
 
-  bool ttyOutput() const override {
-    return false;
-  }
+  bool ttyOutput() const override { return false; }
 };
 } // namespace
 

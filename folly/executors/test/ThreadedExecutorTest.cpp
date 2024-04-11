@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 
 #include <folly/executors/ThreadedExecutor.h>
+
+#include <stdexcept>
 
 #include <folly/Conv.h>
 #include <folly/futures/Future.h>
@@ -34,6 +36,11 @@ TEST_F(ThreadedExecutorTest, example) {
                  .get();
 
   EXPECT_EQ("42", ret);
+}
+
+TEST_F(ThreadedExecutorTest, exception) {
+  folly::ThreadedExecutor x;
+  x.add([] { throw std::runtime_error("This should not crash the program"); });
 }
 
 TEST_F(ThreadedExecutorTest, dtor_waits) {

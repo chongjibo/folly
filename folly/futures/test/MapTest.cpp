@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ TEST(Map, basic) {
   EXPECT_TRUE(collect(fs2).isReady());
 }
 
-TEST(Map, basic_try) {
+TEST(Map, basicTry) {
   Promise<int> p1;
   Promise<int> p2;
   Promise<int> p3;
@@ -94,7 +94,7 @@ TEST(Map, executor) {
   EXPECT_TRUE(collect(fs2).isReady());
 }
 
-TEST(Map, executor_try) {
+TEST(Map, executorTry) {
   Promise<int> p1;
   Promise<int> p2;
   Promise<int> p3;

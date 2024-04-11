@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
 #include <folly/experimental/coro/AsyncGenerator.h>
 #include <folly/experimental/coro/Task.h>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace python {
@@ -36,9 +36,7 @@ class AsyncGeneratorWrapper {
   explicit AsyncGeneratorWrapper(coro::AsyncGenerator<T>&& gen)
       : gen_(std::move(gen)) {}
 
-  coro::Task<NextResult<T>> getNext() {
-    co_return co_await gen_.next();
-  }
+  coro::Task<NextResult<T>> getNext() { co_return co_await gen_.next(); }
 
  private:
   coro::AsyncGenerator<T> gen_;

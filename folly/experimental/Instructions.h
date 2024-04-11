@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,8 @@
 #include <immintrin.h>
 #endif
 
+#include <string_view>
+
 #include <folly/CpuId.h>
 #include <folly/Portability.h>
 #include <folly/lang/Assume.h>
@@ -40,9 +42,8 @@ namespace instructions {
 // use explicitly.
 
 struct Default {
-  static bool supported(const folly::CpuId& /* cpuId */ = {}) {
-    return true;
-  }
+  static std::string_view name() noexcept { return "Default"; }
+  static bool supported(const folly::CpuId& /* cpuId */ = {}) { return true; }
   static FOLLY_ALWAYS_INLINE uint64_t popcount(uint64_t value) {
     return uint64_t(__builtin_popcountll(value));
   }
@@ -83,7 +84,10 @@ struct Default {
   }
 };
 
+#if FOLLY_X64 || defined(__i386__)
 struct Nehalem : public Default {
+  static std::string_view name() noexcept { return "Nehalem"; }
+
   static bool supported(const folly::CpuId& cpuId = {}) {
     return cpuId.popcnt();
   }
@@ -102,6 +106,8 @@ struct Nehalem : public Default {
 };
 
 struct Haswell : public Nehalem {
+  static std::string_view name() noexcept { return "Haswell"; }
+
   static bool supported(const folly::CpuId& cpuId = {}) {
     return Nehalem::supported(cpuId) && cpuId.bmi1() && cpuId.bmi2();
   }
@@ -148,6 +154,7 @@ struct Haswell : public Nehalem {
 #endif
   }
 };
+#endif
 
 enum class Type {
   DEFAULT,
@@ -157,6 +164,7 @@ enum class Type {
 
 inline Type detect() {
   const static Type type = [] {
+#if FOLLY_X64 || defined(__i386)
     if (instructions::Haswell::supported()) {
       VLOG(2) << "Will use folly::compression::instructions::Haswell";
       return Type::HASWELL;
@@ -167,12 +175,16 @@ inline Type detect() {
       VLOG(2) << "Will use folly::compression::instructions::Default";
       return Type::DEFAULT;
     }
+#else
+    return Type::DEFAULT;
+#endif
   }();
   return type;
 }
 
 template <class F>
 auto dispatch(Type type, F&& f) -> decltype(f(std::declval<Default>())) {
+#if FOLLY_X64 || defined(__i386)
   switch (type) {
     case Type::HASWELL:
       return f(Haswell());
@@ -181,6 +193,10 @@ auto dispatch(Type type, F&& f) -> decltype(f(std::declval<Default>())) {
     case Type::DEFAULT:
       return f(Default());
   }
+#else
+  (void)type;
+  return f(Default());
+#endif
 
   assume_unreachable();
 }

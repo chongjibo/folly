@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from folly.executor cimport get_executor
+from builtins import memoryview as py_memoryview
+from folly.executor cimport get_running_executor
 from cpython cimport Py_buffer
 from weakref import WeakValueDictionary
 from cpython.object cimport Py_LT, Py_LE, Py_EQ, Py_NE, Py_GT, Py_GE
 from cython.operator cimport dereference as deref
-from cython.view cimport memoryview
 
 __cache = WeakValueDictionary()
 __all__ = ['IOBuf']
@@ -28,8 +28,8 @@ cdef unique_ptr[cIOBuf] from_python_buffer(memoryview view):
     if not view.is_c_contig() and not view.is_f_contig():
         raise ValueError("View must be contiguous")
     return move(
-        iobuf_from_python(
-            get_executor(),
+        iobuf_from_memoryview(
+            get_running_executor(True),
             <PyObject*>view,
             view.view.buf,
             view.view.len,
@@ -39,10 +39,19 @@ cdef unique_ptr[cIOBuf] from_python_buffer(memoryview view):
 cdef IOBuf from_unique_ptr(unique_ptr[cIOBuf] ciobuf):
     inst = <IOBuf>IOBuf.__new__(IOBuf)
     inst._ours = move(ciobuf)
-    inst._parent = inst
+    inst._parent = None
     inst._this = inst._ours.get()
     __cache[(<unsigned long>inst._this, id(inst))] = inst
     return inst
+
+cdef api object python_iobuf_from_ptr(unique_ptr[cIOBuf] iobuf):
+    return from_unique_ptr(move(iobuf))
+
+cdef cIOBuf from_python_iobuf(object obj) except *:
+    return deref((<IOBuf?>obj).c_clone())
+
+cdef cIOBuf* ptr_from_python_iobuf(object obj) except NULL:
+    return (<IOBuf?>obj).c_clone().release()
 
 
 cdef class IOBuf:
@@ -50,7 +59,7 @@ cdef class IOBuf:
         cdef memoryview view = memoryview(buffer, PyBUF_C_CONTIGUOUS)
         self._ours = move(from_python_buffer(view))
         self._this = self._ours.get()
-        self._parent = self
+        self._parent = None
         self._hash = None
         __cache[(<unsigned long>self._this, id(self))] = self
 
@@ -71,7 +80,7 @@ cdef class IOBuf:
     cdef void cleanup(self):
         self._ours.reset()
 
-    cdef unique_ptr[cIOBuf] c_clone(self):
+    cdef unique_ptr[cIOBuf] c_clone(self) noexcept:
         return move(self._this.clone())
 
     def clone(self):
@@ -84,7 +93,7 @@ cdef class IOBuf:
         if _next == self._this:
             return None
 
-        return IOBuf.create(_next, self._parent)
+        return IOBuf.create(_next, self if self._parent is None else self._parent)
 
     @property
     def prev(self):
@@ -92,7 +101,7 @@ cdef class IOBuf:
         if _prev == self._this:
             return None
 
-        return IOBuf.create(_prev, self._parent)
+        return IOBuf.create(_prev, self if self._parent is None else self._parent)
 
     @property
     def is_chained(self):
@@ -135,10 +144,10 @@ cdef class IOBuf:
 
     def __iter__(self):
         "Iterates through the chain of buffers returning a memory view for each"
-        yield memoryview(self, PyBUF_C_CONTIGUOUS)
+        yield py_memoryview(self)
         next = self.next
         while next is not None and next is not self:
-            yield memoryview(next, PyBUF_C_CONTIGUOUS)
+            yield py_memoryview(next)
             next = next.next
 
     def __hash__(self):

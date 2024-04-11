@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #pragma once
 
 #include <folly/ThreadLocal.h>
-#include <folly/synchronization/AsymmetricMemoryBarrier.h>
+#include <folly/synchronization/AsymmetricThreadFence.h>
 #include <folly/synchronization/detail/Sleeper.h>
 
 namespace folly {
@@ -107,7 +107,7 @@ class TLRefCount {
       refCountPtr->state_ = State::GLOBAL_TRANSITION;
     }
 
-    asymmetricHeavyBarrier();
+    asymmetric_thread_fence_heavy(std::memory_order_seq_cst);
 
     for (auto refCountPtr : refCountPtrs) {
       std::weak_ptr<void> collectGuardWeak = refCountPtr->collectGuard_;
@@ -143,9 +143,7 @@ class TLRefCount {
       collectGuard_ = refCount.collectGuard_;
     }
 
-    ~LocalRefCount() {
-      collect();
-    }
+    ~LocalRefCount() { collect(); }
 
     void collect() {
       {
@@ -159,44 +157,43 @@ class TLRefCount {
         refCount_.globalCount_.fetch_add(collectCount_);
         collectGuard_.reset();
       }
-      // We only care about seeing inUpdate if we've observed the new count_
-      // value set by the update() call, so memory_order_relaxed is enough.
-      if (inUpdate_.load(std::memory_order_relaxed)) {
-        folly::detail::Sleeper sleeper;
-        while (inUpdate_.load(std::memory_order_acquire)) {
-          sleeper.wait();
-        }
+      // Once we exit collect(), it's possible TLRefCount may be deleted by our
+      // user since the global count may reach zero. We must therefore ensure
+      // that the thread corresponding to this LocalRefCount is not still
+      // executing the update() function. We wait on inUpdate_ to ensure this.
+      // We won't have to worry about further update() calls beyond this point,
+      // because the state is already non-LOCAL. We also don't need to worry
+      // about if a thread is in an update() call but have not gotten around to
+      // setting inUpdate_ to true yet, because then count_ has also not been
+      // updated and we couldn't reach global zero in that case.
+      folly::detail::Sleeper sleeper;
+      while (inUpdate_.load(std::memory_order_acquire)) {
+        sleeper.wait();
       }
     }
 
-    bool operator++() {
-      return update(1);
-    }
+    bool operator++() { return update(1); }
 
-    bool operator--() {
-      return update(-1);
-    }
+    bool operator--() { return update(-1); }
 
    private:
     bool update(Int delta) {
-      if (UNLIKELY(refCount_.state_.load() != State::LOCAL)) {
+      if (FOLLY_UNLIKELY(refCount_.state_.load() != State::LOCAL)) {
         return false;
       }
 
       // This is equivalent to atomic fetch_add. We know that this operation
-      // is always performed from a single thread. asymmetricLightBarrier()
-      // makes things faster than atomic fetch_add on platforms with native
-      // support.
+      // is always performed from a single thread.
+      // asymmetric_thread_fence_light() makes things faster than atomic
+      // fetch_add on platforms with native support.
       auto count = count_.load(std::memory_order_relaxed) + delta;
       inUpdate_.store(true, std::memory_order_relaxed);
-      SCOPE_EXIT {
-        inUpdate_.store(false, std::memory_order_release);
-      };
+      SCOPE_EXIT { inUpdate_.store(false, std::memory_order_release); };
       count_.store(count, std::memory_order_release);
 
-      asymmetricLightBarrier();
+      asymmetric_thread_fence_light(std::memory_order_seq_cst);
 
-      if (UNLIKELY(refCount_.state_.load() != State::LOCAL)) {
+      if (FOLLY_UNLIKELY(refCount_.state_.load() != State::LOCAL)) {
         std::lock_guard<std::mutex> lg(collectMutex_);
 
         if (collectGuard_) {

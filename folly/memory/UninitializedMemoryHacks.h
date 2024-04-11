@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,15 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <type_traits>
 #include <vector>
+
+// On MSVC an incorrect <version> header get's picked up
+#if !defined(_MSC_VER) && __has_include(<version>)
+#include <version>
+#endif
 
 namespace {
 // This struct is different in every translation unit.  We use template
@@ -94,8 +100,7 @@ template <
     typename =
         typename std::enable_if<std::is_trivially_destructible<T>::value>::type>
 inline void resizeWithoutInitialization(
-    std::basic_string<T>& s,
-    std::size_t n) {
+    std::basic_string<T>& s, std::size_t n) {
   if (n <= s.size()) {
     s.resize(n);
   } else {
@@ -154,8 +159,7 @@ namespace detail {
   void unsafeStringSetLargerSizeImpl(std::basic_string<TYPE>& s, std::size_t); \
   template <>                                                                  \
   inline void unsafeStringSetLargerSize<TYPE>(                                 \
-      std::basic_string<TYPE> & s,                                             \
-      std::size_t n) {                                                         \
+      std::basic_string<TYPE> & s, std::size_t n) {                            \
     unsafeStringSetLargerSizeImpl(s, n);                                       \
   }                                                                            \
   }                                                                            \
@@ -167,8 +171,7 @@ namespace detail {
 template <typename Tag, typename T, typename A, A Ptr__set_size>
 struct MakeUnsafeStringSetLargerSize {
   friend void unsafeStringSetLargerSizeImpl(
-      std::basic_string<T>& s,
-      std::size_t n) {
+      std::basic_string<T>& s, std::size_t n) {
     // s.__set_size(n);
     (s.*Ptr__set_size)(n);
     (&s[0])[n] = '\0';
@@ -190,8 +193,7 @@ struct MakeUnsafeStringSetLargerSize {
 template <typename Tag, typename T, typename A, A Ptr_M_set_length>
 struct MakeUnsafeStringSetLargerSize {
   friend void unsafeStringSetLargerSizeImpl(
-      std::basic_string<T>& s,
-      std::size_t n) {
+      std::basic_string<T>& s, std::size_t n) {
     // s._M_set_length(n);
     (s.*Ptr_M_set_length)(n);
   }
@@ -218,8 +220,7 @@ template <
     B Ptr_M_set_length_and_sharable>
 struct MakeUnsafeStringSetLargerSize {
   friend void unsafeStringSetLargerSizeImpl(
-      std::basic_string<T>& s,
-      std::size_t n) {
+      std::basic_string<T>& s, std::size_t n) {
     // s._M_rep()->_M_set_length_and_sharable(n);
     auto rep = (s.*Ptr_M_rep)();
     (rep->*Ptr_M_set_length_and_sharable)(n);
@@ -241,19 +242,16 @@ struct MakeUnsafeStringSetLargerSize {
   FOLLY_DECLARE_STRING_RESIZE_WITHOUT_INIT_IMPL(TYPE)
 
 #elif defined(_MSC_VER)
-// MSVC
 
 template <typename Tag, typename T, typename A, A Ptr_Eos>
 struct MakeUnsafeStringSetLargerSize {
   friend void unsafeStringSetLargerSizeImpl(
-      std::basic_string<T>& s,
-      std::size_t n) {
-    // _Eos method is public for _MSC_VER <= 1916, private after
-    // s._Eos(n);
+      std::basic_string<T>& s, std::size_t n) {
     (s.*Ptr_Eos)(n);
   }
 };
 
+#if _MSC_VER < 1939
 #define FOLLY_DECLARE_STRING_RESIZE_WITHOUT_INIT(TYPE)          \
   template void std::basic_string<TYPE>::_Eos(std::size_t);     \
   template struct folly::detail::MakeUnsafeStringSetLargerSize< \
@@ -262,7 +260,15 @@ struct MakeUnsafeStringSetLargerSize {
       void (std::basic_string<TYPE>::*)(std::size_t),           \
       &std::basic_string<TYPE>::_Eos>;                          \
   FOLLY_DECLARE_STRING_RESIZE_WITHOUT_INIT_IMPL(TYPE)
-
+#else
+#define FOLLY_DECLARE_STRING_RESIZE_WITHOUT_INIT(TYPE)          \
+  template struct folly::detail::MakeUnsafeStringSetLargerSize< \
+      FollyMemoryDetailTranslationUnitTag,                      \
+      TYPE,                                                     \
+      void (std::basic_string<TYPE>::*)(std::size_t),           \
+      &std::basic_string<TYPE>::_Eos>;                          \
+  FOLLY_DECLARE_STRING_RESIZE_WITHOUT_INIT_IMPL(TYPE)
+#endif // _MSC_VER < 1939
 #else
 #warning \
     "No implementation for resizeWithoutInitialization of std::basic_string"
@@ -286,8 +292,7 @@ namespace detail {
   void unsafeVectorSetLargerSizeImpl(std::vector<TYPE>& v, std::size_t); \
   template <>                                                            \
   inline void unsafeVectorSetLargerSize<TYPE>(                           \
-      std::vector<TYPE> & v,                                             \
-      std::size_t n) {                                                   \
+      std::vector<TYPE> & v, std::size_t n) {                            \
     unsafeVectorSetLargerSizeImpl(v, n);                                 \
   }                                                                      \
   }                                                                      \
@@ -296,93 +301,88 @@ namespace detail {
 #if defined(_LIBCPP_VECTOR)
 // libc++
 
-template <
-    typename Tag,
-    typename T,
-    typename A,
-    A Ptr__end_,
-    typename B,
-    B Ptr__annotate_contiguous_container_>
-struct MakeUnsafeVectorSetLargerSize {
-  friend void unsafeVectorSetLargerSizeImpl(std::vector<T>& v, std::size_t n) {
-    // v.__end_ += (n - v.size());
-    using Base = std::__vector_base<T, std::allocator<T>>;
-    static_assert(
-        std::is_standard_layout<std::vector<T>>::value &&
-            sizeof(std::vector<T>) == sizeof(Base),
-        "reinterpret_cast safety conditions not met");
-    const auto old_size = v.size();
-    reinterpret_cast<Base&>(v).*Ptr__end_ += (n - v.size());
+template <typename T, typename Alloc = std::allocator<T>>
+struct std_vector_layout {
+  static_assert(!std::is_same<T, bool>::value, "bad instance");
+  using allocator_type = Alloc;
+  using pointer = typename std::allocator_traits<allocator_type>::pointer;
 
-    // libc++ contiguous containers use special annotation functions that help
-    // the address sanitizer to detect improper memory accesses. When ASAN is
-    // enabled we need to call the appropriate annotation functions in order to
-    // stop ASAN from reporting false positives. When ASAN is disabled, the
-    // annotation function is a no-op.
-    (v.*Ptr__annotate_contiguous_container_)(
-        v.data(),
-        v.data() + v.capacity(),
-        v.data() + old_size,
-        v.data() + v.size());
-  }
+  pointer __begin_;
+  pointer __end_;
+  std::__compressed_pair<pointer, allocator_type> __end_cap_;
 };
 
-#define FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT(TYPE)               \
-  template struct folly::detail::MakeUnsafeVectorSetLargerSize<      \
-      FollyMemoryDetailTranslationUnitTag,                           \
-      TYPE,                                                          \
-      TYPE*(std::__vector_base<TYPE, std::allocator<TYPE>>::*),      \
-      &std::vector<TYPE>::__end_,                                    \
-      void (std::vector<TYPE>::*)(                                   \
-          const void*, const void*, const void*, const void*) const, \
-      &std::vector<TYPE>::__annotate_contiguous_container>;          \
-  FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT_IMPL(TYPE)
+template <typename T>
+void unsafeVectorSetLargerSize(std::vector<T>& v, std::size_t n) {
+  using real = std::vector<T>;
+  using fake = std_vector_layout<T>;
+  using pointer = typename fake::pointer;
+  static_assert(sizeof(fake) == sizeof(real), "mismatch");
+  static_assert(alignof(fake) == alignof(real), "mismatch");
+
+  auto const l = reinterpret_cast<unsigned char*>(&v);
+
+  auto const s = v.size();
+
+  auto& e = *reinterpret_cast<pointer*>(l + offsetof(fake, __end_));
+  e += (n - s);
+
+  // libc++ contiguous containers use special annotation functions that help
+  // the address sanitizer to detect improper memory accesses. When ASAN is
+  // enabled we need to call the appropriate annotation functions in order to
+  // stop ASAN from reporting false positives. When ASAN is disabled, the
+  // annotation function is a no-op.
+#ifndef _LIBCPP_HAS_NO_ASAN
+  __sanitizer_annotate_contiguous_container(
+      v.data(), v.data() + v.capacity(), v.data() + s, v.data() + n);
+#endif
+}
+
+#define FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT(TYPE)
 
 #elif defined(_GLIBCXX_VECTOR)
 // libstdc++
 
-template <
-    typename Tag,
-    typename T,
-    typename A,
-    A Ptr_M_impl,
-    typename B,
-    B Ptr_M_finish>
-struct MakeUnsafeVectorSetLargerSize : std::vector<T> {
-  friend void unsafeVectorSetLargerSizeImpl(std::vector<T>& v, std::size_t n) {
-    // v._M_impl._M_finish += (n - v.size());
-    (v.*Ptr_M_impl).*Ptr_M_finish += (n - v.size());
-  }
+template <typename T, typename Alloc>
+struct std_vector_layout_impl {
+  static_assert(!std::is_same<T, bool>::value, "bad instance");
+  template <typename A>
+  using alloc_traits_t = typename __gnu_cxx::__alloc_traits<A>;
+  using allocator_type = Alloc;
+  using allocator_traits = alloc_traits_t<allocator_type>;
+  using rebound_allocator_type =
+      typename allocator_traits::template rebind<T>::other;
+  using rebound_allocator_traits = alloc_traits_t<rebound_allocator_type>;
+  using pointer = typename rebound_allocator_traits::pointer;
+
+  struct impl_type : rebound_allocator_type {
+    pointer _M_start;
+    pointer _M_finish;
+    pointer _M_end_of_storage;
+  };
+};
+template <typename T, typename Alloc = std::allocator<T>>
+struct std_vector_layout : std_vector_layout_impl<T, Alloc>::impl_type {
+  using pointer = typename std_vector_layout_impl<T, Alloc>::pointer;
 };
 
-#define FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT(TYPE)          \
-  template struct folly::detail::MakeUnsafeVectorSetLargerSize< \
-      FollyMemoryDetailTranslationUnitTag,                      \
-      TYPE,                                                     \
-      decltype(&std::vector<TYPE>::_M_impl),                    \
-      &std::vector<TYPE>::_M_impl,                              \
-      decltype(&std::vector<TYPE>::_Vector_impl::_M_finish),    \
-      &std::vector<TYPE>::_Vector_impl::_M_finish>;             \
-  FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT_IMPL(TYPE)
+template <typename T>
+void unsafeVectorSetLargerSize(std::vector<T>& v, std::size_t n) {
+  using real = std::vector<T>;
+  using fake = std_vector_layout<T>;
+  using pointer = typename fake::pointer;
+  static_assert(sizeof(fake) == sizeof(real), "mismatch");
+  static_assert(alignof(fake) == alignof(real), "mismatch");
 
-#elif defined(_MSC_VER) && _MSC_VER <= 1916
-// MSVC <= VS2017
+  auto const l = reinterpret_cast<unsigned char*>(&v);
 
-template <typename Tag, typename T>
-struct MakeUnsafeVectorSetLargerSize : std::vector<T> {
-  friend void unsafeVectorSetLargerSizeImpl(std::vector<T>& v, std::size_t n) {
-    v._Mylast() += (n - v.size());
-  }
-};
+  auto& e = *reinterpret_cast<pointer*>(l + offsetof(fake, _M_finish));
+  e += (n - v.size());
+}
 
-#define FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT(TYPE)          \
-  template struct folly::detail::MakeUnsafeVectorSetLargerSize< \
-      FollyMemoryDetailTranslationUnitTag,                      \
-      TYPE>;                                                    \
-  FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT_IMPL(TYPE)
+#define FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT(TYPE)
 
-#elif defined(_MSC_VER) && _MSC_VER > 1916
-// MSVC >= VS2019
+#elif defined(_MSC_VER)
 
 template <
     typename Tag,
@@ -408,8 +408,8 @@ struct MakeUnsafeVectorSetLargerSize : std::vector<T> {
       &std::vector<TYPE>::_Mypair,                                             \
       decltype(&decltype(std::declval<std::vector<TYPE>>()._Mypair)::_Myval2), \
       &decltype(std::declval<std::vector<TYPE>>()._Mypair)::_Myval2,           \
-      decltype(&decltype(                                                      \
-          std::declval<std::vector<TYPE>>()._Mypair._Myval2)::_Mylast),        \
+      decltype(&decltype(std::declval<std::vector<TYPE>>()                     \
+                             ._Mypair._Myval2)::_Mylast),                      \
       &decltype(std::declval<std::vector<TYPE>>()._Mypair._Myval2)::_Mylast>;  \
   FOLLY_DECLARE_VECTOR_RESIZE_WITHOUT_INIT_IMPL(TYPE)
 

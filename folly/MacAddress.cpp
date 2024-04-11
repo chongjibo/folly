@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -92,8 +92,7 @@ void MacAddress::setFromBinary(ByteRange value) {
 
 template <typename OnError>
 Expected<Unit, MacAddressFormatError> MacAddress::setFromString(
-    StringPiece str,
-    OnError err) {
+    StringPiece str, OnError err) {
   // Helper function to convert a single hex char into an integer
   auto isSeparatorChar = [](char c) { return c == ':' || c == '-'; };
 
@@ -170,8 +169,7 @@ Expected<Unit, MacAddressFormatError> MacAddress::setFromString(
 
 template <typename OnError>
 Expected<Unit, MacAddressFormatError> MacAddress::setFromBinary(
-    ByteRange value,
-    OnError err) {
+    ByteRange value, OnError err) {
   if (value.size() != SIZE) {
     return err(MacAddressFormatError::Invalid, [&] {
       throw invalid_argument(

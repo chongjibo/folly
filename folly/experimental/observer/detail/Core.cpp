@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,7 +54,7 @@ size_t Core::refresh(size_t version) {
   }
 
   {
-    std::lock_guard<std::mutex> lgRefresh(refreshMutex_);
+    std::lock_guard<SharedMutex> lgRefresh(refreshMutex_);
 
     // Recheck in case this code was already refreshed
     if (version_ >= version) {

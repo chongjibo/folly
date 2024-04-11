@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,16 @@
 
 #pragma once
 
-#include <folly/Function.h>
-#include <folly/Range.h>
-#include <folly/hash/Hash.h>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
 #include <vector>
+
+#include <folly/Function.h>
+#include <folly/Range.h>
+#include <folly/container/F14Map.h>
+#include <folly/hash/Hash.h>
 
 namespace folly {
 
@@ -49,11 +50,17 @@ namespace folly {
  *       "run each function periodically in its own thread".
  *
  * start() schedules the functions, while shutdown() terminates further
- * scheduling.
+ * scheduling (after any running function terminates).
  */
 class FunctionScheduler {
  public:
   FunctionScheduler();
+
+  /**
+   * On destruction, ensures that this instance is shutdown prior to deletion.
+   *
+   * See `shutdown()`.
+   */
   ~FunctionScheduler();
 
   /**
@@ -65,9 +72,7 @@ class FunctionScheduler {
    *
    * NOTE: it's only safe to set this before calling start()
    */
-  void setSteady(bool steady) {
-    steady_ = steady;
-  }
+  void setSteady(bool steady) { steady_ = steady; }
 
   /*
    * Parameters to control the function interval.
@@ -80,9 +85,9 @@ class FunctionScheduler {
    */
   struct LatencyDistribution {
     bool isPoisson;
-    double poissonMean;
+    std::chrono::microseconds poissonMean;
 
-    LatencyDistribution(bool poisson, double mean)
+    LatencyDistribution(bool poisson, std::chrono::microseconds mean)
         : isPoisson(poisson), poissonMean(mean) {}
   };
 
@@ -99,9 +104,9 @@ class FunctionScheduler {
    */
   void addFunction(
       Function<void()>&& cb,
-      std::chrono::milliseconds interval,
+      std::chrono::microseconds interval,
       StringPiece nameID = StringPiece(),
-      std::chrono::milliseconds startDelay = std::chrono::milliseconds(0));
+      std::chrono::microseconds startDelay = std::chrono::microseconds(0));
 
   /*
    * Add a new function to the FunctionScheduler with a specified
@@ -109,10 +114,10 @@ class FunctionScheduler {
    */
   void addFunction(
       Function<void()>&& cb,
-      std::chrono::milliseconds interval,
+      std::chrono::microseconds interval,
       const LatencyDistribution& latencyDistr,
       StringPiece nameID = StringPiece(),
-      std::chrono::milliseconds startDelay = std::chrono::milliseconds(0));
+      std::chrono::microseconds startDelay = std::chrono::microseconds(0));
 
   /**
    * Adds a new function to the FunctionScheduler to run only once.
@@ -120,7 +125,7 @@ class FunctionScheduler {
   void addFunctionOnce(
       Function<void()>&& cb,
       StringPiece nameID = StringPiece(),
-      std::chrono::milliseconds startDelay = std::chrono::milliseconds(0));
+      std::chrono::microseconds startDelay = std::chrono::microseconds(0));
 
   /**
    * Add a new function to the FunctionScheduler with the time
@@ -129,10 +134,10 @@ class FunctionScheduler {
    */
   void addFunctionUniformDistribution(
       Function<void()>&& cb,
-      std::chrono::milliseconds minInterval,
-      std::chrono::milliseconds maxInterval,
+      std::chrono::microseconds minInterval,
+      std::chrono::microseconds maxInterval,
       StringPiece nameID,
-      std::chrono::milliseconds startDelay);
+      std::chrono::microseconds startDelay);
 
   /**
    * Add a new function to the FunctionScheduler whose start times are attempted
@@ -143,15 +148,15 @@ class FunctionScheduler {
    */
   void addFunctionConsistentDelay(
       Function<void()>&& cb,
-      std::chrono::milliseconds interval,
+      std::chrono::microseconds interval,
       StringPiece nameID = StringPiece(),
-      std::chrono::milliseconds startDelay = std::chrono::milliseconds(0));
+      std::chrono::microseconds startDelay = std::chrono::microseconds(0));
 
   /**
    * A type alias for function that is called to determine the time
    * interval for the next scheduled run.
    */
-  using IntervalDistributionFunc = Function<std::chrono::milliseconds()>;
+  using IntervalDistributionFunc = Function<std::chrono::microseconds()>;
   /**
    * A type alias for function that returns the next run time, given the current
    * run time and the current start time.
@@ -174,7 +179,7 @@ class FunctionScheduler {
       IntervalDistributionFunc&& intervalFunc,
       const std::string& nameID,
       const std::string& intervalDescr,
-      std::chrono::milliseconds startDelay);
+      std::chrono::microseconds startDelay);
 
   /**
    * Like addFunctionGenericDistribution, adds a new function to the
@@ -186,7 +191,7 @@ class FunctionScheduler {
       NextRunTimeFunc&& fn,
       const std::string& nameID,
       const std::string& intervalDescr,
-      std::chrono::milliseconds startDelay);
+      std::chrono::microseconds startDelay);
 
   /**
    * Cancels the function with the specified name, so it will no longer be run.
@@ -223,8 +228,16 @@ class FunctionScheduler {
   /**
    * Stops the FunctionScheduler.
    *
-   * It may be restarted later by calling start() again.
-   * Returns false if the scheduler was not running.
+   * This method blocks until any running function terminates. It is also called
+   * automatically on FunctionScheduler destruction.
+   *
+   * This FunctionScheduler may be restarted later by calling start() again.
+   *
+   * Returns false if the scheduler was not running (in which case this method
+   * was a no-op and did not block on any function running). Returns true
+   * otherwise.
+   *
+   * Thread-safe.
    */
   bool shutdown();
 
@@ -239,7 +252,7 @@ class FunctionScheduler {
     NextRunTimeFunc nextRunTimeFunc;
     std::chrono::steady_clock::time_point nextRunTime;
     std::string name;
-    std::chrono::milliseconds startDelay;
+    std::chrono::microseconds startDelay;
     std::string intervalDescr;
     bool runOnce;
 
@@ -248,7 +261,7 @@ class FunctionScheduler {
         IntervalDistributionFunc&& intervalFn,
         const std::string& nameID,
         const std::string& intervalDistDescription,
-        std::chrono::milliseconds delay,
+        std::chrono::microseconds delay,
         bool once)
         : RepeatFunc(
               std::move(cback),
@@ -263,7 +276,7 @@ class FunctionScheduler {
         NextRunTimeFunc&& nextRunTimeFn,
         const std::string& nameID,
         const std::string& intervalDistDescription,
-        std::chrono::milliseconds delay,
+        std::chrono::microseconds delay,
         bool once)
         : cb(std::move(cback)),
           nextRunTimeFunc(std::move(nextRunTimeFn)),
@@ -275,10 +288,10 @@ class FunctionScheduler {
 
     static NextRunTimeFunc getNextRunTimeFunc(
         IntervalDistributionFunc&& intervalFn) {
-      return [intervalFn = std::move(intervalFn)](
+      return [intervalFn_2 = std::move(intervalFn)](
                  std::chrono::steady_clock::time_point /* curNextRunTime */,
                  std::chrono::steady_clock::time_point curTime) mutable {
-        return curTime + intervalFn();
+        return curTime + intervalFn_2();
       };
     }
 
@@ -298,9 +311,7 @@ class FunctionScheduler {
       // Simply reset cb to an empty function.
       cb = {};
     }
-    bool isValid() const {
-      return bool(cb);
-    }
+    bool isValid() const { return bool(cb); }
   };
 
   struct RunTimeOrder {
@@ -311,8 +322,8 @@ class FunctionScheduler {
     }
   };
 
-  typedef std::vector<std::unique_ptr<RepeatFunc>> FunctionHeap;
-  typedef std::unordered_map<StringPiece, RepeatFunc*, Hash> FunctionMap;
+  using FunctionHeap = std::vector<std::unique_ptr<RepeatFunc>>;
+  using FunctionMap = folly::F14FastMap<StringPiece, RepeatFunc*, Hash>;
 
   void run();
   void runOneFunction(
@@ -329,7 +340,7 @@ class FunctionScheduler {
       RepeatFuncNextRunTimeFunc&& fn,
       const std::string& nameID,
       const std::string& intervalDescr,
-      std::chrono::milliseconds startDelay,
+      std::chrono::microseconds startDelay,
       bool runOnce);
 
   void addFunctionInternal(
@@ -337,21 +348,20 @@ class FunctionScheduler {
       NextRunTimeFunc&& fn,
       const std::string& nameID,
       const std::string& intervalDescr,
-      std::chrono::milliseconds startDelay,
+      std::chrono::microseconds startDelay,
       bool runOnce);
   void addFunctionInternal(
       Function<void()>&& cb,
       IntervalDistributionFunc&& fn,
       const std::string& nameID,
       const std::string& intervalDescr,
-      std::chrono::milliseconds startDelay,
+      std::chrono::microseconds startDelay,
       bool runOnce);
 
   // Return true if the current function is being canceled
   bool cancelAllFunctionsWithLock(std::unique_lock<std::mutex>& lock);
   bool cancelFunctionWithLock(
-      std::unique_lock<std::mutex>& lock,
-      StringPiece nameID);
+      std::unique_lock<std::mutex>& lock, StringPiece nameID);
 
   std::thread thread_;
 
@@ -373,7 +383,7 @@ class FunctionScheduler {
   // or when the FunctionScheduler is stopped.
   std::condition_variable runningCondvar_;
 
-  std::string threadName_;
+  std::string threadName_{"FuncSched"};
   bool steady_{false};
   bool cancellingCurrentFunction_{false};
 };

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,9 +46,7 @@ class Concatenator {
   void cat(const std::string& name);
   void cat(FILE* file);
 
-  bool printLineNumbers() const {
-    return printLineNumbers_;
-  }
+  bool printLineNumbers() const { return printLineNumbers_; }
 
  private:
   bool printLineNumbers_;
@@ -68,9 +66,7 @@ class Concatenator {
 void Concatenator::cat(FILE* file) {
   char* lineBuf = nullptr;
   size_t lineBufSize = 0;
-  SCOPE_EXIT {
-    free(lineBuf);
-  };
+  SCOPE_EXIT { free(lineBuf); };
 
   ssize_t n;
   while ((n = getline(&lineBuf, &lineBufSize, file)) >= 0) {
@@ -105,8 +101,7 @@ void Concatenator::cat(const std::string& name) {
 }
 
 void runCat(
-    const po::variables_map& options,
-    const std::vector<std::string>& args) {
+    const po::variables_map& options, const std::vector<std::string>& args) {
   Concatenator concatenator(options);
   bool ok = true;
   auto catFile = [&concatenator, &ok](const std::string& name) {
@@ -140,8 +135,7 @@ void runCat(
 }
 
 void runEcho(
-    const po::variables_map& options,
-    const std::vector<std::string>& args) {
+    const po::variables_map& options, const std::vector<std::string>& args) {
   try {
     const char* sep = "";
     for (auto& arg : args) {

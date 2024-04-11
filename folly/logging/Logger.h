@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -106,15 +106,16 @@
 #define FB_LOG_IMPL(logger, level, type, ...)                          \
   (!(logger).getCategory()->logCheck(level))                           \
       ? ::folly::logDisabledHelper(                                    \
-            ::folly::bool_constant<::folly::isLogLevelFatal(level)>{}) \
+            ::std::bool_constant<::folly::isLogLevelFatal(level)>{})   \
       : ::folly::LogStreamVoidify<::folly::isLogLevelFatal(level)>{} & \
-          ::folly::LogStreamProcessor{(logger).getCategory(),          \
-                                      (level),                         \
-                                      __FILE__,                        \
-                                      __LINE__,                        \
-                                      __func__,                        \
-                                      (type),                          \
-                                      ##__VA_ARGS__}                   \
+          ::folly::LogStreamProcessor{                                 \
+              (logger).getCategory(),                                  \
+              (level),                                                 \
+              __FILE__,                                                \
+              __LINE__,                                                \
+              __func__,                                                \
+              (type),                                                  \
+              ##__VA_ARGS__}                                           \
               .stream()
 
 /**
@@ -126,18 +127,19 @@
  * instead of a compile-time constant, we cannot detect at compile time if this
  * is a fatal log message or not.
  */
-#define FB_LOG_RAW_IMPL(                                      \
-    logger, level, filename, line, functionName, type, ...)   \
-  (!(logger).getCategory()->logCheck(level))                  \
-      ? static_cast<void>(0)                                  \
-      : ::folly::LogStreamVoidify<false>{} &                  \
-          ::folly::LogStreamProcessor{(logger).getCategory(), \
-                                      (level),                \
-                                      (filename),             \
-                                      (line),                 \
-                                      (functionName),         \
-                                      (type),                 \
-                                      ##__VA_ARGS__}          \
+#define FB_LOG_RAW_IMPL(                                    \
+    logger, level, filename, line, functionName, type, ...) \
+  (!(logger).getCategory()->logCheck(level))                \
+      ? static_cast<void>(0)                                \
+      : ::folly::LogStreamVoidify<false>{} &                \
+          ::folly::LogStreamProcessor{                      \
+              (logger).getCategory(),                       \
+              (level),                                      \
+              (filename),                                   \
+              (line),                                       \
+              (functionName),                               \
+              (type),                                       \
+              ##__VA_ARGS__}                                \
               .stream()
 
 namespace folly {
@@ -179,9 +181,7 @@ class Logger {
   /**
    * Get the LogCategory that this Logger refers to.
    */
-  LogCategory* getCategory() const {
-    return category_;
-  }
+  LogCategory* getCategory() const { return category_; }
 
  private:
   LogCategory* const category_{nullptr};

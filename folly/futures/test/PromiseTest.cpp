@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
+#include <memory>
+
 #include <folly/futures/Future.h>
 #include <folly/portability/GTest.h>
-
-#include <memory>
 
 using namespace folly;
 using std::string;
@@ -365,7 +365,7 @@ TEST(Promise, brokenOnDelete) {
 
   EXPECT_TRUE(f.isReady());
 
-  auto t = f.getTry();
+  auto t = f.result();
 
   EXPECT_TRUE(t.hasException<BrokenPromise>());
 }
@@ -380,8 +380,8 @@ TEST(Promise, brokenPromiseHasTypeInfo) {
   pInt.reset();
   pFloat.reset();
 
-  auto whatInt = fInt.getTry().exception().what();
-  auto whatFloat = fFloat.getTry().exception().what();
-
-  EXPECT_NE(whatInt, whatFloat);
+  std::string whatInt = fInt.result().exception().get_exception()->what();
+  std::string whatFloat = fFloat.result().exception().get_exception()->what();
+  EXPECT_EQ(whatInt, "Broken promise for type name `int`");
+  EXPECT_EQ(whatFloat, "Broken promise for type name `float`");
 }

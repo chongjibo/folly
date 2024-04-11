@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,16 @@ namespace fibers {
  **/
 class TimedMutex {
  public:
-  TimedMutex() noexcept {}
+  struct Options {
+    constexpr Options(bool stealing = true) : stealing_(stealing) {}
+    /**
+     * Prefer thread waiter and steal from fiber waiters if possible
+     */
+    bool stealing_ = true;
+  };
+
+  TimedMutex(Options options = Options()) noexcept
+      : options_(std::move(options)) {}
 
   ~TimedMutex() {
     DCHECK(threadWaiters_.empty());
@@ -80,6 +89,7 @@ class TimedMutex {
 
   using MutexWaiterList = folly::IntrusiveList<MutexWaiter, &MutexWaiter::hook>;
 
+  const Options options_;
   folly::SpinLock lock_; //< lock to protect waiter list
   bool locked_ = false; //< is this locked by some thread?
   MutexWaiterList threadWaiters_; //< list of waiters
@@ -167,48 +177,6 @@ class TimedRWMutexImpl {
   // Downgrade the lock. The thread / fiber will wake up all readers if there
   // are any.
   void unlock_and_lock_shared();
-
-  class FOLLY_NODISCARD ReadHolder {
-   public:
-    explicit ReadHolder(TimedRWMutexImpl& lock) : lock_(&lock) {
-      lock_->lock_shared();
-    }
-
-    ~ReadHolder() {
-      if (lock_) {
-        lock_->unlock_shared();
-      }
-    }
-
-    ReadHolder(const ReadHolder& rhs) = delete;
-    ReadHolder& operator=(const ReadHolder& rhs) = delete;
-    ReadHolder(ReadHolder&& rhs) = delete;
-    ReadHolder& operator=(ReadHolder&& rhs) = delete;
-
-   private:
-    TimedRWMutexImpl* lock_;
-  };
-
-  class FOLLY_NODISCARD WriteHolder {
-   public:
-    explicit WriteHolder(TimedRWMutexImpl& lock) : lock_(&lock) {
-      lock_->lock();
-    }
-
-    ~WriteHolder() {
-      if (lock_) {
-        lock_->unlock();
-      }
-    }
-
-    WriteHolder(const WriteHolder& rhs) = delete;
-    WriteHolder& operator=(const WriteHolder& rhs) = delete;
-    WriteHolder(WriteHolder&& rhs) = delete;
-    WriteHolder& operator=(WriteHolder&& rhs) = delete;
-
-   private:
-    TimedRWMutexImpl* lock_;
-  };
 
  private:
   // invariants that must hold when the lock is not held by anyone

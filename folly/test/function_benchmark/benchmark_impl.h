@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,12 +26,9 @@ class VirtualClass;
 void BM_fn_ptr_invoke_impl(int iters, void (*fn)());
 void BM_std_function_invoke_impl(int iters, const std::function<void()>& fn);
 void BM_Function_invoke_impl(
-    int iters,
-    const folly::Function<void() const>& fn);
+    int iters, const folly::Function<void() const>& fn);
 void BM_mem_fn_invoke_impl(
-    int iters,
-    TestClass* tc,
-    void (TestClass::*memfn)());
+    int iters, TestClass* tc, void (TestClass::*memfn)());
 void BM_virtual_fn_invoke_impl(int iters, VirtualClass* vc);
 
 // Inlined version of BM_fn_ptr_invoke_impl().

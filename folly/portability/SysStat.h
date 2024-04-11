@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,8 +34,10 @@
 #define S_IROTH S_IRUSR
 #define S_IRWXU (S_IRUSR | S_IWUSR | S_IXUSR)
 #define S_IRWXG (S_IRGRP | S_IWGRP | S_IXGRP)
+#define S_IRWXO (S_IROTH | S_IWOTH | S_IXOTH)
 
 #define S_ISDIR(mode) (((mode) & (_S_IFDIR)) == (_S_IFDIR) ? 1 : 0)
+#define S_ISREG(mode) (((mode) & (_S_IFREG)) == (_S_IFREG) ? 1 : 0)
 
 // This isn't defined anywhere, so give a sane value.
 #define MAXSYMLINKS 255

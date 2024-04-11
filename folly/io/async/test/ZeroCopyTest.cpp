@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/io/async/test/ZeroCopy.h>
+
 #include <folly/portability/GTest.h>
 
 using namespace folly;
@@ -22,7 +23,7 @@ using namespace folly;
 static auto constexpr kMaxLoops = 20;
 static auto constexpr kBufferSize = 4096;
 
-TEST(ZeroCopyTest, zero_copy_in_progress) {
+TEST(ZeroCopyTest, zeroCopyInProgress) {
   ZeroCopyTest test(1, kMaxLoops, true, kBufferSize);
   CHECK(test.run());
 }

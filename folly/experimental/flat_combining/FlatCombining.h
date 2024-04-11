@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include <folly/Portability.h>
 #include <folly/concurrency/CacheLocality.h>
 #include <folly/synchronization/SaturatingSemaphore.h>
+#include <folly/system/ThreadName.h>
 
 #include <atomic>
 #include <cassert>
@@ -128,73 +129,39 @@ class FlatCombining {
       setDisconnected();
     }
 
-    void setValid() {
-      valid_.post();
-    }
+    void setValid() { valid_.post(); }
 
-    void clearValid() {
-      valid_.reset();
-    }
+    void clearValid() { valid_.reset(); }
 
-    bool isValid() const {
-      return valid_.ready();
-    }
+    bool isValid() const { return valid_.ready(); }
 
-    void setDone() {
-      done_.post();
-    }
+    void setDone() { done_.post(); }
 
-    void clearDone() {
-      done_.reset();
-    }
+    void clearDone() { done_.reset(); }
 
-    bool isDone() const {
-      return done_.ready();
-    }
+    bool isDone() const { return done_.ready(); }
 
-    void awaitDone() {
-      done_.wait();
-    }
+    void awaitDone() { done_.wait(); }
 
-    void setDisconnected() {
-      disconnected_.post();
-    }
+    void setDisconnected() { disconnected_.post(); }
 
-    void clearDisconnected() {
-      disconnected_.reset();
-    }
+    void clearDisconnected() { disconnected_.reset(); }
 
-    bool isDisconnected() const {
-      return disconnected_.ready();
-    }
+    bool isDisconnected() const { return disconnected_.ready(); }
 
-    void setIndex(const size_t index) {
-      index_ = index;
-    }
+    void setIndex(const size_t index) { index_ = index; }
 
-    size_t getIndex() const {
-      return index_;
-    }
+    size_t getIndex() const { return index_; }
 
-    void setNext(const size_t next) {
-      next_ = next;
-    }
+    void setNext(const size_t next) { next_ = next; }
 
-    size_t getNext() const {
-      return next_;
-    }
+    size_t getNext() const { return next_; }
 
-    void setLast(const uint64_t pass) {
-      last_ = pass;
-    }
+    void setLast(const uint64_t pass) { last_ = pass; }
 
-    uint64_t getLast() const {
-      return last_;
-    }
+    uint64_t getLast() const { return last_; }
 
-    Req& getReq() {
-      return req_;
-    }
+    Req& getReq() { return req_; }
 
     template <typename Func>
     void setFn(Func&& fn) {
@@ -215,9 +182,7 @@ class FlatCombining {
       assert(!fn_);
     }
 
-    SavedFn& getFn() {
-      return fn_;
-    }
+    SavedFn& getFn() { return fn_; }
 
     void complete() {
       clearValid();
@@ -239,16 +204,26 @@ class FlatCombining {
   explicit FlatCombining(
       const bool dedicated = true,
       const uint32_t numRecs = 0, // number of combining records
-      const uint32_t maxOps = 0 // hint of max ops per combining session
-      )
+      const uint32_t maxOps = 0, // hint of max ops per combining session
+      std::optional<std::string> dedicatedCombinerThreadName = std::nullopt)
       : numRecs_(numRecs == 0 ? kDefaultNumRecs : numRecs),
         maxOps_(maxOps == 0 ? kDefaultMaxOps : maxOps),
         recs_(NULL_INDEX),
         dedicated_(dedicated),
         recsPool_(numRecs_) {
+    if (dedicatedCombinerThreadName && !dedicated) {
+      throw std::runtime_error(
+          "can't set the name of a dedicated combiner thread if this thread is not created at all");
+    }
+
     if (dedicated_) {
       // dedicated combiner thread
-      combiner_ = std::thread([this] { dedicatedCombining(); });
+      combiner_ = std::thread([this, dedicatedCombinerThreadName] {
+        if (dedicatedCombinerThreadName) {
+          folly::setThreadName(*dedicatedCombinerThreadName);
+        }
+        dedicatedCombining();
+      });
     }
   }
 
@@ -275,19 +250,13 @@ class FlatCombining {
   }
 
   // Give the caller exclusive access.
-  void acquireExclusive() {
-    m_.lock();
-  }
+  void acquireExclusive() { m_.lock(); }
 
   // Try to give the caller exclusive access. Returns true iff successful.
-  bool tryExclusive() {
-    return m_.try_lock();
-  }
+  bool tryExclusive() { return m_.try_lock(); }
 
   // Release exclusive access. The caller must have exclusive access.
-  void releaseExclusive() {
-    m_.unlock();
-  }
+  void releaseExclusive() { m_.unlock(); }
 
   // Give the lock holder ownership of the mutex and exclusive access.
   // No need for explicit release.
@@ -396,24 +365,16 @@ class FlatCombining {
   }
 
   // Returns the number of uncombined operations so far.
-  uint64_t getNumUncombined() const {
-    return uncombined_;
-  }
+  uint64_t getNumUncombined() const { return uncombined_; }
 
   // Returns the number of combined operations so far.
-  uint64_t getNumCombined() const {
-    return combined_;
-  }
+  uint64_t getNumCombined() const { return combined_; }
 
   // Returns the number of combining passes so far.
-  uint64_t getNumPasses() const {
-    return passes_;
-  }
+  uint64_t getNumPasses() const { return passes_; }
 
   // Returns the number of combining sessions so far.
-  uint64_t getNumSessions() const {
-    return sessions_;
-  }
+  uint64_t getNumSessions() const { return sessions_; }
 
  protected:
   const size_t NULL_INDEX = 0;
@@ -522,29 +483,17 @@ class FlatCombining {
     }
   }
 
-  size_t getRecsHead() {
-    return recs_.load(std::memory_order_acquire);
-  }
+  size_t getRecsHead() { return recs_.load(std::memory_order_acquire); }
 
-  size_t nextIndex(size_t idx) {
-    return recsPool_[idx].getNext();
-  }
+  size_t nextIndex(size_t idx) { return recsPool_[idx].getNext(); }
 
-  void clearPending() {
-    pending_.reset();
-  }
+  void clearPending() { pending_.reset(); }
 
-  void setPending() {
-    pending_.post();
-  }
+  void setPending() { pending_.post(); }
 
-  bool isPending() const {
-    return pending_.ready();
-  }
+  bool isPending() const { return pending_.ready(); }
 
-  void awaitPending() {
-    pending_.wait();
-  }
+  void awaitPending() { pending_.wait(); }
 
   uint64_t combiningSession() {
     uint64_t combined = 0;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,18 +15,14 @@
  */
 
 #include <folly/futures/ThreadWheelTimekeeper.h>
-#include <folly/futures/WTCallback.h>
 
-#include <folly/Chrono.h>
-#include <folly/Singleton.h>
-#include <folly/futures/Future.h>
 #include <future>
 
-namespace folly {
+#include <folly/Chrono.h>
+#include <folly/futures/Future.h>
+#include <folly/futures/WTCallback.h>
 
-namespace {
-Singleton<ThreadWheelTimekeeper> timekeeperSingleton_;
-}
+namespace folly {
 
 ThreadWheelTimekeeper::ThreadWheelTimekeeper()
     : thread_([this] { eventBase_.loopForever(); }),
@@ -48,9 +44,8 @@ ThreadWheelTimekeeper::~ThreadWheelTimekeeper() {
 }
 
 SemiFuture<Unit> ThreadWheelTimekeeper::after(HighResDuration dur) {
-  auto cob = WTCallback<HHWheelTimer>::create(&eventBase_);
-  auto f = cob->getSemiFuture();
-  //
+  auto [cob, sf] = WTCallback<HHWheelTimer>::create(&eventBase_);
+
   // Even shared_ptr of cob is captured in lambda this is still somewhat *racy*
   // because it will be released once timeout is scheduled. So technically there
   // is no gurantee that EventBase thread can safely call timeout callback.
@@ -63,19 +58,11 @@ SemiFuture<Unit> ThreadWheelTimekeeper::after(HighResDuration dur) {
   // canceling timeout is executed in EventBase thread, the actual timeout
   // callback has either been executed, or will never be executed. So we are
   // fine here.
-  //
-  eventBase_.runInEventBaseThread([this, cob, dur] {
-    wheelTimer_->scheduleTimeout(cob.get(), folly::chrono::ceil<Duration>(dur));
+  eventBase_.runInEventBaseThread([this, cob2 = std::move(cob), dur] {
+    wheelTimer_->scheduleTimeout(
+        cob2.get(), folly::chrono::ceil<Duration>(dur));
   });
-  return f;
+  return std::move(sf);
 }
-
-namespace detail {
-
-std::shared_ptr<Timekeeper> getTimekeeperSingleton() {
-  return timekeeperSingleton_.try_get();
-}
-
-} // namespace detail
 
 } // namespace folly

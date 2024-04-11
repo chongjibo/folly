@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,8 +32,7 @@ void TimerFDTimeoutManager::onTimeout() noexcept {
 }
 
 void TimerFDTimeoutManager::scheduleTimeout(
-    Callback* callback,
-    std::chrono::microseconds timeout) {
+    Callback* callback, std::chrono::microseconds timeout) {
   cancelTimeout(callback);
   // we cannot schedule a timeout of 0 - this will stop the timer
   if (FOLLY_UNLIKELY(!timeout.count())) {
@@ -50,14 +49,7 @@ void TimerFDTimeoutManager::scheduleTimeout(
 
   // now add the callback
   // handle entries that expire at the same time
-  auto iter = callbacks_.find(expirationTimeUsec);
-  if (iter != callbacks_.end()) {
-    iter->second.push_back(*callback);
-  } else {
-    CallbackList list;
-    list.push_back(*callback);
-    callbacks_.emplace(expirationTimeUsec, std::move(list));
-  }
+  callbacks_[expirationTimeUsec].push_back(*callback);
 
   callback->setExpirationTime(this, expirationTimeUsec);
 }

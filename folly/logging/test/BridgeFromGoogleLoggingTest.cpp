@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-#include <folly/logging/xlog.h>
-
 #include <folly/logging/BridgeFromGoogleLogging.h>
+
 #include <folly/logging/LogConfigParser.h>
 #include <folly/logging/LogHandler.h>
 #include <folly/logging/LogMessage.h>
 #include <folly/logging/LoggerDB.h>
 #include <folly/logging/test/TestLogHandler.h>
+#include <folly/logging/xlog.h>
 #include <folly/portability/GTest.h>
 #include <folly/test/TestUtils.h>
 

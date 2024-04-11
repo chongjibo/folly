@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
+#include <folly/File.h>
+
 #include <string>
 #include <vector>
 
-#include <folly/File.h>
 #include <folly/Range.h>
 #include <folly/container/Array.h>
 #include <folly/experimental/TestUtil.h>
@@ -119,7 +120,7 @@ TEST(FileGenBufferedTest, FileWriterSimple) {
       byLine(File(file.path().string().c_str())) | eachTo<int>() | sum);
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     DifferentBufferSizes,
     FileGenBufferedTest,
     ::testing::Values(0, 1, 2, 4, 8, 64, 4096));

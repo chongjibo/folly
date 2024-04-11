@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,6 +26,12 @@ def make_chain(data):
     cdef IOBuf tbuf
     cdef IOBuf last = head
     for tbuf in data:
-        last._this.appendChain(tbuf.c_clone())
+        last._this.insertAfterThisOne(tbuf.c_clone())
         last = last.next
     return head
+
+def to_uppercase_string(iobuf: object) -> str:
+    return to_uppercase_string_cpp(iobuf).decode("utf-8")
+
+def to_uppercase_string_heap(iobuf: object) -> str:
+    return to_uppercase_string_cpp_heap(iobuf).decode("utf-8")

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,12 +20,29 @@
 
 namespace folly {
 namespace fibers {
+namespace thread_clock {
+inline std::chrono::steady_clock::time_point now() {
+#ifdef __linux__
+  using std::chrono::nanoseconds;
+  using std::chrono::seconds;
+  timespec tp;
+  clockid_t clockid;
+  if (!pthread_getcpuclockid(pthread_self(), &clockid) &&
+      !clock_gettime(clockid, &tp)) {
+    return std::chrono::steady_clock::time_point(
+        nanoseconds(tp.tv_nsec) + seconds(tp.tv_sec));
+  }
+#endif
+  return std::chrono::steady_clock::now();
+}
+} // namespace thread_clock
 
 template <typename F>
-void Fiber::setFunction(F&& func) {
+void Fiber::setFunction(F&& func, TaskOptions taskOptions) {
   assert(state_ == INVALID);
   func_ = std::forward<F>(func);
   state_ = NOT_STARTED;
+  taskOptions_ = std::move(taskOptions);
 }
 
 template <typename F, typename G>
@@ -34,6 +51,7 @@ void Fiber::setFunctionFinally(F&& resultFunc, G&& finallyFunc) {
   resultFunc_ = std::forward<F>(resultFunc);
   finallyFunc_ = std::forward<G>(finallyFunc);
   state_ = NOT_STARTED;
+  taskOptions_ = TaskOptions();
 }
 
 inline void* Fiber::getUserBuffer() {
@@ -42,36 +60,16 @@ inline void* Fiber::getUserBuffer() {
 
 template <typename T>
 T& Fiber::LocalData::getSlow() {
-  dataSize_ = sizeof(T);
-  dataType_ = &typeid(T);
-  if (sizeof(T) <= kBufferSize) {
-    dataDestructor_ = dataBufferDestructor<T>;
-    data_ = &buffer_;
+  vtable_ = VTable::get<T>();
+  T* data = nullptr;
+  if constexpr (sizeof(T) <= sizeof(Buffer) && alignof(T) <= alignof(Buffer)) {
+    data = new (&buffer_) T();
   } else {
-    dataDestructor_ = dataHeapDestructor<T>;
-    data_ = allocateHeapBuffer(dataSize_);
+    data = new T();
   }
-  dataCopyConstructor_ = dataCopyConstructor<T>;
-
-  new (reinterpret_cast<T*>(data_)) T();
-
-  return *reinterpret_cast<T*>(data_);
+  data_ = data;
+  return *data;
 }
 
-template <typename T>
-void Fiber::LocalData::dataCopyConstructor(void* ptr, const void* other) {
-  new (reinterpret_cast<T*>(ptr)) T(*reinterpret_cast<const T*>(other));
-}
-
-template <typename T>
-void Fiber::LocalData::dataBufferDestructor(void* ptr) {
-  reinterpret_cast<T*>(ptr)->~T();
-}
-
-template <typename T>
-void Fiber::LocalData::dataHeapDestructor(void* ptr) {
-  reinterpret_cast<T*>(ptr)->~T();
-  freeHeapBuffer(ptr);
-}
 } // namespace fibers
 } // namespace folly

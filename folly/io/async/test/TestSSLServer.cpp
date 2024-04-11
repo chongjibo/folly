@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,18 +15,25 @@
  */
 
 #include <folly/io/async/test/TestSSLServer.h>
+
+#include <folly/experimental/TestUtil.h>
 #include <folly/portability/OpenSSL.h>
 
-namespace folly {
+namespace folly::test {
 
-const char* kTestCert = "folly/io/async/test/certs/tests-cert.pem";
-const char* kTestKey = "folly/io/async/test/certs/tests-key.pem";
-const char* kTestCA = "folly/io/async/test/certs/ca-cert.pem";
+#if !defined(FOLLY_CERTS_DIR)
+#define FOLLY_CERTS_DIR "folly/io/async/test/certs"
+#endif
+
+const char* kTestCert = FOLLY_CERTS_DIR "/tests-cert.pem";
+const char* kTestKey = FOLLY_CERTS_DIR "/tests-key.pem";
+const char* kTestCA = FOLLY_CERTS_DIR "/ca-cert.pem";
 const char* kTestCertCN = "Asox Company";
 
-const char* kClientTestCert = "folly/io/async/test/certs/client_cert.pem";
-const char* kClientTestKey = "folly/io/async/test/certs/client_key.pem";
-const char* kClientTestCA = "folly/io/async/test/certs/client_ca_cert.pem";
+const char* kClientTestCert = FOLLY_CERTS_DIR "/client_cert.pem";
+const char* kClientTestKey = FOLLY_CERTS_DIR "/client_key.pem";
+const char* kClientTestCA = FOLLY_CERTS_DIR "/client_ca_cert.pem";
+const char* kClientTestChain = FOLLY_CERTS_DIR "/client_chain.pem";
 
 TestSSLServer::~TestSSLServer() {
   if (thread_.joinable()) {
@@ -36,23 +43,29 @@ TestSSLServer::~TestSSLServer() {
   }
 }
 
-TestSSLServer::TestSSLServer(SSLServerAcceptCallbackBase* acb, bool enableTFO)
-    : acb_(acb) {
+/* static */ std::unique_ptr<SSLContext> TestSSLServer::getDefaultSSLContext() {
   // Set up a default SSL context
-  ctx_ = std::make_shared<SSLContext>();
-  ctx_->loadCertificate(kTestCert);
-  ctx_->loadPrivateKey(kTestKey);
-  ctx_->ciphers("ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH");
+  std::unique_ptr<SSLContext> sslContext = std::make_unique<SSLContext>();
+  sslContext->loadCertificate(find_resource(kTestCert).string().c_str());
+  sslContext->loadPrivateKey(find_resource(kTestKey).string().c_str());
+  sslContext->ciphers("ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH");
   // By default, SSLContext disables OpenSSL's internal session cache.
   // Enable it here on the server for testing session reuse.
-  SSL_CTX_set_session_cache_mode(ctx_->getSSLCtx(), SSL_SESS_CACHE_SERVER);
+  SSL_CTX_set_session_cache_mode(
+      sslContext->getSSLCtx(), SSL_SESS_CACHE_SERVER);
 
+  return sslContext;
+}
+
+TestSSLServer::TestSSLServer(SSLServerAcceptCallbackBase* acb, bool enableTFO)
+    : acb_(acb) {
+  ctx_ = getDefaultSSLContext();
   init(enableTFO);
 }
 
 void TestSSLServer::loadTestCerts() {
-  ctx_->loadCertificate(kTestCert);
-  ctx_->loadPrivateKey(kTestKey);
+  ctx_->loadCertificate(find_resource(kTestCert).string().c_str());
+  ctx_->loadPrivateKey(find_resource(kTestKey).string().c_str());
 }
 
 TestSSLServer::TestSSLServer(
@@ -89,4 +102,5 @@ void TestSSLServer::init(bool enableTFO) {
   });
   LOG(INFO) << "Accepting connections on " << address_;
 }
-} // namespace folly
+
+} // namespace folly::test

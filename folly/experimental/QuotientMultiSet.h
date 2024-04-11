@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -151,8 +151,7 @@ class QuotientMultiSet final {
   }
 
   FOLLY_ALWAYS_INLINE std::pair<uint64_t, const Block*> findRunend(
-      uint64_t occupiedRank,
-      uint64_t startPos) const;
+      uint64_t occupiedRank, uint64_t startPos) const;
 
   const Metadata* metadata_;
   const char* data_;
@@ -184,19 +183,13 @@ class QuotientMultiSet<Instructions>::Iterator {
   // Skip forward to the first key >= the given key.
   bool skipTo(uint64_t key);
 
-  bool done() const {
-    return pos_ == qms_->numSlots_;
-  }
+  bool done() const { return pos_ == qms_->numSlots_; }
 
   // Return current key.
-  uint64_t key() const {
-    return key_;
-  }
+  uint64_t key() const { return key_; }
 
   // Return current position in quotient multiset.
-  size_t pos() const {
-    return pos_;
-  }
+  size_t pos() const { return pos_; }
 
  private:
   // Position the iterator at the end and return false.
@@ -210,24 +203,24 @@ class QuotientMultiSet<Instructions>::Iterator {
   bool nextOccupied();
 
   const QuotientMultiSet<Instructions>* qms_;
-  uint64_t key_;
+  uint64_t key_ = 0;
 
   // State members for the quotient occupied position.
   // Block index of key_'s occupied slot.
-  size_t occBlockIndex_;
+  size_t occBlockIndex_ = -1;
   // Block offset of key_'s occupied slot.
-  uint64_t occOffsetInBlock_;
+  uint64_t occOffsetInBlock_ = 0;
   // Occupied words of the occupiedBlock_ after quotientBlockOffset_.
-  uint64_t occWord_;
+  uint64_t occWord_ = 0;
   // Block of the current occupied slot.
-  const Block* occBlock_;
+  const Block* occBlock_ = nullptr;
 
   // State member for the actual key position.
   // Position of the current key_.
-  size_t pos_;
+  size_t pos_ = -1;
 };
 
-/*
+/**
  * Class to build a QuotientMultiSet.
  *
  * The builder requires inserting elements in non-decreasing order.
@@ -278,9 +271,7 @@ class QuotientMultiSetBuilder final {
   // caller.
   void close(folly::IOBufQueue& buff);
 
-  size_t numReadyBlocks() {
-    return readyBlocks_;
-  }
+  size_t numReadyBlocks() { return readyBlocks_; }
 
  private:
   using BlockPtr = QuotientMultiSet<>::BlockPtr;

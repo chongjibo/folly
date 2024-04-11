@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,8 +23,7 @@ namespace detail {
 
 template <typename BucketT>
 SlidingWindow<BucketT>::SlidingWindow(
-    Function<BucketT(void)> fn,
-    size_t numBuckets)
+    Function<BucketT(void)> fn, size_t numBuckets)
     : fn_(std::move(fn)), curHead_(0) {
   buckets_.reserve(numBuckets);
   for (size_t i = 0; i < numBuckets; ++i) {

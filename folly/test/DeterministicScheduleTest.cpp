@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,12 @@
 
 #include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
+#include <folly/synchronization/AtomicUtil.h>
 
 using namespace folly::test;
+
+static_assert(
+    std::is_same_v<int, folly::atomic_value_type_t<DeterministicAtomic<int>>>);
 
 TEST(DeterministicSchedule, uniform) {
   auto p = DeterministicSchedule::uniform(0);
@@ -114,7 +118,7 @@ TEST(DeterministicSchedule, buggyAdd) {
  *      to maintain global knowledge of shared and private state.
  *   3. Define:
  *        static AuxData* aux_;
- *        static FOLLY_TLS uint32_t tid_;
+ *        static thread_local uint32_t tid_;
  *   4. (Optional) Define gflags for command line options. E.g.:
  *        DEFINE_int64(seed, 0, "Seed for random number generators");
  *   5. (Optionl) Define macros for mangement of auxiliary data. E.g.,
@@ -176,17 +180,11 @@ class AtomicCounter {
  public:
   explicit AtomicCounter(T val) : counter_(val) {}
 
-  void inc() {
-    this->counter_.fetch_add(1);
-  }
+  void inc() { this->counter_.fetch_add(1); }
 
-  void incBug() {
-    this->counter_.store(this->counter_.load() + 1);
-  }
+  void incBug() { this->counter_.store(this->counter_.load() + 1); }
 
-  T load() {
-    return this->counter_.load();
-  }
+  T load() { return this->counter_.load(); }
 
  private:
   Atom<T> counter_ = {0};
@@ -214,7 +212,7 @@ struct AuxData {
 };
 
 static AuxData* aux_;
-static FOLLY_TLS uint32_t tid_;
+static thread_local uint32_t tid_;
 
 /* Command line flags */
 DEFINE_int64(seed, 0, "Seed for random number generators");
@@ -263,9 +261,7 @@ struct AnnotatedAtomicCounter : public Base<T> {
     DeterministicSchedule::setAuxChk(auxfn);
   }
 
-  void clearAuxChk() {
-    DeterministicSchedule::clearAuxChk();
-  }
+  void clearAuxChk() { DeterministicSchedule::clearAuxChk(); }
 
   /** Aux log function */
   void auxLog(uint64_t step) {
@@ -310,9 +306,7 @@ struct AnnotatedAtomicCounter : public Base<T> {
   }
 
   /* Direct access without going through DSched */
-  T loadDirect() {
-    return this->counter_.load_direct();
-  }
+  T loadDirect() { return this->counter_.load_direct(); }
 
   /* Constructor -- calls original constructor */
   explicit AnnotatedAtomicCounter(int val) : Base<T>(val) {}
@@ -334,7 +328,7 @@ struct AnnotatedAtomicCounter : public Base<T> {
 
 using Annotated = AnnotatedAtomicCounter<int>;
 
-TEST(DeterministicSchedule, global_invariants) {
+TEST(DeterministicSchedule, globalInvariants) {
   CHECK_GT(FLAGS_num_threads, 0);
 
   DSched sched(DSched::uniform(FLAGS_seed));
@@ -369,7 +363,7 @@ struct DSchedTimestampTest : public DSchedTimestamp {
   explicit DSchedTimestampTest(size_t v) : DSchedTimestamp(v) {}
 };
 
-TEST(DeterministicSchedule, thread_timestamps) {
+TEST(DeterministicSchedule, threadTimestamps) {
   ThreadTimestamps tss;
   DSchedThreadId tid0(0);
   DSchedThreadId tid1(1);

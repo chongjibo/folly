@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,3 @@
 #pragma once
 
 #include <folly/Portability.h>
-
-#if FOLLY_MOBILE || defined(__APPLE__)
-#define FOLLY_FUTURE_USING_FIBER 0
-#else
-#define FOLLY_FUTURE_USING_FIBER 1
-#endif

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,19 @@
 
 #include <folly/portability/GTest.h>
 
+struct foo {};
+static_assert(std::is_same_v<int*, std::atomic_ref<int*>::value_type>);
+static_assert(std::is_same_v<int, std::atomic_ref<int>::value_type>);
+static_assert(std::is_same_v<float, std::atomic_ref<float>::value_type>);
+static_assert(std::is_same_v<foo, std::atomic_ref<foo>::value_type>);
+
 class AtomicRefTest : public testing::Test {};
+
+TEST_F(AtomicRefTest, deduction) {
+  long value = 17;
+  auto ref = folly::atomic_ref{value}; // use deduction guide
+  EXPECT_EQ(17, ref.load(std::memory_order_relaxed));
+}
 
 TEST_F(AtomicRefTest, integer) {
   {
@@ -26,7 +38,8 @@ TEST_F(AtomicRefTest, integer) {
     auto ref = folly::make_atomic_ref(value);
     EXPECT_EQ(17, ref.load(std::memory_order_relaxed));
     ref.store(55, std::memory_order_relaxed);
-    EXPECT_EQ(55, ref.load(std::memory_order_relaxed));
+    EXPECT_EQ(55, ref.exchange(42, std::memory_order_relaxed));
+    EXPECT_EQ(42, ref.load(std::memory_order_relaxed));
   }
 
   {
@@ -43,6 +56,30 @@ TEST_F(AtomicRefTest, integer) {
     auto prev = ref.fetch_sub(4, std::memory_order_relaxed);
     EXPECT_EQ(17, prev);
     EXPECT_EQ(13, value);
+  }
+
+  {
+    long value = 17;
+    auto ref = folly::make_atomic_ref(value);
+    auto prev = ref.fetch_and(18, std::memory_order_relaxed);
+    EXPECT_EQ(17, prev);
+    EXPECT_EQ(16, value);
+  }
+
+  {
+    long value = 17;
+    auto ref = folly::make_atomic_ref(value);
+    auto prev = ref.fetch_or(18, std::memory_order_relaxed);
+    EXPECT_EQ(17, prev);
+    EXPECT_EQ(19, value);
+  }
+
+  {
+    long value = 17;
+    auto ref = folly::make_atomic_ref(value);
+    auto prev = ref.fetch_xor(19, std::memory_order_relaxed);
+    EXPECT_EQ(17, prev);
+    EXPECT_EQ(2, value);
   }
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -139,9 +139,7 @@ struct HashTraits {
     }
     return result;
   }
-  size_t operator()(const char& a) {
-    return static_cast<size_t>(a);
-  }
+  size_t operator()(const char& a) { return static_cast<size_t>(a); }
   size_t operator()(const StringPiece a) {
     size_t result = 0;
     for (const auto& ch : a) {
@@ -329,6 +327,8 @@ class Integer {
  public:
   explicit Integer(KeyT v = 0) : v_(v) {}
 
+  Integer(const Integer&) = default;
+
   Integer& operator=(const Integer& a) {
     static bool throwException_ = false;
     throwException_ = !throwException_;
@@ -339,15 +339,13 @@ class Integer {
     return *this;
   }
 
-  bool operator==(const Integer& a) const {
-    return v_ == a.v_;
-  }
+  bool operator==(const Integer& a) const { return v_ == a.v_; }
 
  private:
   KeyT v_;
 };
 
-TEST(Ahm, map_exception_safety) {
+TEST(Ahm, mapExceptionSafety) {
   typedef AtomicHashMap<KeyT, Integer> MyMapT;
 
   int numEntries = 10000;
@@ -468,7 +466,7 @@ void runThreads(void* (*mainFunc)(void*)) {
 
 } // namespace
 
-TEST(Ahm, collision_test) {
+TEST(Ahm, collisionTest) {
   const int numInserts = 1000000 / 4;
 
   // Doing the same number on each thread so we collide.
@@ -532,25 +530,24 @@ TEST(Ahm, collision_test) {
 
 namespace {
 
-const int kInsertPerThread = 100000;
-int raceFinalSizeEstimate;
-
-void raceIterateThread() {
-  int count = 0;
-
-  AHMapT::iterator it = globalAHM->begin();
-  AHMapT::iterator end = globalAHM->end();
-  for (; it != end; ++it) {
-    ++count;
-    if (count > raceFinalSizeEstimate) {
-      EXPECT_FALSE("Infinite loop in iterator.");
-      return;
+void raceIterateThread(std::atomic<bool>* shouldIterate, int maxSize) {
+  while (shouldIterate->load(std::memory_order_relaxed)) {
+    int count = 0;
+    AHMapT::iterator it = globalAHM->begin();
+    AHMapT::iterator end = globalAHM->end();
+    for (; it != end; ++it) {
+      ++count;
+      if (count > maxSize) {
+        EXPECT_FALSE("Infinite loop in iterator.");
+        return;
+      }
     }
   }
 }
 
-void raceInsertRandomThread() {
-  for (int i = 0; i < kInsertPerThread; ++i) {
+void raceInsertRandomThread(std::atomic<bool>* shouldInsert, int maxInserts) {
+  int i = 0;
+  while (shouldInsert->load(std::memory_order_relaxed) && i++ < maxInserts) {
     KeyT key = rand();
     globalAHM->insert(key, genVal(key));
   }
@@ -560,24 +557,29 @@ void raceInsertRandomThread() {
 
 // Test for race conditions when inserting and iterating at the same time and
 // creating multiple submaps.
-TEST(Ahm, race_insert_iterate_thread_test) {
+TEST(Ahm, raceInsertIterateThreadTest) {
   const int kInsertThreads = 20;
   const int kIterateThreads = 20;
-  raceFinalSizeEstimate = kInsertThreads * kInsertPerThread;
+  const int kMaxInsertsPerThread = 100000;
+  int raceFinalSizeUpper = kInsertThreads * kMaxInsertsPerThread;
 
   VLOG(1) << "Testing iteration and insertion with " << kInsertThreads
           << " threads inserting and " << kIterateThreads
           << " threads iterating.";
 
-  globalAHM = std::make_unique<AHMapT>(raceFinalSizeEstimate / 9, config);
+  globalAHM = std::make_unique<AHMapT>(100000, config);
 
+  std::atomic<bool> loop{true};
   vector<std::thread> threads;
   for (auto j = 0u; j < kInsertThreads; ++j) {
-    threads.emplace_back(raceInsertRandomThread);
+    threads.emplace_back(raceInsertRandomThread, &loop, kMaxInsertsPerThread);
   }
   for (auto j = 0u; j < kIterateThreads; ++j) {
-    threads.emplace_back(raceIterateThread);
+    threads.emplace_back(raceIterateThread, &loop, raceFinalSizeUpper);
   }
+  // Before changing this test to be time-limited, it took at least 60 seconds.
+  /* sleep override */ std::this_thread::sleep_for(std::chrono::seconds(30));
+  loop.store(false);
   for (auto& thread : threads) {
     thread.join();
   }
@@ -636,7 +638,7 @@ void* testEraseEraseThread(void*) {
 
 // Here we have a single thread inserting some values, and several threads
 // racing to delete the values in the order they were inserted.
-TEST(Ahm, thread_erase_insert_race) {
+TEST(Ahm, threadEraseInsertRace) {
   const int kInsertThreads = 1;
   const int kEraseThreads = 10;
 
@@ -683,7 +685,7 @@ void* atomicHashArrayInsertRaceThread(void* /* j */) {
   }
   return (void*)numInserted;
 }
-TEST(Ahm, atomic_hash_array_insert_race) {
+TEST(Ahm, atomicHashArrayInsertRace) {
   AHA* arr = atomicHashArrayInsertRaceArray.get();
   int numIterations = 5000;
   constexpr int numThreads = 4;
@@ -699,7 +701,7 @@ TEST(Ahm, atomic_hash_array_insert_race) {
 }
 
 // Repro for T#5841499. Race between erase() and find() on the same key.
-TEST(Ahm, erase_find_race) {
+TEST(Ahm, eraseFindRace) {
   const uint64_t limit = 10000;
   AtomicHashMap<uint64_t, uint64_t> map(limit + 10);
   std::atomic<uint64_t> key{1};
@@ -737,7 +739,7 @@ TEST(Ahm, erase_find_race) {
 }
 
 // Erase right after insert race bug repro (t9130653)
-TEST(Ahm, erase_after_insert_race) {
+TEST(Ahm, eraseAfterInsertRace) {
   const uint64_t limit = 10000;
   const size_t num_threads = 100;
   const size_t num_iters = 500;
@@ -765,7 +767,7 @@ TEST(Ahm, erase_after_insert_race) {
 }
 
 // Repro for a bug when iterator didn't skip empty submaps.
-TEST(Ahm, iterator_skips_empty_submaps) {
+TEST(Ahm, iteratorSkipsEmptySubmaps) {
   AtomicHashMap<uint64_t, uint64_t>::Config conf;
   conf.growthFactor = 1;
 

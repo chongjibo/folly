@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,34 +19,38 @@
 #include <folly/io/async/test/Util.h>
 #include <folly/portability/GTest.h>
 
-#define FOLLY_SKIP_IF_NULLPTR_BACKEND(evb)      \
-  auto backend = TypeParam::getBackend();       \
-  SKIP_IF(!backend) << "Backend not available"; \
-  EventBase evb(std::move(backend))
-
 namespace folly {
 namespace test {
+
 class TestSignalHandler : public AsyncSignalHandler {
  public:
   using AsyncSignalHandler::AsyncSignalHandler;
 
-  void signalReceived(int /* signum */) noexcept override {
-    called = true;
-  }
+  void signalReceived(int /* signum */) noexcept override { called = true; }
 
   bool called{false};
 };
 
 template <typename T>
 class AsyncSignalHandlerTest : public ::testing::Test {
- public:
-  AsyncSignalHandlerTest() = default;
+ protected:
+  void SetUp() override {
+    SKIP_IF(T::getBackend() == nullptr) << "Backend not available";
+  }
+
+  std::unique_ptr<EventBase> makeEventBase(
+      folly::EventBase::Options opts = folly::EventBase::Options()) {
+    return std::make_unique<EventBase>(
+        opts.setBackendFactory([] { return T::getBackend(); }));
+  }
 };
 
-TYPED_TEST_CASE_P(AsyncSignalHandlerTest);
+TYPED_TEST_SUITE_P(AsyncSignalHandlerTest);
 
 TYPED_TEST_P(AsyncSignalHandlerTest, basic) {
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
+  auto evbPtr = this->makeEventBase();
+  auto& evb = *evbPtr;
+
   TestSignalHandler handler{&evb};
 
   handler.registerSignalHandler(SIGUSR1);
@@ -58,9 +62,11 @@ TYPED_TEST_P(AsyncSignalHandlerTest, basic) {
 }
 
 TYPED_TEST_P(AsyncSignalHandlerTest, attachEventBase) {
+  auto evbPtr = this->makeEventBase();
+  auto& evb = *evbPtr;
+
   TestSignalHandler handler{nullptr};
   EXPECT_FALSE(handler.getEventBase());
-  FOLLY_SKIP_IF_NULLPTR_BACKEND(evb);
 
   handler.attachEventBase(&evb);
   EXPECT_EQ(&evb, handler.getEventBase());
@@ -76,6 +82,6 @@ TYPED_TEST_P(AsyncSignalHandlerTest, attachEventBase) {
   EXPECT_FALSE(handler.getEventBase());
 }
 
-REGISTER_TYPED_TEST_CASE_P(AsyncSignalHandlerTest, basic, attachEventBase);
+REGISTER_TYPED_TEST_SUITE_P(AsyncSignalHandlerTest, basic, attachEventBase);
 } // namespace test
 } // namespace folly

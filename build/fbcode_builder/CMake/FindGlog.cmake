@@ -7,14 +7,19 @@
 # GLOG_LIBRARIES - link these to use Glog
 
 include(FindPackageHandleStandardArgs)
+include(SelectLibraryConfigurations)
 
-find_library(GLOG_LIBRARY glog
+find_library(GLOG_LIBRARY_RELEASE glog
+  PATHS ${GLOG_LIBRARYDIR})
+find_library(GLOG_LIBRARY_DEBUG glogd
   PATHS ${GLOG_LIBRARYDIR})
 
 find_path(GLOG_INCLUDE_DIR glog/logging.h
   PATHS ${GLOG_INCLUDEDIR})
 
-find_package_handle_standard_args(glog DEFAULT_MSG
+select_library_configurations(GLOG)
+
+find_package_handle_standard_args(Glog DEFAULT_MSG
   GLOG_LIBRARY
   GLOG_INCLUDE_DIR)
 
@@ -29,4 +34,16 @@ if (NOT TARGET glog::glog)
   add_library(glog::glog UNKNOWN IMPORTED)
   set_target_properties(glog::glog PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${GLOG_INCLUDE_DIRS}")
   set_target_properties(glog::glog PROPERTIES IMPORTED_LINK_INTERFACE_LANGUAGES "C" IMPORTED_LOCATION "${GLOG_LIBRARIES}")
+
+  find_package(Gflags)
+  if(GFLAGS_FOUND)
+    message(STATUS "Found gflags as a dependency of glog::glog, include=${LIBGFLAGS_INCLUDE_DIR}, libs=${LIBGFLAGS_LIBRARY}")
+    set_property(TARGET glog::glog APPEND PROPERTY IMPORTED_LINK_INTERFACE_LIBRARIES ${LIBGFLAGS_LIBRARY})
+  endif()
+
+  find_package(LibUnwind)
+  if(LIBUNWIND_FOUND)
+    message(STATUS "Found LibUnwind as a dependency of glog::glog, include=${LIBUNWIND_INCLUDE_DIR}, libs=${LIBUNWIND_LIBRARY}")
+    set_property(TARGET glog::glog APPEND PROPERTY IMPORTED_LINK_INTERFACE_LIBRARIES ${LIBUNWIND_LIBRARY})
+  endif()
 endif()

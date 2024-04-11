@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
+#include <folly/executors/task_queue/PriorityUnboundedBlockingQueue.h>
+
 #include <vector>
 
 #include <folly/container/Enumerate.h>
-#include <folly/executors/task_queue/PriorityUnboundedBlockingQueue.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 

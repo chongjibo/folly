@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// @author: Xin Liu <xliux@fb.com>
 
 #include <folly/ConcurrentSkipList.h>
 
@@ -52,14 +50,12 @@ struct ParanoidArenaAlloc {
     return result;
   }
 
-  void deallocate(void* ptr, size_t n) {
+  void deallocate(char* ptr, size_t n) {
     EXPECT_EQ(1, allocated_.erase(ptr));
     arena_.get().deallocate(ptr, n);
   }
 
-  bool isEmpty() const {
-    return allocated_.empty();
-  }
+  bool isEmpty() const { return allocated_.empty(); }
 
   std::reference_wrapper<ParentAlloc> arena_;
   std::set<void*> allocated_;
@@ -81,7 +77,6 @@ typedef int ValueType;
 typedef detail::SkipListNode<ValueType> SkipListNodeType;
 typedef ConcurrentSkipList<ValueType> SkipListType;
 typedef SkipListType::Accessor SkipListAccessor;
-typedef vector<ValueType> VectorType;
 typedef std::set<ValueType> SetType;
 
 static const int kHeadHeight = 2;
@@ -118,8 +113,7 @@ static void sumAllValues(SkipListAccessor skipList, int64_t* sum) {
 }
 
 static void concurrentSkip(
-    const vector<ValueType>* values,
-    SkipListAccessor skipList) {
+    const vector<ValueType>* values, SkipListAccessor skipList) {
   int64_t sum = 0;
   SkipListAccessor::Skipper skipper(skipList);
   FOR_EACH (it, *values) {
@@ -272,8 +266,8 @@ TEST(ConcurrentSkipList, TestStringType) {
 }
 
 struct UniquePtrComp {
-  bool operator()(const std::unique_ptr<int>& x, const std::unique_ptr<int>& y)
-      const {
+  bool operator()(
+      const std::unique_ptr<int>& x, const std::unique_ptr<int>& y) const {
     if (!x) {
       return false;
     }
@@ -303,15 +297,16 @@ TEST(ConcurrentSkipList, TestMovableData) {
       accessor.find(std::unique_ptr<int>(new int(N))) == accessor.end());
 }
 
-void testConcurrentAdd(int numThreads) {
+TEST(ConcurrentSkipList, ConcurrentAdd) {
+  int numThreads = 100;
   auto skipList(SkipListType::create(kHeadHeight));
 
   vector<std::thread> threads;
   vector<SetType> verifiers(numThreads);
   try {
     for (int i = 0; i < numThreads; ++i) {
-      threads.push_back(
-          std::thread(&randomAdding, 100, skipList, &verifiers[i], kMaxValue));
+      threads.push_back(std::thread(
+          &randomAdding, 1000000, skipList, &verifiers[i], kMaxValue));
     }
   } catch (const std::system_error& e) {
     LOG(WARNING) << "Caught " << exceptionStr(e) << ": could only create "
@@ -324,13 +319,6 @@ void testConcurrentAdd(int numThreads) {
   SetType all;
   FOR_EACH (s, verifiers) { all.insert(s->begin(), s->end()); }
   verifyEqual(skipList, all);
-}
-
-TEST(ConcurrentSkipList, ConcurrentAdd) {
-  // test it many times
-  for (int numThreads = 10; numThreads < 10000; numThreads += 1000) {
-    testConcurrentAdd(numThreads);
-  }
 }
 
 void testConcurrentRemoval(int numThreads, int maxValue) {
@@ -371,8 +359,8 @@ TEST(ConcurrentSkipList, ConcurrentRemove) {
   }
 }
 
-static void
-testConcurrentAccess(int numInsertions, int numDeletions, int maxValue) {
+static void testConcurrentAccess(
+    int numInsertions, int numDeletions, int maxValue) {
   auto skipList = SkipListType::create(kHeadHeight);
 
   vector<SetType> verifiers(FLAGS_num_threads);
@@ -422,9 +410,7 @@ struct NonTrivialValue {
   static std::atomic<int> InstanceCounter;
   static const int kBadPayLoad;
 
-  NonTrivialValue() : payload_(kBadPayLoad) {
-    ++InstanceCounter;
-  }
+  NonTrivialValue() : payload_(kBadPayLoad) { ++InstanceCounter; }
 
   explicit NonTrivialValue(int payload) : payload_(payload) {
     ++InstanceCounter;
@@ -439,9 +425,7 @@ struct NonTrivialValue {
     return *this;
   }
 
-  ~NonTrivialValue() {
-    --InstanceCounter;
-  }
+  ~NonTrivialValue() { --InstanceCounter; }
 
   bool operator<(const NonTrivialValue& rhs) const {
     EXPECT_NE(kBadPayLoad, payload_);
@@ -472,7 +456,7 @@ void TestNonTrivialDeallocation(SkipListPtrType& list) {
 template <typename ParentAlloc>
 void NonTrivialDeallocationWithParanoid(ParentAlloc& parentAlloc) {
   using ParanoidAlloc = ParanoidArenaAlloc<ParentAlloc>;
-  using Alloc = CxxAllocatorAdaptor<void, ParanoidAlloc>;
+  using Alloc = CxxAllocatorAdaptor<char, ParanoidAlloc>;
   using ParanoidSkipListType =
       ConcurrentSkipList<NonTrivialValue, std::less<NonTrivialValue>, Alloc>;
   ParanoidAlloc paranoidAlloc(parentAlloc);
@@ -483,13 +467,13 @@ void NonTrivialDeallocationWithParanoid(ParentAlloc& parentAlloc) {
 }
 
 TEST(ConcurrentSkipList, NonTrivialDeallocationWithParanoidSysAlloc) {
-  SysAllocator<void> alloc;
+  SysAllocator<char> alloc;
   NonTrivialDeallocationWithParanoid(alloc);
 }
 
 TEST(ConcurrentSkipList, NonTrivialDeallocationWithParanoidSysArena) {
   SysArena arena;
-  SysArenaAllocator<void> alloc(arena);
+  SysArenaAllocator<char> alloc(arena);
   NonTrivialDeallocationWithParanoid(alloc);
 }
 
@@ -497,9 +481,9 @@ TEST(ConcurrentSkipList, NonTrivialDeallocationWithSysArena) {
   using SysArenaSkipListType = ConcurrentSkipList<
       NonTrivialValue,
       std::less<NonTrivialValue>,
-      SysArenaAllocator<void>>;
+      SysArenaAllocator<char>>;
   SysArena arena;
-  SysArenaAllocator<void> alloc(arena);
+  SysArenaAllocator<char> alloc(arena);
   auto list = SysArenaSkipListType::createInstance(10, alloc);
   TestNonTrivialDeallocation(list);
 }

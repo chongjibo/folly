@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,14 +32,10 @@ class QuotientMultiSetTest : public ::testing::Test {
  protected:
   static constexpr uint64_t kBlockSize = folly::QuotientMultiSet<>::kBlockSize;
 
-  void SetUp() override {
-    rng.seed(folly::randomNumberSeed());
-  }
+  void SetUp() override { rng.seed(folly::randomNumberSeed()); }
 
   void buildAndValidate(
-      std::vector<uint64_t>& keys,
-      uint64_t keyBits,
-      double loadFactor) {
+      std::vector<uint64_t>& keys, uint64_t keyBits, double loadFactor) {
     // Elements must be added in ascending order.
     std::sort(keys.begin(), keys.end());
     folly::QuotientMultiSetBuilder builder(keyBits, keys.size(), loadFactor);
@@ -76,7 +72,7 @@ class QuotientMultiSetTest : public ::testing::Test {
       pos = reader.getBlockPayload((range.end - 1) / kBlockSize);
       EXPECT_EQ(index - 1, pos + (range.end - 1) % kBlockSize) << debugInfo();
 
-      iter.skipTo(key);
+      EXPECT_TRUE(iter.skipTo(key));
       EXPECT_EQ(key, iter.key()) << debugInfo();
       EXPECT_EQ(range.begin, iter.pos()) << debugInfo();
       EXPECT_EQ(
@@ -113,6 +109,7 @@ class QuotientMultiSetTest : public ::testing::Test {
     if (keys.back() < maxKey) {
       uint64_t key = folly::Random::rand64(keys.back(), maxKey, rng) + 1;
       EXPECT_FALSE(reader.equalRange(key)) << keys.back() << " " << key;
+      EXPECT_FALSE(iter.done());
       EXPECT_FALSE(iter.skipTo(key));
       EXPECT_TRUE(iter.done());
     }
@@ -124,6 +121,13 @@ class QuotientMultiSetTest : public ::testing::Test {
     }
     EXPECT_FALSE(nextIter.next());
     EXPECT_TRUE(nextIter.done());
+
+    if (maxKey + 1 != 0) {
+      folly::QuotientMultiSet<>::Iterator skipToEndIter(&reader);
+      EXPECT_FALSE(skipToEndIter.done());
+      EXPECT_FALSE(skipToEndIter.skipTo(maxKey + 1));
+      EXPECT_TRUE(skipToEndIter.done());
+    }
   }
 
   std::mt19937 rng;

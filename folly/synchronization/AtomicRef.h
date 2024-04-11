@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,10 @@ template <typename T>
 struct atomic_ref_base {
   static_assert(sizeof(T) == sizeof(std::atomic<T>), "size mismatch");
   static_assert(alignof(T) == alignof(std::atomic<T>), "alignment mismatch");
-  static_assert(is_trivially_copyable_v<T>, "value not trivially-copyable");
+  static_assert(
+      std::is_trivially_copyable_v<T>, "value not trivially-copyable");
+
+  using value_type = T;
 
   explicit atomic_ref_base(T& ref) : ref_(ref) {}
   atomic_ref_base(atomic_ref_base const&) = default;
@@ -41,6 +44,11 @@ struct atomic_ref_base {
 
   T load(std::memory_order order = std::memory_order_seq_cst) const noexcept {
     return atomic().load(order);
+  }
+
+  T exchange(T desired, std::memory_order order = std::memory_order_seq_cst)
+      const noexcept {
+    return atomic().exchange(desired, order);
   }
 
   bool compare_exchange_weak(
@@ -86,20 +94,35 @@ struct atomic_ref_integral_base : atomic_ref_base<T> {
   using atomic_ref_base<T>::atomic_ref_base;
   using atomic_ref_base<T>::atomic;
 
-  T fetch_add(T arg, std::memory_order order = std::memory_order_seq_cst) const
-      noexcept {
+  T fetch_add(T arg, std::memory_order order = std::memory_order_seq_cst)
+      const noexcept {
     return atomic().fetch_add(arg, order);
   }
 
-  T fetch_sub(T arg, std::memory_order order = std::memory_order_seq_cst) const
-      noexcept {
+  T fetch_sub(T arg, std::memory_order order = std::memory_order_seq_cst)
+      const noexcept {
     return atomic().fetch_sub(arg, order);
+  }
+
+  T fetch_and(T arg, std::memory_order order = std::memory_order_seq_cst)
+      const noexcept {
+    return atomic().fetch_and(arg, order);
+  }
+
+  T fetch_or(T arg, std::memory_order order = std::memory_order_seq_cst)
+      const noexcept {
+    return atomic().fetch_or(arg, order);
+  }
+
+  T fetch_xor(T arg, std::memory_order order = std::memory_order_seq_cst)
+      const noexcept {
+    return atomic().fetch_xor(arg, order);
   }
 };
 
 template <typename T>
 using atomic_ref_select = conditional_t<
-    std::is_integral<T>::value,
+    std::is_integral<T>::value && !std::is_same<T, bool>::value,
     atomic_ref_integral_base<T>,
     atomic_ref_base<T>>;
 
@@ -125,28 +148,22 @@ class atomic_ref : public detail::atomic_ref_select<T> {
   using base::base;
 };
 
-#if __cpp_deduction_guides >= 201703
-
 template <typename T>
-atomic_ref(T&)->atomic_ref<T>;
-
-#endif
+atomic_ref(T&) -> atomic_ref<T>;
 
 struct make_atomic_ref_t {
   template <
       typename T,
       std::enable_if_t<
-          is_trivially_copyable_v<T> && sizeof(T) == sizeof(std::atomic<T>) &&
+          std::is_trivially_copyable_v<T> &&
+              sizeof(T) == sizeof(std::atomic<T>) &&
               alignof(T) == alignof(std::atomic<T>),
           int> = 0>
   atomic_ref<T> operator()(T& ref) const {
-#if __cpp_deduction_guides >= 201703
-    return atomic_ref{ref};
-#endif
     return atomic_ref<T>{ref};
   }
 };
 
-FOLLY_INLINE_VARIABLE constexpr make_atomic_ref_t make_atomic_ref;
+inline constexpr make_atomic_ref_t make_atomic_ref;
 
 } // namespace folly

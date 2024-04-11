@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,15 @@
  * limitations under the License.
  */
 
+#include <sodium.h>
+
 #include <folly/Benchmark.h>
 #include <folly/Random.h>
 #include <folly/experimental/crypto/LtHash.h>
 #include <folly/init/Init.h>
 #include <folly/io/IOBuf.h>
+
 #include <glog/logging.h>
-#include <sodium.h>
 
 using namespace ::folly::crypto;
 
@@ -124,7 +126,7 @@ BENCHMARK_RELATIVE(subtractChecksumFor100KObjects_B32_N1024) {
 }
 
 int main(int argc, char** argv) {
-  folly::init(&argc, &argv);
+  folly::Init init(&argc, &argv);
 
   if (sodium_init() < 0) {
     throw std::runtime_error("Failed to initialize libsodium");

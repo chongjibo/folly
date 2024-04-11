@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <folly/Subprocess.h>
 
 #include <sys/types.h>
+
 #include <chrono>
 
 #include <boost/container/flat_set.hpp>
@@ -38,6 +39,32 @@ FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
 
 using namespace folly;
 using namespace std::chrono_literals;
+
+namespace std::chrono {
+template <typename Rep, typename Period>
+void PrintTo(std::chrono::duration<Rep, Period> duration, std::ostream* out) {
+  const auto ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
+  const auto ms_float = ns.count() / 1000000.0;
+  *out << ms_float << "ms";
+}
+} // namespace std::chrono
+
+namespace {
+// Wait for the given subprocess to write anything in stdout to ensure
+// it has started.
+bool waitForAnyOutput(Subprocess& proc) {
+  // We couldn't use communicate here because it blocks until the
+  // stdout/stderr is closed.
+  char buffer;
+  ssize_t len;
+  do {
+    len = ::read(proc.stdoutFd(), &buffer, 1);
+  } while (len == -1 && errno == EINTR);
+  LOG(INFO) << "Read " << buffer;
+  return len == 1;
+}
+} // namespace
 
 TEST(SimpleSubprocessTest, ExitsSuccessfully) {
   Subprocess proc(std::vector<std::string>{"/bin/true"});
@@ -174,22 +201,91 @@ TEST(SimpleSubprocessTest, ChangeChildDirectoryWithError) {
   }
 }
 
-TEST(SimpleSubprocessTest, waitOrTerminateOrKill_waits_if_process_exits) {
+TEST(SimpleSubprocessTest, waitOrTerminateOrKillWaitsIfProcessExits) {
   Subprocess proc(std::vector<std::string>{"/bin/sleep", "0.1"});
   auto retCode = proc.waitOrTerminateOrKill(1s, 1s);
   EXPECT_TRUE(retCode.exited());
   EXPECT_EQ(0, retCode.exitStatus());
 }
 
-TEST(SimpleSubprocessTest, waitOrTerminateOrKill_terminates_if_timeout) {
+TEST(SimpleSubprocessTest, waitOrTerminateOrKillTerminatesIfTimeout) {
   Subprocess proc(std::vector<std::string>{"/bin/sleep", "60"});
   auto retCode = proc.waitOrTerminateOrKill(1s, 1s);
   EXPECT_TRUE(retCode.killed());
   EXPECT_EQ(SIGTERM, retCode.killSignal());
 }
 
+TEST(
+    SimpleSubprocessTest,
+    destructor_doesNotFail_ifOkToDestroyWhileProcessRunning) {
+  pid_t pid;
+  {
+    Subprocess proc(
+        std::vector<std::string>{"/bin/sleep", "10"},
+        Subprocess::Options().allowDestructionWhileProcessRunning(true));
+    pid = proc.pid();
+  }
+  auto proc2 = Subprocess::fromExistingProcess(pid);
+  proc2.terminateOrKill(10ms);
+}
+
+TEST(SubprocessTest, FatalOnDestroy) {
+  EXPECT_DEATH(
+      []() {
+        Subprocess proc(std::vector<std::string>{"/bin/sleep", "10"});
+      }(),
+      "Subprocess destroyed without reaping child");
+}
+
+TEST(SubprocessTest, KillOnDestroy) {
+  pid_t pid;
+  {
+    Subprocess proc(
+        std::vector<std::string>{"/bin/sleep", "10"},
+        Subprocess::Options().killChildOnDestruction());
+    pid = proc.pid();
+  }
+  // The process should no longer exist
+  EXPECT_EQ(-1, kill(pid, 0));
+  EXPECT_EQ(ESRCH, errno);
+}
+
+TEST(SubprocessTest, TerminateOnDestroy) {
+  pid_t pid;
+  std::chrono::steady_clock::time_point start;
+  const auto terminateTimeout = 500ms;
+  {
+    // Spawn a process that ignores SIGTERM
+    Subprocess proc(
+        std::vector<std::string>{
+            "/bin/bash",
+            "-c",
+            "trap \"sleep 120\" SIGTERM; echo ready; sleep 60"},
+        Subprocess::Options()
+            .pipeStdout()
+            .pipeStderr()
+            .terminateChildOnDestruction(terminateTimeout));
+    pid = proc.pid();
+    // Wait to make sure bash has installed the SIGTERM trap before we proceed;
+    // otherwise the test can fail if we kill the process before it starts
+    // ignoring SIGTERM.
+    EXPECT_TRUE(waitForAnyOutput(proc));
+    start = std::chrono::steady_clock::now();
+  }
+  const auto end = std::chrono::steady_clock::now();
+  // The process should no longer exist.
+  EXPECT_EQ(-1, kill(pid, 0));
+  EXPECT_EQ(ESRCH, errno);
+  // It should have taken us roughly terminateTimeout in the destructor
+  // to wait for the child to exit after SIGTERM before we gave up and sent
+  // SIGKILL.
+  const auto destructorDuration = end - start;
+  EXPECT_GE(destructorDuration, terminateTimeout);
+  EXPECT_LT(destructorDuration, terminateTimeout + 5s);
+}
+
 // This method verifies terminateOrKill shouldn't affect the exit
-// status if the process has exitted already.
+// status if the process has exited already.
 TEST(SimpleSubprocessTest, TerminateAfterProcessExit) {
   Subprocess proc(
       std::vector<std::string>{"/bin/bash", "-c", "echo hello; exit 1"},
@@ -200,22 +296,6 @@ TEST(SimpleSubprocessTest, TerminateAfterProcessExit) {
   EXPECT_TRUE(retCode.exited());
   EXPECT_EQ(1, retCode.exitStatus());
 }
-
-namespace {
-// Wait for the given subprocess to write anything in stdout to ensure
-// it has started.
-bool waitForAnyOutput(Subprocess& proc) {
-  // We couldn't use communicate here because it blocks until the
-  // stdout/stderr is closed.
-  char buffer;
-  ssize_t len;
-  do {
-    len = ::read(proc.stdoutFd(), &buffer, 1);
-  } while (len == -1 and errno == EINTR);
-  LOG(INFO) << "Read " << buffer;
-  return len == 1;
-}
-} // namespace
 
 // This method tests that if the subprocess handles SIGTERM faster
 // enough, we don't have to use SIGKILL to kill it.
@@ -230,6 +310,18 @@ TEST(SimpleSubprocessTest, TerminateWithoutKill) {
   auto retCode = proc.terminateOrKill(1s);
   EXPECT_TRUE(retCode.killed());
   EXPECT_EQ(SIGTERM, retCode.killSignal());
+}
+
+TEST(SimpleSubprocessTest, TerminateOrKillZeroTimeout) {
+  // Using terminateOrKill() with a 0s timeout should immediately kill the
+  // process with SIGKILL without bothering to attempt SIGTERM.
+  Subprocess proc(
+      std::vector<std::string>{"/bin/bash", "-c", "echo ready; sleep 60"},
+      Subprocess::Options().pipeStdout().pipeStderr());
+  EXPECT_TRUE(waitForAnyOutput(proc));
+  auto retCode = proc.terminateOrKill(0s);
+  EXPECT_TRUE(retCode.killed());
+  EXPECT_EQ(SIGKILL, retCode.killSignal());
 }
 
 // This method tests that if the subprocess ignores SIGTERM, we have
@@ -338,6 +430,27 @@ TEST(SimpleSubprocessTest, DetachExecFails) {
       "/no/such/file");
 }
 
+TEST(SimpleSubprocessTest, Affinity) {
+#ifdef __linux__
+  cpu_set_t cpuSet0;
+  CPU_ZERO(&cpuSet0);
+  CPU_SET(1, &cpuSet0);
+  CPU_SET(2, &cpuSet0);
+  CPU_SET(3, &cpuSet0);
+  Subprocess::Options options;
+  Subprocess proc(
+      std::vector<std::string>{"/bin/sleep", "5"}, options.setCpuSet(cpuSet0));
+  EXPECT_NE(proc.pid(), -1);
+  cpu_set_t cpuSet1;
+  CPU_ZERO(&cpuSet1);
+  auto ret = ::sched_getaffinity(proc.pid(), sizeof(cpu_set_t), &cpuSet1);
+  CHECK_EQ(ret, 0);
+  CHECK_EQ(::memcmp(&cpuSet0, &cpuSet1, sizeof(cpu_set_t)), 0);
+  auto retCode = proc.waitOrTerminateOrKill(1s, 1s);
+  EXPECT_TRUE(retCode.killed());
+#endif // __linux__
+}
+
 TEST(SimpleSubprocessTest, FromExistingProcess) {
   // Manually fork a child process using fork() without exec(), and test waiting
   // for it using the Subprocess API in the parent process.
@@ -358,16 +471,9 @@ TEST(SimpleSubprocessTest, FromExistingProcess) {
 }
 
 TEST(ParentDeathSubprocessTest, ParentDeathSignal) {
-  // Find out where we are.
-  const auto basename = "subprocess_test_parent_death_helper";
-  auto helper = fs::executable_path();
-  helper.remove_filename() /= basename;
-  if (!fs::exists(helper)) {
-    helper = helper.parent_path().parent_path() / basename / basename;
-  }
-
+  auto helper = folly::test::find_resource(
+      "folly/test/subprocess_test_parent_death_helper");
   fs::path tempFile(fs::temp_directory_path() / fs::unique_path());
-
   std::vector<std::string> args{helper.string(), tempFile.string()};
   Subprocess proc(args);
   // The helper gets killed by its child, see details in
@@ -682,4 +788,51 @@ TEST(CommunicateSubprocessTest, TakeOwnershipOfPipes) {
   EXPECT_EQ(2, readFull(pipes[0].pipe.fd(), buf, 10));
   buf[2] = 0;
   EXPECT_EQ("3\n", std::string(buf));
+}
+
+TEST(CommunicateSubprocessTest, RedirectStdioToDevNull) {
+  std::vector<std::string> cmd({
+      "stat",
+      "-Lc",
+      "%t:%T",
+      "/dev/null",
+      "/dev/stdin",
+      "/dev/stderr",
+  });
+  auto options = Subprocess::Options()
+                     .pipeStdout()
+                     .stdinFd(folly::Subprocess::DEV_NULL)
+                     .stderrFd(folly::Subprocess::DEV_NULL)
+                     .usePath();
+  Subprocess proc(cmd, options);
+  auto out = proc.communicateIOBuf();
+
+  fbstring stdoutStr;
+  if (out.first.front()) {
+    stdoutStr = out.first.move()->moveToFbString();
+  }
+  LOG(ERROR) << stdoutStr;
+  std::vector<StringPiece> stdoutLines;
+  split('\n', stdoutStr, stdoutLines);
+
+  // 3 lines + empty string due to trailing newline
+  EXPECT_EQ(stdoutLines.size(), 4);
+  EXPECT_EQ(stdoutLines[0], stdoutLines[1]);
+  EXPECT_EQ(stdoutLines[0], stdoutLines[2]);
+
+  EXPECT_EQ(0, proc.wait().exitStatus());
+}
+
+TEST(CloseOtherDescriptorsSubprocessTest, ClosesFileDescriptors) {
+  // Open another filedescriptor and check to make sure that it is not opened in
+  // child process
+  int fd = ::open("/", O_RDONLY);
+  auto guard = makeGuard([fd] { ::close(fd); });
+  auto options = Subprocess::Options().closeOtherFds().pipeStdout();
+  Subprocess proc(
+      std::vector<std::string>{"/bin/ls", "/proc/self/fd"}, options);
+  auto p = proc.communicate();
+  // stdin, stdout, stderr, and /proc/self/fd should be fds [0,3] in the child
+  EXPECT_EQ("0\n1\n2\n3\n", p.first);
+  proc.wait();
 }

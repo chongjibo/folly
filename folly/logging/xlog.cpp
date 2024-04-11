@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,6 +54,7 @@ size_t& xlogEveryNThreadEntry(void const* const key) {
 } // namespace detail
 
 namespace {
+#ifdef FOLLY_XLOG_SUPPORT_BUCK1
 /**
  * buck copies header files from their original location in the source tree
  * and places them under buck-out/ with a path like
@@ -85,6 +86,47 @@ StringPiece stripBuckOutPrefix(StringPiece filename) {
     idx = end + 1;
   }
 }
+#endif // FOLLY_XLOG_SUPPORT_BUCK1
+
+#ifdef FOLLY_XLOG_SUPPORT_BUCK2
+/**
+ * buck2 copies header files from their original location in the source tree
+ * and places them under buck-out/ with a path like
+ * buck-out/v2/gen/cell/hash/dirA/dirB/__rule_name__/buck-headers/dirA/dirB/Foo.h
+ *
+ * We want to strip off everything up to and including the "buck-headers" or
+ * "buck-private-headers" component.
+ */
+StringPiece stripBuckV2Prefix(StringPiece filename) {
+  static constexpr StringPiece commonPrefix("/buck-");
+  static constexpr StringPiece headerPrefix("headers/");
+  static constexpr StringPiece privatePrefix("private-headers/");
+
+  size_t idx = 0;
+  while (true) {
+    // Look for directory strings starting with "/buck-"
+    auto end = filename.find(commonPrefix, idx);
+    if (end == StringPiece::npos) {
+      // We were unable to find where the buck-out prefix should end.
+      return filename;
+    }
+
+    // Check if this directory is either "/buck-headers/" or
+    // "/buck-private-headers/".  If so, return the path stripped to here.
+    const auto remainder = filename.subpiece(end + commonPrefix.size());
+    if (remainder.startsWith(headerPrefix)) {
+      return remainder.subpiece(headerPrefix.size());
+    }
+    if (remainder.startsWith(privatePrefix)) {
+      return remainder.subpiece(privatePrefix.size());
+    }
+
+    // This directory was "/buck-something-else".  Keep looking.
+    idx = end + 1;
+  }
+}
+#endif // FOLLY_XLOG_SUPPORT_BUCK2
+
 } // namespace
 
 StringPiece getXlogCategoryNameForFile(StringPiece filename) {
@@ -94,19 +136,25 @@ StringPiece getXlogCategoryNameForFile(StringPiece filename) {
   //
   // If this path looks like a buck header directory, try to strip off the
   // buck-specific portion.
+#ifdef FOLLY_XLOG_SUPPORT_BUCK1
   if (filename.startsWith("buck-out/")) {
     filename = stripBuckOutPrefix(filename);
   }
+#endif // FOLLY_XLOG_SUPPORT_BUCK1
+#ifdef FOLLY_XLOG_SUPPORT_BUCK2
+  if (filename.startsWith("buck-out/v2/")) {
+    filename = stripBuckV2Prefix(filename);
+  }
+#endif // FOLLY_XLOG_SUPPORT_BUCK2
 
   return filename;
 }
 
 template <bool IsInHeaderFile>
 LogLevel XlogLevelInfo<IsInHeaderFile>::loadLevelFull(
-    folly::StringPiece categoryName,
-    bool isOverridden) {
+    folly::StringPiece categoryName, bool isOverridden) {
   auto currentLevel = level_.load(std::memory_order_acquire);
-  if (UNLIKELY(currentLevel == ::folly::LogLevel::UNINITIALIZED)) {
+  if (FOLLY_UNLIKELY(currentLevel == ::folly::LogLevel::UNINITIALIZED)) {
     return LoggerDB::get().xlogInit(
         isOverridden ? categoryName : getXlogCategoryNameForFile(categoryName),
         &level_,
@@ -117,21 +165,19 @@ LogLevel XlogLevelInfo<IsInHeaderFile>::loadLevelFull(
 
 template <bool IsInHeaderFile>
 LogCategory* XlogCategoryInfo<IsInHeaderFile>::init(
-    folly::StringPiece categoryName,
-    bool isOverridden) {
+    folly::StringPiece categoryName, bool isOverridden) {
   return LoggerDB::get().xlogInitCategory(
       isOverridden ? categoryName : getXlogCategoryNameForFile(categoryName),
       &category_,
       &isInitialized_);
 }
 
-#ifdef __INCLUDE_LEVEL__
 LogLevel XlogLevelInfo<false>::loadLevelFull(
     folly::StringPiece categoryName,
     bool isOverridden,
     XlogFileScopeInfo* fileScopeInfo) {
   auto currentLevel = fileScopeInfo->level.load(std::memory_order_acquire);
-  if (UNLIKELY(currentLevel == ::folly::LogLevel::UNINITIALIZED)) {
+  if (FOLLY_UNLIKELY(currentLevel == ::folly::LogLevel::UNINITIALIZED)) {
     return LoggerDB::get().xlogInit(
         isOverridden ? categoryName : getXlogCategoryNameForFile(categoryName),
         &fileScopeInfo->level,
@@ -139,12 +185,8 @@ LogLevel XlogLevelInfo<false>::loadLevelFull(
   }
   return currentLevel;
 }
-#endif
 
 // Explicitly instantiations of XlogLevelInfo and XlogCategoryInfo
-// If __INCLUDE_LEVEL__ is not available only the "true" variants ever get
-// used, because we cannot determine if we are ever in the .cpp file being
-// compiled or not.
 template class XlogLevelInfo<true>;
 template class XlogCategoryInfo<true>;
 } // namespace folly

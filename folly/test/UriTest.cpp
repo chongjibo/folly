@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,13 @@
  */
 
 #include <folly/Uri.h>
-#include <folly/portability/GTest.h>
+
+#include <map>
 
 #include <boost/algorithm/string.hpp>
 #include <glog/logging.h>
-#include <map>
+
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 
@@ -383,6 +385,14 @@ TEST(Uri, Simple) {
     } catch (const std::invalid_argument&) {
       // success
     }
+  }
+
+  {
+    fbstring s("2http://www.facebook.com");
+
+    auto u = Uri::tryFromString(s);
+    EXPECT_TRUE(u.hasError());
+    EXPECT_EQ(u.error(), UriFormatError::INVALID_URI);
   }
 
   // No authority (no "//") is valid

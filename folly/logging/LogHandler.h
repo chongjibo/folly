@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,8 +65,7 @@ class LogHandler {
    *     the log message.
    */
   virtual void handleMessage(
-      const LogMessage& message,
-      const LogCategory* handlerCategory) = 0;
+      const LogMessage& message, const LogCategory* handlerCategory) = 0;
 
   /**
    * Block until all messages that have already been sent to this LogHandler

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -73,10 +73,6 @@
  *         95%             95%           0.27         0.10
  *
  *   See folly/tests/AtomicHashMapTest.cpp for more benchmarks.
- *
- * @author Spencer Ahrens <sahrens@fb.com>
- * @author Jordan DeLong <delong.j@fb.com>
- *
  */
 
 #pragma once
@@ -216,12 +212,8 @@ class AtomicHashMap {
     }
   }
 
-  key_equal key_eq() const {
-    return key_equal();
-  }
-  hasher hash_function() const {
-    return hasher();
-  }
+  key_equal key_eq() const { return key_equal(); }
+  hasher hash_function() const { return hasher(); }
 
   /*
    * insert --
@@ -279,7 +271,7 @@ class AtomicHashMap {
    *   allowed to be different from the type of keys actually stored (KeyT).
    *
    *   This enables use cases where materializing the key is costly and usually
-   *   redudant, e.g., canonicalizing/interning a set of strings and being able
+   *   redundant, e.g., canonicalizing/interning a set of strings and being able
    *   to look up by StringPiece. To use this feature, LookupHashFcn must take
    *   a LookupKeyT, and LookupEqualFcn must take KeyT and LookupKeyT as first
    *   and second parameter, respectively.
@@ -327,13 +319,9 @@ class AtomicHashMap {
    */
   size_t size() const;
 
-  bool empty() const {
-    return size() == 0;
-  }
+  bool empty() const { return size() == 0; }
 
-  size_type count(key_type k) const {
-    return find(k) == end() ? 0 : 1;
-  }
+  size_type count(key_type k) const { return find(k) == end() ? 0 : 1; }
 
   /*
    * findAt --
@@ -389,13 +377,9 @@ class AtomicHashMap {
     return it;
   }
 
-  iterator end() {
-    return iterator();
-  }
+  iterator end() { return iterator(); }
 
-  const_iterator end() const {
-    return const_iterator();
-  }
+  const_iterator end() const { return const_iterator(); }
 
   /* Advanced functions for direct access: */
 
@@ -411,8 +395,8 @@ class AtomicHashMap {
     return encodeIndex(ret.i, ret.j);
   }
 
-  inline uint32_t
-  recToIdx(key_type k, const mapped_type& v, bool mayInsert = true) {
+  inline uint32_t recToIdx(
+      key_type k, const mapped_type& v, bool mayInsert = true) {
     SimpleRetT ret = mayInsert ? insertInternal(k, v) : findInternal(k);
     return encodeIndex(ret.i, ret.j);
   }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,24 +47,14 @@ class MoveWrapper {
   /// move is also move
   MoveWrapper(MoveWrapper&& other) : value(std::move(other.value)) {}
 
-  const T& operator*() const {
-    return value;
-  }
-  T& operator*() {
-    return value;
-  }
+  const T& operator*() const { return value; }
+  T& operator*() { return value; }
 
-  const T* operator->() const {
-    return &value;
-  }
-  T* operator->() {
-    return &value;
-  }
+  const T* operator->() const { return &value; }
+  T* operator->() { return &value; }
 
   /// move the value out (sugar for std::move(*moveWrapper))
-  T&& move() {
-    return std::move(value);
-  }
+  T&& move() { return std::move(value); }
 
   // If you want these you're probably doing it wrong, though they'd be
   // easy enough to implement

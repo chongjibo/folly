@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,28 @@
  */
 
 #pragma once
-#include <folly/Executor.h>
 
+#include <string>
 #include <thread>
+
+#include <folly/Executor.h>
 
 namespace folly {
 
 class ThreadFactory {
  public:
+  ThreadFactory() = default;
+
   virtual ~ThreadFactory() = default;
   virtual std::thread newThread(Func&& func) = 0;
+
+  virtual const std::string& getNamePrefix() const = 0;
+
+ private:
+  ThreadFactory(const ThreadFactory&) = delete;
+  ThreadFactory& operator=(const ThreadFactory&) = delete;
+  ThreadFactory(ThreadFactory&&) = delete;
+  ThreadFactory& operator=(ThreadFactory&&) = delete;
 };
 
 } // namespace folly

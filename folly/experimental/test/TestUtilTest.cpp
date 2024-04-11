@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -95,6 +95,7 @@ TEST(TemporaryFile, moveAssignment) {
     fd = g.fd();
     f = std::move(g);
   }
+  EXPECT_TRUE(fs::exists(f.path()));
   EXPECT_EQ(fs::path("."), f.path().parent_path());
   EXPECT_EQ(f.fd(), fd);
 

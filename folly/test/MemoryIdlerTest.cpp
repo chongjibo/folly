@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,25 @@
 
 #include <folly/detail/MemoryIdler.h>
 
+#include <memory>
+#include <thread>
+
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 
-#include <memory>
-#include <thread>
-
-using namespace folly;
 using namespace folly::detail;
 using namespace testing;
+
+TEST(MemoryIdler, isUnmapUnusedStackAvailableInMainThread) {
+  // presume this is the main thread
+  EXPECT_NE(folly::kIsLinux, MemoryIdler::isUnmapUnusedStackAvailable());
+}
+
+TEST(MemoryIdler, isUnmapUnusedStackAvailableInAltThread) {
+  auto fn = [&] { EXPECT_TRUE(MemoryIdler::isUnmapUnusedStackAvailable()); };
+  std::thread(fn).join(); // definitely not the main thread
+}
 
 TEST(MemoryIdler, releaseStack) {
   MemoryIdler::unmapUnusedStack();
@@ -57,7 +66,7 @@ struct MockClock {
   using duration = std::chrono::steady_clock::duration;
   using time_point = std::chrono::time_point<MockClock, duration>;
 
-  MOCK_METHOD0(nowImpl, time_point());
+  MOCK_METHOD(time_point, nowImpl, ());
 
   /// Hold on to the returned shared_ptr until the end of the test
   static std::shared_ptr<StrictMock<MockClock>> setup() {
@@ -66,9 +75,7 @@ struct MockClock {
     return rv;
   }
 
-  static time_point now() {
-    return s_mockClockInstance.lock()->nowImpl();
-  }
+  static time_point now() { return s_mockClockInstance.lock()->nowImpl(); }
 
   static std::weak_ptr<StrictMock<MockClock>> s_mockClockInstance;
 };
@@ -87,14 +94,16 @@ template <typename T>
 struct MockAtom : public std::atomic<T> {
   explicit MockAtom(T init = 0) : std::atomic<T>(init) {}
 
-  MOCK_CONST_METHOD2(futexWait, FutexResult(uint32_t, uint32_t));
-  MOCK_CONST_METHOD3(
+  MOCK_METHOD(FutexResult, futexWait, (uint32_t, uint32_t), (const));
+  MOCK_METHOD(
+      FutexResult,
       futexWaitUntil,
-      FutexResult(uint32_t, const MockClock::time_point&, uint32_t));
+      (uint32_t, const MockClock::time_point&, uint32_t),
+      (const));
 };
 
-FutexResult
-futexWait(const Futex<MockAtom>* futex, uint32_t expected, uint32_t waitMask) {
+FutexResult futexWait(
+    const Futex<MockAtom>* futex, uint32_t expected, uint32_t waitMask) {
   return futex->futexWait(expected, waitMask);
 }
 template <typename Clock, typename Duration>

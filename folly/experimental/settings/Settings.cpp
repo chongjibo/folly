@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,17 +60,25 @@ Optional<SettingMetadata> getSettingsMeta(StringPiece settingName) {
   return it->second->meta();
 }
 
-bool Snapshot::setFromString(
-    StringPiece settingName,
-    StringPiece newValue,
-    StringPiece reason) {
+SetResult Snapshot::setFromString(
+    StringPiece settingName, StringPiece newValue, StringPiece reason) {
   auto mapPtr = detail::settingsMap().rlock();
   auto it = mapPtr->find(settingName.str());
   if (it == mapPtr->end()) {
-    return false;
+    return makeUnexpected(SetErrorCode::NotFound);
   }
-  it->second->setFromString(newValue, reason, this);
-  return true;
+  return it->second->setFromString(newValue, reason, this);
+}
+
+SetResult Snapshot::forceSetFromString(
+    StringPiece settingName, StringPiece newValue, StringPiece reason) {
+  auto mapPtr = detail::settingsMap().rlock();
+  auto it = mapPtr->find(settingName.str());
+  if (it == mapPtr->end()) {
+    return makeUnexpected(SetErrorCode::NotFound);
+  }
+  it->second->forceSetFromString(newValue, reason, this);
+  return folly::unit;
 }
 
 Optional<Snapshot::SettingsInfo> Snapshot::getAsString(
@@ -83,14 +91,23 @@ Optional<Snapshot::SettingsInfo> Snapshot::getAsString(
   return it->second->getAsString(this);
 }
 
-bool Snapshot::resetToDefault(StringPiece settingName) {
+SetResult Snapshot::resetToDefault(StringPiece settingName) {
   auto mapPtr = detail::settingsMap().rlock();
   auto it = mapPtr->find(settingName.str());
   if (it == mapPtr->end()) {
-    return false;
+    return makeUnexpected(SetErrorCode::NotFound);
   }
-  it->second->resetToDefault(this);
-  return true;
+  return it->second->resetToDefault(this);
+}
+
+SetResult Snapshot::forceResetToDefault(StringPiece settingName) {
+  auto mapPtr = detail::settingsMap().rlock();
+  auto it = mapPtr->find(settingName.str());
+  if (it == mapPtr->end()) {
+    return makeUnexpected(SetErrorCode::NotFound);
+  }
+  it->second->forceResetToDefault(this);
+  return folly::unit;
 }
 
 void Snapshot::forEachSetting(
@@ -110,17 +127,17 @@ namespace detail {
 std::atomic<SettingCoreBase::Version> gGlobalVersion_;
 
 auto& getSavedValuesMutex() {
-  static SharedMutex gSavedValuesMutex;
-  return gSavedValuesMutex;
+  static Indestructible<SharedMutex> gSavedValuesMutex;
+  return *gSavedValuesMutex;
 }
 
 /* Version -> (count of outstanding snapshots, saved setting values) */
 auto& getSavedValues() {
-  static std::unordered_map<
+  static Indestructible<std::unordered_map<
       SettingCoreBase::Version,
-      std::pair<size_t, std::unordered_map<SettingCoreBase::Key, BoxedValue>>>
+      std::pair<size_t, std::unordered_map<SettingCoreBase::Key, BoxedValue>>>>
       gSavedValues;
-  return gSavedValues;
+  return *gSavedValues;
 }
 
 SettingCoreBase::Version nextGlobalVersion() {
@@ -131,7 +148,7 @@ void saveValueForOutstandingSnapshots(
     SettingCoreBase::Key settingKey,
     SettingCoreBase::Version version,
     const BoxedValue& value) {
-  SharedMutex::WriteHolder lg(getSavedValuesMutex());
+  std::unique_lock lg(getSavedValuesMutex());
   for (auto& it : getSavedValues()) {
     if (version <= it.first) {
       it.second.second[settingKey] = value;
@@ -141,7 +158,7 @@ void saveValueForOutstandingSnapshots(
 
 const BoxedValue* FOLLY_NULLABLE
 getSavedValue(SettingCoreBase::Key settingKey, SettingCoreBase::Version at) {
-  SharedMutex::ReadHolder lg(getSavedValuesMutex());
+  std::shared_lock lg(getSavedValuesMutex());
   auto it = getSavedValues().find(at);
   if (it != getSavedValues().end()) {
     auto jt = it->second.second.find(settingKey);
@@ -153,7 +170,7 @@ getSavedValue(SettingCoreBase::Key settingKey, SettingCoreBase::Version at) {
 }
 
 SnapshotBase::SnapshotBase() {
-  SharedMutex::WriteHolder lg(detail::getSavedValuesMutex());
+  std::unique_lock lg(detail::getSavedValuesMutex());
   at_ = detail::gGlobalVersion_.load();
   auto it = detail::getSavedValues().emplace(
       std::piecewise_construct,
@@ -163,20 +180,26 @@ SnapshotBase::SnapshotBase() {
 }
 
 SnapshotBase::~SnapshotBase() {
-  SharedMutex::WriteHolder lg(detail::getSavedValuesMutex());
-  auto it = detail::getSavedValues().find(at_);
-  assert(it != detail::getSavedValues().end());
-  --it->second.first;
-  if (!it->second.first) {
-    detail::getSavedValues().erase(at_);
+  std::unique_lock lg(detail::getSavedValuesMutex());
+  auto& savedValues = detail::getSavedValues();
+  auto it = savedValues.find(at_);
+  assert(it != savedValues.end());
+  if (it != savedValues.end()) {
+    --it->second.first;
+    if (!it->second.first) {
+      savedValues.erase(at_);
+    }
   }
 }
 
 } // namespace detail
 
 void Snapshot::publish() {
+  // Double check frozen immutables since they could have been frozen after the
+  // values were set.
+  auto frozenProjects = frozenSettingProjects();
   for (auto& it : snapshotValues_) {
-    it.second.publish();
+    it.second.publish(frozenProjects);
   }
 }
 

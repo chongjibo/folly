@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <folly/gen/Parallel.h>
+
 #include <array>
 #include <iostream>
 #include <memory>
@@ -22,7 +24,6 @@
 #include <glog/logging.h>
 
 #include <folly/gen/Base.h>
-#include <folly/gen/Parallel.h>
 #include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
 
@@ -103,10 +104,4 @@ TEST(ParallelTest, PSum) {
   EXPECT_EQ(
       from(primes) | map(sleepyWork) | sum,
       from(primes) | parallel(map(sleepyWork) | sub(sum)) | sum);
-}
-
-int main(int argc, char* argv[]) {
-  testing::InitGoogleTest(&argc, argv);
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
-  return RUN_ALL_TESTS();
 }

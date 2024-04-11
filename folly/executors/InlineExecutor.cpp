@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 namespace folly {
 
 InlineExecutor& InlineExecutor::instance_slow() noexcept {
-  static auto instance = Indestructible<InlineExecutor>{};
+  static Indestructible<InlineExecutor> instance;
   cache.store(&*instance, std::memory_order_release);
   return *instance;
 }

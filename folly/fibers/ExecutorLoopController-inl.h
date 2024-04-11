@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 
 #pragma once
+#include <thread>
+#include <folly/ScopeGuard.h>
 #include <folly/futures/Future.h>
 
 namespace folly {
@@ -36,10 +38,23 @@ inline void ExecutorLoopController::schedule() {
   if (!executorKeepAlive_) {
     executorKeepAlive_ = getKeepAliveToken(executor_);
   }
-  executor_->add([this]() { return runLoop(); });
+  auto guard = localCallbackControlBlock_->trySchedule();
+  if (!guard) {
+    return;
+  }
+  executor_->add([this, guard = std::move(guard)]() {
+    if (guard->isCancelled()) {
+      return;
+    }
+    runLoop();
+  });
 }
 
 inline void ExecutorLoopController::runLoop() {
+  auto oldLoopThread = loopThread_.exchange(std::this_thread::get_id());
+  DCHECK(oldLoopThread == std::thread::id{});
+  SCOPE_EXIT { loopThread_ = std::thread::id{}; };
+
   if (!executorKeepAlive_) {
     if (!fm_->hasTasks()) {
       return;
@@ -53,6 +68,7 @@ inline void ExecutorLoopController::runLoop() {
 }
 
 inline void ExecutorLoopController::runEagerFiber(Fiber* fiber) {
+  DCHECK(loopThread_ == std::this_thread::get_id());
   if (!executorKeepAlive_) {
     executorKeepAlive_ = getKeepAliveToken(executor_);
   }

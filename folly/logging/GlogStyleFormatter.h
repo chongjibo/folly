@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,8 +53,13 @@ namespace folly {
  */
 class GlogStyleFormatter : public LogFormatter {
  public:
+  explicit GlogStyleFormatter(bool log_thread_name = false)
+      : log_thread_name_(log_thread_name) {}
+
   std::string formatMessage(
-      const LogMessage& message,
-      const LogCategory* handlerCategory) override;
+      const LogMessage& message, const LogCategory* handlerCategory) override;
+
+ private:
+  const bool log_thread_name_{false};
 };
 } // namespace folly

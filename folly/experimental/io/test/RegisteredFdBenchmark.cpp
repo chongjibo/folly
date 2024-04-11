@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -85,12 +85,15 @@ class EventFD : public EventHandler {
 class BackendEventBase : public EventBase {
  public:
   explicit BackendEventBase(bool useRegisteredFds, size_t capacity = 32 * 1024)
-      : EventBase(getBackend(useRegisteredFds, capacity), false) {}
+      : EventBase(EventBase::Options()
+                      .setBackendFactory([useRegisteredFds, capacity] {
+                        return getBackend(useRegisteredFds, capacity);
+                      })
+                      .setSkipTimeMeasurement(true)) {}
 
  private:
   static std::unique_ptr<folly::EventBaseBackendBase> getBackend(
-      bool useRegisteredFds,
-      size_t capacity) {
+      bool useRegisteredFds, size_t capacity) {
     folly::PollIoBackend::Options options;
     options.setCapacity(capacity)
         .setMaxSubmit(256)
@@ -101,10 +104,7 @@ class BackendEventBase : public EventBase {
 };
 
 void runTest(
-    unsigned int iters,
-    bool persist,
-    bool useRegisteredFds,
-    size_t numEvents) {
+    unsigned int iters, bool persist, bool useRegisteredFds, size_t numEvents) {
   BenchmarkSuspender suspender;
   uint64_t total = iters * numEvents;
   BackendEventBase evb(useRegisteredFds);
@@ -129,11 +129,7 @@ BENCHMARK_RELATIVE_NAMED_PARAM(runTest, io_uring_persist_reg_64, true, true, 64)
 BENCHMARK_DRAW_LINE();
 BENCHMARK_NAMED_PARAM(runTest, io_uring_persist_128, true, false, 128)
 BENCHMARK_RELATIVE_NAMED_PARAM(
-    runTest,
-    io_uring_persist_reg_128,
-    true,
-    true,
-    128)
+    runTest, io_uring_persist_reg_128, true, true, 128)
 BENCHMARK_DRAW_LINE();
 // add a non persistent benchamrk too
 // so we can see the useRegisteredFds flag
@@ -141,11 +137,7 @@ BENCHMARK_DRAW_LINE();
 BENCHMARK_DRAW_LINE();
 BENCHMARK_NAMED_PARAM(runTest, io_uring_no_persist_128, false, false, 128)
 BENCHMARK_RELATIVE_NAMED_PARAM(
-    runTest,
-    io_uring_no_persist_reg_128,
-    false,
-    true,
-    128)
+    runTest, io_uring_no_persist_reg_128, false, true, 128)
 BENCHMARK_DRAW_LINE();
 
 int main(int argc, char** argv) {

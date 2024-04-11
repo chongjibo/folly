@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,23 +23,27 @@
 
 #include <folly/Benchmark.h>
 #include <folly/init/Init.h>
+#include <folly/lang/Keep.h>
 #include <folly/portability/GFlags.h>
 
 DEFINE_int32(num_threads, 4, "No. of threads allocting the objects");
-
-namespace folly {
 
 namespace {
 struct PrivateTag {};
 } // namespace
 
-using Counter = SingletonRelaxedCounter<size_t, PrivateTag>;
+using Counter = folly::SingletonRelaxedCounter<size_t, PrivateTag>;
 
 // small wrappers around the functions being benchmarked
 // useful for looking at the inlined native code of the fast path
-extern "C" void check() noexcept {
+extern "C" FOLLY_KEEP void check_singleton_relaxed_counter_add_1() {
   Counter::add(1);
 }
+extern "C" FOLLY_KEEP void check_singleton_relaxed_counter_add(size_t i) {
+  Counter::add(i);
+}
+
+namespace folly {
 
 // a noop which the compiler cannot see through
 // used to prevent some compiler optimizations which could skew benchmarks

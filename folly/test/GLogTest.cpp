@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
 
 #include <folly/GLog.h>
 
-#include <folly/portability/GTest.h>
-
 #include <vector>
+
+#include <folly/portability/GTest.h>
 
 TEST(LogEveryMs, basic) {
   std::vector<std::chrono::steady_clock::time_point> hist;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
+#include <folly/portability/Config.h>
+
 // AtomicSharedPtr-detail.h only works with libstdc++, so skip these tests for
 // other vendors
-#ifdef FOLLY_USE_LIBSTDCPP
+#if defined(__GLIBCXX__)
 
 #include <folly/concurrency/AtomicSharedPtr.h>
 
@@ -39,6 +41,7 @@ using std::make_shared;
 using std::memory_order;
 using std::memory_order_acq_rel;
 using std::memory_order_acquire;
+using std::memory_order_consume;
 using std::memory_order_relaxed;
 using std::memory_order_release;
 using std::memory_order_seq_cst;
@@ -64,6 +67,8 @@ static const char* memoryOrder(memory_order order) {
       return "relaxed";
     case memory_order_acquire:
       return "acquire";
+    case memory_order_consume:
+      return "consume";
     case memory_order_release:
       return "release";
     case memory_order_acq_rel:
@@ -145,12 +150,22 @@ void contended_read_write(
   for (size_t i = 0; i < readers; ++i) {
     unique_lock<mutex> ulock(lock);
     threads.emplace_back(
-        &read_asp<T>, move(ulock), ref(cvar), ref(go), ref(aptr), readOrder);
+        &read_asp<T>,
+        std::move(ulock),
+        ref(cvar),
+        ref(go),
+        ref(aptr),
+        readOrder);
   }
   for (size_t i = 0; i < writers; ++i) {
     unique_lock<mutex> ulock(lock);
     threads.emplace_back(
-        &write_asp<T>, move(ulock), ref(cvar), ref(go), ref(aptr), writeOrder);
+        &write_asp<T>,
+        std::move(ulock),
+        ref(cvar),
+        ref(go),
+        ref(aptr),
+        writeOrder);
   }
   unique_lock<mutex> ulock(lock);
   ulock.unlock();
@@ -231,10 +246,10 @@ int main(int, char**) {
   return 0;
 }
 
-#else // #ifdef FOLLY_USE_LIBSTDCPP
+#else // defined(__GLIBCXX__)
 
 int main(int, char**) {
   return 1;
 }
 
-#endif // #ifdef FOLLY_USE_LIBSTDCPP
+#endif // defined(__GLIBCXX__)

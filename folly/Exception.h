@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@
 #include <folly/FBString.h>
 #include <folly/Likely.h>
 #include <folly/Portability.h>
+#include <folly/portability/SysTypes.h>
 
 namespace folly {
 
@@ -35,15 +36,22 @@ namespace folly {
 //
 // The *Explicit functions take an explicit value for errno.
 
+// On linux and similar platforms the value of `errno` is a mixture of
+// POSIX-`errno`-domain error codes and per-OS extended error codes. So the
+// most appropriate category to use is `system_category`.
+//
+// On Windows `system_category` means codes that can be returned by Win32 API
+// `GetLastError` and codes from the `errno`-domain must be reported as
+// `generic_category`.
+inline const std::error_category& errorCategoryForErrnoDomain() noexcept {
+  if (kIsWindows) {
+    return std::generic_category();
+  }
+  return std::system_category();
+}
+
 inline std::system_error makeSystemErrorExplicit(int err, const char* msg) {
-  // TODO: The C++ standard indicates that std::generic_category() should be
-  // used for POSIX errno codes.
-  //
-  // We should ideally change this to use std::generic_category() instead of
-  // std::system_category().  However, undertaking this change will require
-  // updating existing call sites that currently catch exceptions thrown by
-  // this code and currently expect std::system_category.
-  return std::system_error(err, std::system_category(), msg);
+  return std::system_error(err, errorCategoryForErrnoDomain(), msg);
 }
 
 template <class... Args>
@@ -81,7 +89,7 @@ template <class... Args>
 // on error.
 template <class... Args>
 void checkPosixError(int err, Args&&... args) {
-  if (UNLIKELY(err != 0)) {
+  if (FOLLY_UNLIKELY(err != 0)) {
     throwSystemErrorExplicit(err, std::forward<Args>(args)...);
   }
 }
@@ -90,7 +98,7 @@ void checkPosixError(int err, Args&&... args) {
 // number on error), throw on error.
 template <class... Args>
 void checkKernelError(ssize_t ret, Args&&... args) {
-  if (UNLIKELY(ret < 0)) {
+  if (FOLLY_UNLIKELY(ret < 0)) {
     throwSystemErrorExplicit(int(-ret), std::forward<Args>(args)...);
   }
 }
@@ -99,14 +107,14 @@ void checkKernelError(ssize_t ret, Args&&... args) {
 // on error.
 template <class... Args>
 void checkUnixError(ssize_t ret, Args&&... args) {
-  if (UNLIKELY(ret == -1)) {
+  if (FOLLY_UNLIKELY(ret == -1)) {
     throwSystemError(std::forward<Args>(args)...);
   }
 }
 
 template <class... Args>
 void checkUnixErrorExplicit(ssize_t ret, int savedErrno, Args&&... args) {
-  if (UNLIKELY(ret == -1)) {
+  if (FOLLY_UNLIKELY(ret == -1)) {
     throwSystemErrorExplicit(savedErrno, std::forward<Args>(args)...);
   }
 }
@@ -116,14 +124,14 @@ void checkUnixErrorExplicit(ssize_t ret, int savedErrno, Args&&... args) {
 // freopen, tmpfile, etc.
 template <class... Args>
 void checkFopenError(FILE* fp, Args&&... args) {
-  if (UNLIKELY(!fp)) {
+  if (FOLLY_UNLIKELY(!fp)) {
     throwSystemError(std::forward<Args>(args)...);
   }
 }
 
 template <class... Args>
 void checkFopenErrorExplicit(FILE* fp, int savedErrno, Args&&... args) {
-  if (UNLIKELY(!fp)) {
+  if (FOLLY_UNLIKELY(!fp)) {
     throwSystemErrorExplicit(savedErrno, std::forward<Args>(args)...);
   }
 }

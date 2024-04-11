@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,14 @@
 
 #include <folly/io/async/test/SocketPair.h>
 
+#include <cerrno>
+#include <stdexcept>
+
 #include <folly/Conv.h>
 #include <folly/net/NetOps.h>
 #include <folly/portability/Fcntl.h>
 #include <folly/portability/Sockets.h>
 #include <folly/portability/Unistd.h>
-
-#include <cerrno>
-#include <stdexcept>
 
 namespace folly {
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/executors/TimekeeperScheduledExecutor.h>
+
 #include <folly/futures/Future.h>
 
 namespace folly {
@@ -29,13 +30,8 @@ TimekeeperScheduledExecutor::create(
 }
 
 void TimekeeperScheduledExecutor::run(Func func) {
-  try {
-    func();
-  } catch (std::exception const& ex) {
-    LOG(ERROR) << "func threw unhandled exception " << folly::exceptionStr(ex);
-  } catch (...) {
-    LOG(ERROR) << "func threw unhandled non-exception object";
-  }
+  invokeCatchingExns(
+      "TimekeeperScheduledExecutor: func", std::exchange(func, {}));
 }
 
 void TimekeeperScheduledExecutor::add(Func func) {
@@ -46,13 +42,12 @@ void TimekeeperScheduledExecutor::add(Func func) {
 }
 
 void TimekeeperScheduledExecutor::scheduleAt(
-    Func&& func,
-    ScheduledExecutor::TimePoint const& t) {
-  auto delay = std::chrono::duration_cast<folly::Duration>(
+    Func&& func, ScheduledExecutor::TimePoint const& t) {
+  auto delay = std::chrono::duration_cast<folly::HighResDuration>(
       t - std::chrono::steady_clock::now());
   if (delay.count() > 0) {
     auto tk = getTimekeeper_();
-    if (UNLIKELY(!tk)) {
+    if (FOLLY_UNLIKELY(!tk)) {
       throw TimekeeperScheduledExecutorNoTimekeeper();
     }
     tk->after(delay)
@@ -64,14 +59,14 @@ void TimekeeperScheduledExecutor::scheduleAt(
   }
 }
 
-bool TimekeeperScheduledExecutor::keepAliveAcquire() {
+bool TimekeeperScheduledExecutor::keepAliveAcquire() noexcept {
   auto keepAliveCounter =
       keepAliveCounter_.fetch_add(1, std::memory_order_relaxed);
   DCHECK(keepAliveCounter > 0);
   return true;
 }
 
-void TimekeeperScheduledExecutor::keepAliveRelease() {
+void TimekeeperScheduledExecutor::keepAliveRelease() noexcept {
   auto keepAliveCounter =
       keepAliveCounter_.fetch_sub(1, std::memory_order_acq_rel);
   DCHECK(keepAliveCounter > 0);

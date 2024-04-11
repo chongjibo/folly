@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,11 @@
 
 #pragma once
 
+#include <fcntl.h>
+#include <sys/types.h>
+
+#include <list>
+
 #include <folly/SocketAddress.h>
 #include <folly/experimental/TestUtil.h>
 #include <folly/io/async/AsyncSSLSocket.h>
@@ -25,15 +30,12 @@
 #include <folly/io/async/AsyncTransport.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ssl/SSLErrors.h>
+#include <folly/io/async/test/CallbackStateEnum.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/Sockets.h>
 #include <folly/portability/Unistd.h>
 
-#include <fcntl.h>
-#include <sys/types.h>
-#include <list>
-
-namespace folly {
+namespace folly::test {
 
 extern const char* kTestCert;
 extern const char* kTestKey;
@@ -43,8 +45,7 @@ extern const char* kTestCertCN;
 extern const char* kClientTestCert;
 extern const char* kClientTestKey;
 extern const char* kClientTestCA;
-
-enum StateEnum { STATE_WAITING, STATE_SUCCEEDED, STATE_FAILED };
+extern const char* kClientTestChain;
 
 class HandshakeCallback;
 
@@ -53,18 +54,17 @@ class SSLServerAcceptCallbackBase : public AsyncServerSocket::AcceptCallback {
   explicit SSLServerAcceptCallbackBase(HandshakeCallback* hcb)
       : state(STATE_WAITING), hcb_(hcb) {}
 
-  ~SSLServerAcceptCallbackBase() override {
-    EXPECT_EQ(STATE_SUCCEEDED, state);
-  }
+  ~SSLServerAcceptCallbackBase() override { EXPECT_EQ(STATE_SUCCEEDED, state); }
 
-  void acceptError(const std::exception& ex) noexcept override {
-    LOG(WARNING) << "SSLServerAcceptCallbackBase::acceptError " << ex.what();
+  void acceptError(folly::exception_wrapper ex) noexcept override {
+    LOG(WARNING) << "SSLServerAcceptCallbackBase::acceptError " << ex;
     state = STATE_FAILED;
   }
 
   void connectionAccepted(
       folly::NetworkSocket fd,
-      const SocketAddress& /* clientAddr */) noexcept override {
+      const SocketAddress& clientAddr,
+      AcceptInfo /* info */) noexcept override {
     if (socket_) {
       socket_->detachEventBase();
     }
@@ -72,7 +72,13 @@ class SSLServerAcceptCallbackBase : public AsyncServerSocket::AcceptCallback {
     try {
       // Create a AsyncSSLSocket object with the fd. The socket should be
       // added to the event base and in the state of accepting SSL connection.
-      socket_ = AsyncSSLSocket::newSocket(ctx_, base_, fd);
+      socket_ = AsyncSSLSocket::newSocket(
+          ctx_,
+          base_,
+          fd,
+          /*server=*/true,
+          /*deferSecurityNegotiation=*/false,
+          &clientAddr);
     } catch (const std::exception& e) {
       LOG(ERROR) << "Exception %s caught while creating a AsyncSSLSocket "
                     "object with socket "
@@ -102,11 +108,12 @@ class SSLServerAcceptCallbackBase : public AsyncServerSocket::AcceptCallback {
 
 class TestSSLServer {
  public:
+  static std::unique_ptr<SSLContext> getDefaultSSLContext();
+
   // Create a TestSSLServer.
   // This immediately starts listening on the given port.
   explicit TestSSLServer(
-      SSLServerAcceptCallbackBase* acb,
-      bool enableTFO = false);
+      SSLServerAcceptCallbackBase* acb, bool enableTFO = false);
   explicit TestSSLServer(
       SSLServerAcceptCallbackBase* acb,
       std::shared_ptr<SSLContext> ctx,
@@ -115,15 +122,11 @@ class TestSSLServer {
   // Kills the thread.
   virtual ~TestSSLServer();
 
-  EventBase& getEventBase() {
-    return evb_;
-  }
+  EventBase& getEventBase() { return evb_; }
 
   void loadTestCerts();
 
-  const SocketAddress& getAddress() const {
-    return address_;
-  }
+  const SocketAddress& getAddress() const { return address_; }
 
  protected:
   EventBase evb_;
@@ -136,4 +139,4 @@ class TestSSLServer {
  private:
   void init(bool);
 };
-} // namespace folly
+} // namespace folly::test

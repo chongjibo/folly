@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,13 +20,12 @@
 
 #include <folly/File.h>
 #include <folly/Range.h>
+#include <folly/portability/Unistd.h>
 
 namespace folly {
 
 /**
  * Maps files in memory (read-only).
- *
- * @author Tudor Bosman (tudorb@fb.com)
  */
 class MemoryMapping {
  public:
@@ -98,7 +97,7 @@ class MemoryMapping {
     // Page size. 0 = use appropriate page size.
     // (On Linux, we use a huge page size if the file is on a hugetlbfs
     // file system, and the default page size otherwise)
-    off_t pageSize = 0;
+    off64_t pageSize = 0;
 
     // If shared (default), the memory mapping is shared with other processes
     // mapping the same file (or children); if not shared (private), each
@@ -142,24 +141,24 @@ class MemoryMapping {
   /**
    * Create an anonymous mapping.
    */
-  MemoryMapping(AnonymousType, off_t length, Options options = Options());
+  MemoryMapping(AnonymousType, off64_t length, Options options = Options());
 
   explicit MemoryMapping(
       File file,
-      off_t offset = 0,
-      off_t length = -1,
+      off64_t offset = 0,
+      off64_t length = -1,
       Options options = Options());
 
   explicit MemoryMapping(
       const char* name,
-      off_t offset = 0,
-      off_t length = -1,
+      off64_t offset = 0,
+      off64_t length = -1,
       Options options = Options());
 
   explicit MemoryMapping(
       int fd,
-      off_t offset = 0,
-      off_t length = -1,
+      off64_t offset = 0,
+      off64_t length = -1,
       Options options = Options());
 
   MemoryMapping(const MemoryMapping&) = delete;
@@ -210,9 +209,7 @@ class MemoryMapping {
   /**
    * A range of bytes mapped by this mapping.
    */
-  ByteRange range() const {
-    return data_;
-  }
+  ByteRange range() const { return data_; }
 
   /**
    * A bitwise cast of the mapped bytes as range of mutable values. Only
@@ -237,17 +234,11 @@ class MemoryMapping {
    * Return the memory area where the file was mapped.
    * Deprecated; use range() instead.
    */
-  StringPiece data() const {
-    return asRange<const char>();
-  }
+  StringPiece data() const { return asRange<const char>(); }
 
-  bool mlocked() const {
-    return locked_;
-  }
+  bool mlocked() const { return locked_; }
 
-  int fd() const {
-    return file_.fd();
-  }
+  int fd() const { return file_.fd(); }
 
  private:
   MemoryMapping();
@@ -256,11 +247,11 @@ class MemoryMapping {
     kGrow = 1 << 0,
     kAnon = 1 << 1,
   };
-  void init(off_t offset, off_t length);
+  void init(off64_t offset, off64_t length);
 
   File file_;
   void* mapStart_ = nullptr;
-  off_t mapLength_ = 0;
+  off64_t mapLength_ = 0;
   Options options_;
   bool locked_ = false;
   MutableByteRange data_;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <folly/synchronization/CallOnce.h>
+
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -21,7 +23,6 @@
 
 #include <folly/Traits.h>
 #include <folly/portability/GTest.h>
-#include <folly/synchronization/CallOnce.h>
 
 static size_t const kNumThreads = 16;
 
@@ -40,22 +41,32 @@ void bm_impl(CallOnceFunc&& fn, size_t iters) {
   }
 }
 
-TEST(FollyCallOnce, Simple) {
-  folly::once_flag flag;
+template <typename T>
+class FollyCallOnce : public testing::Test {
+ public:
+  using OnceFlag = T;
+};
+
+using OnceFlagTypes =
+    testing::Types<folly::once_flag, folly::compact_once_flag>;
+TYPED_TEST_SUITE(FollyCallOnce, OnceFlagTypes);
+
+TYPED_TEST(FollyCallOnce, Simple) {
+  typename TestFixture::OnceFlag flag;
   auto fn = [&](int* outp) { ++*outp; };
   int out = 0;
-  ASSERT_FALSE(folly::test_once(folly::as_const(flag)));
+  ASSERT_FALSE(folly::test_once(std::as_const(flag)));
   folly::call_once(flag, fn, &out);
-  ASSERT_TRUE(folly::test_once(folly::as_const(flag)));
+  ASSERT_TRUE(folly::test_once(std::as_const(flag)));
   ASSERT_EQ(1, out);
   folly::call_once(flag, fn, &out);
-  ASSERT_TRUE(folly::test_once(folly::as_const(flag)));
+  ASSERT_TRUE(folly::test_once(std::as_const(flag)));
   ASSERT_EQ(1, out);
 }
 
-TEST(FollyCallOnce, Exception) {
+TYPED_TEST(FollyCallOnce, Exception) {
   struct ExpectedException {};
-  folly::once_flag flag;
+  typename TestFixture::OnceFlag flag;
   size_t numCalls = 0;
   EXPECT_THROW(
       folly::call_once(
@@ -65,16 +76,16 @@ TEST(FollyCallOnce, Exception) {
             throw ExpectedException();
           }),
       ExpectedException);
-  ASSERT_FALSE(folly::test_once(folly::as_const(flag)));
+  ASSERT_FALSE(folly::test_once(std::as_const(flag)));
   EXPECT_EQ(1, numCalls);
   folly::call_once(flag, [&] { ++numCalls; });
-  ASSERT_TRUE(folly::test_once(folly::as_const(flag)));
+  ASSERT_TRUE(folly::test_once(std::as_const(flag)));
   EXPECT_EQ(2, numCalls);
 }
 
-TEST(FollyCallOnce, Stress) {
+TYPED_TEST(FollyCallOnce, Stress) {
   for (int i = 0; i < 100; ++i) {
-    folly::once_flag flag;
+    typename TestFixture::OnceFlag flag;
     int out = 0;
     bm_impl([&] { folly::call_once(flag, [&] { ++out; }); }, 100);
     ASSERT_EQ(1, out);
@@ -82,10 +93,10 @@ TEST(FollyCallOnce, Stress) {
 }
 
 namespace {
-template <typename T>
+template <typename OnceFlag, typename T>
 struct Lazy {
   folly::aligned_storage_for_t<T> storage;
-  folly::once_flag once;
+  OnceFlag once;
 
   ~Lazy() {
     if (folly::test_once(once)) {
@@ -110,17 +121,33 @@ struct MaybeRaise {
 };
 } // namespace
 
-TEST(FollyCallOnce, Lazy) {
-  Lazy<MaybeRaise> lazy;
+TYPED_TEST(FollyCallOnce, Lazy) {
+  Lazy<typename TestFixture::OnceFlag, MaybeRaise> lazy;
   EXPECT_THROW(lazy.construct_or_fetch(true), std::runtime_error);
   auto& num = *lazy.construct_or_fetch(false).check;
   EXPECT_EQ(7, num);
 }
 
-TEST(FollyTryCallOnce, example) {
-  folly::once_flag once;
+TYPED_TEST(FollyCallOnce, TryCallOnce) {
+  typename TestFixture::OnceFlag once;
   EXPECT_FALSE(folly::try_call_once(once, []() noexcept { return false; }));
   EXPECT_FALSE(folly::test_once(once));
   EXPECT_TRUE(folly::try_call_once(once, []() noexcept { return true; }));
+  EXPECT_TRUE(folly::test_once(once));
+}
+
+TYPED_TEST(FollyCallOnce, ResetOnce) {
+  typename TestFixture::OnceFlag once;
+  EXPECT_FALSE(folly::test_once(once));
+  folly::call_once(once, [] {});
+  EXPECT_TRUE(folly::test_once(once));
+  folly::reset_once(once);
+  EXPECT_FALSE(folly::test_once(once));
+}
+
+TYPED_TEST(FollyCallOnce, SetOnce) {
+  typename TestFixture::OnceFlag once;
+  EXPECT_FALSE(folly::test_once(once));
+  folly::set_once(once);
   EXPECT_TRUE(folly::test_once(once));
 }

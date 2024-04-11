@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,8 +31,7 @@ class SimpleLoopController::SimpleTimeoutManager : public TimeoutManager {
       : loopController_(loopController) {}
 
   void attachTimeoutManager(
-      AsyncTimeout* /* unused */,
-      InternalEnum /* unused */) final {}
+      AsyncTimeout* /* unused */, InternalEnum /* unused */) final {}
   void detachTimeoutManager(AsyncTimeout* /* unused */) final {}
 
   bool scheduleTimeout(AsyncTimeout* obj, timeout_type timeout) final {

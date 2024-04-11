@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 
 #pragma once
 
-#include <folly/io/Cursor.h>
-#include <folly/io/IOBuf.h>
 #include <map>
 #include <vector>
+
+#include <folly/io/Cursor.h>
+#include <folly/io/IOBuf.h>
 
 namespace folly {
 namespace ssl {
@@ -95,6 +96,7 @@ struct ClientHelloInfo {
   // long as each ServerName has a distinct type). In practice, the only one
   // we really care about is HOST_NAME.
   std::string clientHelloSNIHostname_;
+  std::vector<std::string> clientAlpns_;
 };
 
 } // namespace ssl

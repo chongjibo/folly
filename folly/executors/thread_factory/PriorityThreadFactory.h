@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,7 @@
 
 #pragma once
 
-#include <folly/executors/thread_factory/ThreadFactory.h>
-
-#include <glog/logging.h>
-
-#include <folly/String.h>
-#include <folly/portability/SysResource.h>
-#include <folly/portability/SysTime.h>
+#include <folly/executors/thread_factory/InitThreadFactory.h>
 
 namespace folly {
 
@@ -37,27 +31,9 @@ namespace folly {
  * scheduler uses these values to do smart thread prioritization.
  * sched_priority function calls only affect real-time schedulers.
  */
-class PriorityThreadFactory : public ThreadFactory {
+class PriorityThreadFactory : public InitThreadFactory {
  public:
-  explicit PriorityThreadFactory(
-      std::shared_ptr<ThreadFactory> factory,
-      int priority)
-      : factory_(std::move(factory)), priority_(priority) {}
-
-  std::thread newThread(Func&& func) override {
-    int priority = priority_;
-    return factory_->newThread([priority, func = std::move(func)]() mutable {
-      if (setpriority(PRIO_PROCESS, 0, priority) != 0) {
-        LOG(ERROR) << "setpriority failed (are you root?) with error " << errno,
-            errnoStr(errno);
-      }
-      func();
-    });
-  }
-
- private:
-  std::shared_ptr<ThreadFactory> factory_;
-  int priority_;
+  PriorityThreadFactory(std::shared_ptr<ThreadFactory> factory, int priority);
 };
 
 } // namespace folly

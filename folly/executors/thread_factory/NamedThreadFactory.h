@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,21 +35,17 @@ class NamedThreadFactory : public ThreadFactory {
   std::thread newThread(Func&& func) override {
     auto name = folly::to<std::string>(prefix_, suffix_++);
     return std::thread(
-        [func = std::move(func), name = std::move(name)]() mutable {
-          folly::setThreadName(name);
-          func();
+        [func_2 = std::move(func), name_2 = std::move(name)]() mutable {
+          folly::setThreadName(name_2);
+          func_2();
         });
   }
 
-  void setNamePrefix(folly::StringPiece prefix) {
-    prefix_ = prefix.str();
-  }
+  void setNamePrefix(folly::StringPiece prefix) { prefix_ = prefix.str(); }
 
-  const std::string& getNamePrefix() {
-    return prefix_;
-  }
+  const std::string& getNamePrefix() const override { return prefix_; }
 
- private:
+ protected:
   std::string prefix_;
   std::atomic<uint64_t> suffix_;
 };

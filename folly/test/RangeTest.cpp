@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,9 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// @author Kristina Holst (kholst@fb.com)
-// @author Andrei Alexandrescu (andrei.alexandrescu@fb.com)
 
 #include <folly/Range.h>
 
@@ -47,10 +44,10 @@ CPP_assert(ranges::view_<folly::StringPiece>);
 #endif
 
 using namespace folly;
-using namespace folly::detail;
 using namespace std;
 
-static_assert(std::is_literal_type<StringPiece>::value, "");
+static_assert(folly::detail::range_is_char_type_v_<char*>, "");
+static_assert(folly::detail::range_is_byte_type_v_<unsigned char*>, "");
 
 BOOST_CONCEPT_ASSERT((boost::RandomAccessRangeConcept<StringPiece>));
 
@@ -303,6 +300,20 @@ TEST(StringPiece, ToByteRange) {
   EXPECT_EQ(a.end(), c.end());
 }
 
+TEST(ByteRange, FromString) {
+  std::string s("hello");
+  ByteRange b(s);
+  EXPECT_EQ(
+      static_cast<const void*>(s.data()), static_cast<const void*>(b.begin()));
+  EXPECT_EQ(s.size(), b.size());
+
+  std::string_view sv(s);
+  ByteRange b2(sv);
+  EXPECT_EQ(
+      static_cast<const void*>(s.data()), static_cast<const void*>(b2.begin()));
+  EXPECT_EQ(s.size(), b2.size());
+}
+
 TEST(StringPiece, InvalidRange) {
   StringPiece a("hello");
   EXPECT_EQ(a, a.subpiece(0, 10));
@@ -335,13 +346,13 @@ TEST(StringPiece, Constexpr) {
 
 TEST(StringPiece, Prefix) {
   StringPiece a("hello");
-  EXPECT_TRUE(a.startsWith(""));
-  EXPECT_TRUE(a.startsWith("h"));
-  EXPECT_TRUE(a.startsWith('h'));
-  EXPECT_TRUE(a.startsWith("hello"));
-  EXPECT_FALSE(a.startsWith("hellox"));
-  EXPECT_FALSE(a.startsWith('x'));
-  EXPECT_FALSE(a.startsWith("x"));
+  EXPECT_TRUE(a.starts_with(""));
+  EXPECT_TRUE(a.starts_with("h"));
+  EXPECT_TRUE(a.starts_with('h'));
+  EXPECT_TRUE(a.starts_with("hello"));
+  EXPECT_FALSE(a.starts_with("hellox"));
+  EXPECT_FALSE(a.starts_with('x'));
+  EXPECT_FALSE(a.starts_with("x"));
 
   EXPECT_TRUE(a.startsWith("", folly::AsciiCaseInsensitive()));
   EXPECT_TRUE(a.startsWith("hello", folly::AsciiCaseInsensitive()));
@@ -391,13 +402,13 @@ TEST(StringPiece, Prefix) {
 
 TEST(StringPiece, Suffix) {
   StringPiece a("hello");
-  EXPECT_TRUE(a.endsWith(""));
-  EXPECT_TRUE(a.endsWith("o"));
-  EXPECT_TRUE(a.endsWith('o'));
-  EXPECT_TRUE(a.endsWith("hello"));
-  EXPECT_FALSE(a.endsWith("xhello"));
-  EXPECT_FALSE(a.endsWith("x"));
-  EXPECT_FALSE(a.endsWith('x'));
+  EXPECT_TRUE(a.ends_with(""));
+  EXPECT_TRUE(a.ends_with("o"));
+  EXPECT_TRUE(a.ends_with('o'));
+  EXPECT_TRUE(a.ends_with("hello"));
+  EXPECT_FALSE(a.ends_with("xhello"));
+  EXPECT_FALSE(a.ends_with("x"));
+  EXPECT_FALSE(a.ends_with('x'));
 
   EXPECT_TRUE(a.endsWith("", folly::AsciiCaseInsensitive()));
   EXPECT_TRUE(a.endsWith("o", folly::AsciiCaseInsensitive()));
@@ -516,7 +527,7 @@ TEST(StringPiece, erase) {
   EXPECT_EQ(a, "hello");
 }
 
-TEST(StringPiece, split_step_char_delimiter) {
+TEST(StringPiece, splitStepCharDelimiter) {
   //              0         1         2
   //              012345678901234567890123456
   auto const s = "this is just  a test string";
@@ -574,7 +585,7 @@ TEST(StringPiece, split_step_char_delimiter) {
   EXPECT_EQ("", x);
 }
 
-TEST(StringPiece, split_step_range_delimiter) {
+TEST(StringPiece, splitStepRangeDelimiter) {
   //              0         1         2         3
   //              0123456789012345678901234567890123
   auto const s = "this  is  just    a   test  string";
@@ -639,7 +650,7 @@ TEST(StringPiece, split_step_range_delimiter) {
 
 void split_step_with_process_noop(folly::StringPiece) {}
 
-TEST(StringPiece, split_step_with_process_char_delimiter) {
+TEST(StringPiece, splitStepWithProcessCharDelimiter) {
   //              0         1         2
   //              012345678901234567890123456
   auto const s = "this is just  a test string";
@@ -722,7 +733,7 @@ TEST(StringPiece, split_step_with_process_char_delimiter) {
   EXPECT_NO_THROW(p.split_step(' ', split_step_with_process_noop));
 }
 
-TEST(StringPiece, split_step_with_process_range_delimiter) {
+TEST(StringPiece, splitStepWithProcessRangeDelimiter) {
   //              0         1         2         3
   //              0123456789012345678901234567890123
   auto const s = "this  is  just    a   test  string";
@@ -812,7 +823,7 @@ TEST(StringPiece, split_step_with_process_range_delimiter) {
   EXPECT_NO_THROW(p.split_step(' ', split_step_with_process_noop));
 }
 
-TEST(StringPiece, split_step_with_process_char_delimiter_additional_args) {
+TEST(StringPiece, splitStepWithProcessCharDelimiterAdditionalArgs) {
   //              0         1         2
   //              012345678901234567890123456
   auto const s = "this is just  a test string";
@@ -847,7 +858,7 @@ TEST(StringPiece, split_step_with_process_char_delimiter_additional_args) {
   EXPECT_TRUE(p.empty());
 }
 
-TEST(StringPiece, split_step_with_process_range_delimiter_additional_args) {
+TEST(StringPiece, splitStepWithProcessRangeDelimiterAdditionalArgs) {
   //              0         1         2         3
   //              0123456789012345678901234567890123
   auto const s = "this  is  just    a   test  string";
@@ -884,19 +895,15 @@ TEST(StringPiece, split_step_with_process_range_delimiter_additional_args) {
 
 TEST(StringPiece, NoInvalidImplicitConversions) {
   struct IsString {
-    bool operator()(folly::Range<int*>) {
-      return false;
-    }
-    bool operator()(folly::StringPiece) {
-      return true;
-    }
+    bool operator()(folly::Range<int*>) { return false; }
+    bool operator()(folly::StringPiece) { return true; }
   };
 
   std::string s = "hello";
   EXPECT_TRUE(IsString()(s));
 }
 
-TEST(qfind, UInt32_Ranges) {
+TEST(qfind, UInt32Ranges) {
   vector<uint32_t> a({1, 2, 3, 260, 5});
   vector<uint32_t> b({2, 3, 4});
 
@@ -939,7 +946,7 @@ struct ByteSetNeedleFinder {
 
 using NeedleFinders =
     ::testing::Types<SseNeedleFinder, NoSseNeedleFinder, ByteSetNeedleFinder>;
-TYPED_TEST_CASE(NeedleFinderTest, NeedleFinders);
+TYPED_TEST_SUITE(NeedleFinderTest, NeedleFinders);
 
 TYPED_TEST(NeedleFinderTest, Null) {
   { // null characters in the string
@@ -1186,12 +1193,8 @@ TEST(RangeFunc, ConstexprCollection) {
   class IntCollection {
    public:
     constexpr IntCollection(const int* d, size_t s) : data_(d), size_(s) {}
-    constexpr const int* data() const {
-      return data_;
-    }
-    constexpr size_t size() const {
-      return size_;
-    }
+    constexpr const int* data() const { return data_; }
+    constexpr size_t size() const { return size_; }
 
    private:
     const int* data_;
@@ -1234,12 +1237,8 @@ TEST(CRangeFunc, Collection) {
   class IntCollection {
    public:
     constexpr IntCollection(int* d, size_t s) : data_(d), size_(s) {}
-    constexpr int const* data() const {
-      return data_;
-    }
-    constexpr size_t size() const {
-      return size_;
-    }
+    constexpr int const* data() const { return data_; }
+    constexpr size_t size() const { return size_; }
 
    private:
     int* data_;
@@ -1254,10 +1253,43 @@ TEST(CRangeFunc, Collection) {
   EXPECT_THAT(numCollRange, testing::ElementsAreArray({17, 1}));
 }
 
+TEST(Range, CompareChar) {
+  EXPECT_EQ(""_sp, ""_sp);
+  EXPECT_LT(""_sp, "world"_sp);
+  EXPECT_GT("world"_sp, ""_sp);
+  EXPECT_EQ("hello"_sp, "hello"_sp);
+  EXPECT_LT("hello"_sp, "world"_sp);
+  EXPECT_LT("hello"_sp, "helloworld"_sp);
+  EXPECT_GT("world"_sp, "hello"_sp);
+  EXPECT_GT("helloworld"_sp, "hello"_sp);
+}
+
+TEST(Range, CompareByte) {
+  auto br = [](auto sp) { return ByteRange(sp); };
+  EXPECT_EQ(br(""_sp), br(""_sp));
+  EXPECT_LT(br(""_sp), br("world"_sp));
+  EXPECT_GT(br("world"_sp), br(""_sp));
+  EXPECT_EQ(br("hello"_sp), br("hello"_sp));
+  EXPECT_LT(br("hello"_sp), br("world"_sp));
+  EXPECT_LT(br("hello"_sp), br("helloworld"_sp));
+  EXPECT_GT(br("world"_sp), br("hello"_sp));
+  EXPECT_GT(br("helloworld"_sp), br("hello"_sp));
+}
+
+TEST(Range, CompareFbck) {
+  auto vr = [](std::vector<int> const& _) { return folly::range(_); };
+  EXPECT_EQ(vr({}), vr({}));
+  EXPECT_LT(vr({}), vr({1}));
+  EXPECT_GT(vr({1}), vr({}));
+  EXPECT_EQ(vr({1}), vr({1}));
+  EXPECT_LT(vr({1}), vr({2}));
+  EXPECT_LT(vr({1}), vr({1, 2}));
+  EXPECT_GT(vr({2}), vr({1}));
+  EXPECT_GT(vr({1, 1}), vr({1}));
+}
+
 std::string get_rand_str(
-    size_t size,
-    std::uniform_int_distribution<>& dist,
-    std::mt19937& gen) {
+    size_t size, std::uniform_int_distribution<>& dist, std::mt19937& gen) {
   std::string ret(size, '\0');
   for (size_t i = 0; i < size; ++i) {
     ret[i] = static_cast<char>(dist(gen));
@@ -1386,6 +1418,8 @@ TEST(Range, Constructors) {
   EXPECT_EQ(subpiece1.size(), 2);
   EXPECT_EQ(subpiece1.begin(), subpiece2.begin());
   EXPECT_EQ(subpiece1.end(), subpiece2.end());
+
+  EXPECT_EQ(StringPiece("hello world").substr(5, 1), " ");
 }
 
 TEST(Range, ArrayConstructors) {
@@ -1438,6 +1472,8 @@ TEST(Range, LiteralSuffix) {
   constexpr auto literalPiece = "hello"_sp;
   constexpr StringPiece piece = "hello";
   EXPECT_EQ(literalPiece, piece);
+
+#if __cplusplus <= 202001L
   constexpr auto literalPiece8 = u8"hello"_sp;
 #if __cpp_char8_t >= 201811L
   constexpr Range<char8_t const*> piece8 = u8"hello";
@@ -1445,6 +1481,8 @@ TEST(Range, LiteralSuffix) {
   constexpr Range<char const*> piece8 = u8"hello";
 #endif
   EXPECT_EQ(literalPiece8, piece8);
+#endif
+
   constexpr auto literalPiece16 = u"hello"_sp;
   constexpr Range<char16_t const*> piece16{u"hello", 5};
   EXPECT_EQ(literalPiece16, piece16);
@@ -1471,9 +1509,7 @@ class fake_string_view {
   using size_type = std::size_t;
   explicit fake_string_view(char const* s, size_type c, fake_tag = {})
       : piece_(s, c) {}
-  /* implicit */ operator StringPiece() const {
-    return piece_;
-  }
+  /* implicit */ operator StringPiece() const { return piece_; }
   friend bool operator==(char const* rhs, fake_string_view lhs) {
     return rhs == lhs.piece_;
   }
@@ -1592,7 +1628,22 @@ TEST(Range, MutableStringPieceExplicitConversionOperator) {
   EXPECT_EQ("hello", piecec.to<fake_string_view>(fake_tag{}));
 }
 
-#if FOLLY_HAS_STRING_VIEW
+TEST(Range, InitializerList) {
+  auto check = [](Range<int const*> r) {
+    ASSERT_EQ(r.size(), 3);
+    EXPECT_EQ(*r.begin(), 1);
+    EXPECT_EQ(*(r.begin() + 1), 2);
+    EXPECT_EQ(*(r.begin() + 2), 3);
+  };
+
+  check(range({1, 2, 3}));
+  check(crange({1, 2, 3}));
+
+  static constexpr auto ilist = {1, 2, 3};
+  check(range(ilist));
+  check(crange(ilist));
+}
+
 namespace {
 std::size_t stringViewSize(std::string_view s) {
   return s.size();
@@ -1652,6 +1703,10 @@ TEST(StringPiece, StringViewConversion) {
   EXPECT_EQ(tt3.which, 1);
 }
 
+TEST(StringPiece, Format) {
+  EXPECT_EQ("  foo", fmt::format("{:>5}", folly::StringPiece("foo")));
+}
+
 namespace {
 
 // Range with non-pod value type should not cause compile errors.
@@ -1659,11 +1714,9 @@ class NonPOD {
  public:
   NonPOD() {}
 };
-FOLLY_MAYBE_UNUSED void test_func(Range<const NonPOD*>) {}
+[[maybe_unused]] void test_func(Range<const NonPOD*>) {}
 
 } // anonymous namespace
-
-#endif
 
 namespace {
 // Nested class should not cause compile errors due to incomplete parent

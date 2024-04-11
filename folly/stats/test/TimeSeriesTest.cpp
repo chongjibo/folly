@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,16 +14,15 @@
  * limitations under the License.
  */
 
-#include <folly/stats/BucketedTimeSeries.h>
-#include <folly/stats/MultiLevelTimeSeries.h>
-#include <folly/stats/detail/Bucket.h>
-
 #include <array>
 
 #include <glog/logging.h>
 
 #include <folly/container/Foreach.h>
 #include <folly/portability/GTest.h>
+#include <folly/stats/BucketedTimeSeries.h>
+#include <folly/stats/MultiLevelTimeSeries.h>
+#include <folly/stats/detail/Bucket.h>
 
 using folly::BucketedTimeSeries;
 using std::string;
@@ -1102,10 +1101,9 @@ TEST(MinuteHourTimeSeries, QueryByInterval) {
   }
 }
 
-TEST(MultiLevelTimeSeries, Basic) {
-  // using constructor with initializer_list parameter
-  folly::MultiLevelTimeSeries<int> mhts(
-      60, {seconds(60), seconds(3600), seconds(0)});
+namespace {
+
+void runBasicTest(folly::MultiLevelTimeSeries<int>& mhts) {
   EXPECT_EQ(mhts.numLevels(), 3);
 
   EXPECT_EQ(mhts.sum(seconds(60)), 0);
@@ -1218,6 +1216,29 @@ TEST(MultiLevelTimeSeries, Basic) {
   EXPECT_EQ(mhts.sum(seconds(0)), 0);
 }
 
+} // namespace
+
+TEST(MultiLevelTimeSeries, BasicInitializerArray) {
+  std::chrono::seconds levelDurations[] = {
+      seconds(60), seconds(3600), seconds(0)};
+  folly::MultiLevelTimeSeries<int> mhts(60, 3, levelDurations);
+  runBasicTest(mhts);
+}
+
+TEST(MultiLevelTimeSeries, BasicInitializerList) {
+  folly::MultiLevelTimeSeries<int> mhts(
+      60, {seconds(60), seconds(3600), seconds(0)});
+  runBasicTest(mhts);
+}
+
+TEST(MultiLevelTimeSeries, BasicVector) {
+  folly::MultiLevelTimeSeries<int> mhts(
+      60,
+      std::vector<std::chrono::seconds>{
+          seconds(60), seconds(3600), seconds(0)});
+  runBasicTest(mhts);
+}
+
 TEST(MultiLevelTimeSeries, QueryByInterval) {
   folly::MultiLevelTimeSeries<int> mhts(
       60, {seconds(60), seconds(3600), seconds(0)});
@@ -1257,18 +1278,19 @@ TEST(MultiLevelTimeSeries, QueryByInterval) {
       {curTime - seconds(7200), curTime - seconds(3600)},
   }};
 
-  std::array<int, 12> expectedSums = {{6000,
-                                       41400,
-                                       32400,
-                                       35400,
-                                       32130,
-                                       16200,
-                                       3000,
-                                       33600,
-                                       32310,
-                                       20000,
-                                       27900,
-                                       16200}};
+  std::array<int, 12> expectedSums = {
+      {6000,
+       41400,
+       32400,
+       35400,
+       32130,
+       16200,
+       3000,
+       33600,
+       32310,
+       20000,
+       27900,
+       16200}};
 
   std::array<int, 12> expectedCounts = {
       {60, 3600, 7200, 3540, 7140, 3600, 30, 3000, 7180, 2000, 6200, 3600}};

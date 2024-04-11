@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,10 @@
 
 #include <folly/experimental/exception_tracer/ExceptionTracer.h>
 
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+
+#if defined(__GLIBCXX__)
+
 namespace folly {
 namespace exception_tracer {
 
@@ -41,3 +45,7 @@ std::ostream& operator<<(std::ostream& out, const ExceptionStats& stats);
 
 } // namespace exception_tracer
 } // namespace folly
+
+#endif // defined(__GLIBCXX__)
+
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -160,8 +160,7 @@ void AsyncPipeReader::handlerReady(uint16_t events) noexcept {
 }
 
 void AsyncPipeWriter::write(
-    unique_ptr<folly::IOBuf> buf,
-    AsyncWriter::WriteCallback* callback) {
+    unique_ptr<folly::IOBuf> buf, AsyncWriter::WriteCallback* callback) {
   if (closed()) {
     if (callback) {
       AsyncSocketException ex(

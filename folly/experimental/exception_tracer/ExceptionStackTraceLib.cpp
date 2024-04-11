@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,16 +22,20 @@
 #include <folly/experimental/exception_tracer/StackTrace.h>
 #include <folly/experimental/symbolizer/Symbolizer.h>
 
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+
+#if defined(__GLIBCXX__)
+
 using namespace folly::exception_tracer;
 
 namespace {
 
 // If we somehow ended up in an invalid state, we don't want to print any stack
 // trace at all because in could be bogus
-FOLLY_TLS bool invalid;
+thread_local bool invalid;
 
-FOLLY_TLS StackTraceStack uncaughtExceptions;
-FOLLY_TLS StackTraceStack caughtExceptions;
+thread_local StackTraceStack uncaughtExceptions;
+thread_local StackTraceStack caughtExceptions;
 
 } // namespace
 
@@ -117,3 +121,7 @@ struct Initializer {
 Initializer initializer;
 
 } // namespace
+
+#endif // defined(__GLIBCXX__)
+
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF

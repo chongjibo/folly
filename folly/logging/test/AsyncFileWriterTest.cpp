@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,12 @@
  * limitations under the License.
  */
 
+#include <folly/logging/AsyncFileWriter.h>
+
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
+
 #include <thread>
 
 #include <folly/Conv.h>
@@ -27,7 +33,6 @@
 #include <folly/futures/Promise.h>
 #include <folly/init/Init.h>
 #include <folly/lang/SafeAssert.h>
-#include <folly/logging/AsyncFileWriter.h>
 #include <folly/logging/Init.h>
 #include <folly/logging/LoggerDB.h>
 #include <folly/logging/xlog.h>
@@ -116,9 +121,7 @@ namespace {
 static std::vector<std::string>* internalWarnings;
 
 void handleLoggingError(
-    StringPiece /* file */,
-    int /* lineNumber */,
-    std::string&& msg) {
+    StringPiece /* file */, int /* lineNumber */, std::string&& msg) {
   internalWarnings->emplace_back(std::move(msg));
 }
 } // namespace
@@ -269,17 +272,21 @@ static constexpr StringPiece kMsgSuffix{
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"};
 
+namespace {
+std::atomic<size_t> totalDiscarded;
+void discardCallback(size_t n) {
+  totalDiscarded += n;
+}
+} // namespace
+
 class ReadStats {
  public:
   ReadStats()
-      : deadline_{steady_clock::now() +
-                  milliseconds{FLAGS_async_discard_timeout_msec}},
+      : deadline_{steady_clock::now() + milliseconds{FLAGS_async_discard_timeout_msec}},
         readSleepUS_{static_cast<uint64_t>(
             std::min(int64_t{0}, FLAGS_async_discard_read_sleep_usec))} {}
 
-  void clearSleepDuration() {
-    readSleepUS_.store(0);
-  }
+  void clearSleepDuration() { readSleepUS_.store(0); }
   std::chrono::microseconds getSleepUS() const {
     return std::chrono::microseconds{readSleepUS_.load()};
   }
@@ -309,7 +316,7 @@ class ReadStats {
     data.flags = flags;
   }
 
-  void check() {
+  void check(size_t nDiscarded) {
     auto writeDataMap = perThreadWriteData_.wlock();
 
     EXPECT_EQ("", trailingData_);
@@ -352,6 +359,7 @@ class ReadStats {
     // Fail the test if we didn't actually trigger any discards before we timed
     // out.
     EXPECT_GT(numDiscarded_, 0);
+    EXPECT_EQ(nDiscarded, numDiscarded_);
 
     XLOG(DBG1) << totalMessagesWritten << " messages written, "
                << totalMessagesRead << " messages read, " << numDiscarded_
@@ -389,9 +397,7 @@ class ReadStats {
     }
   }
 
-  void trailingData(StringPiece data) {
-    trailingData_ = data.str();
-  }
+  void trailingData(StringPiece data) { trailingData_ = data.str(); }
 
  private:
   struct ReaderData {
@@ -550,10 +556,7 @@ void readThread(folly::File&& file, ReadStats* stats) {
  * writeThread() writes a series of messages to the AsyncFileWriter
  */
 void writeThread(
-    AsyncFileWriter* writer,
-    size_t id,
-    uint32_t flags,
-    ReadStats* readStats) {
+    AsyncFileWriter* writer, size_t id, uint32_t flags, ReadStats* readStats) {
   size_t msgID = 0;
   while (true) {
     ++msgID;
@@ -581,12 +584,15 @@ void writeThread(
  * - The number of messages received plus the number reported in discard
  *   notifications matches the number of messages sent.
  */
+
 TEST(AsyncFileWriter, discard) {
   std::array<int, 2> fds;
   auto pipeResult = pipe(fds.data());
   folly::checkUnixError(pipeResult, "pipe failed");
   folly::File readPipe{fds[0], true};
   folly::File writePipe{fds[1], true};
+
+  AsyncFileWriter::setDiscardCallback(discardCallback);
 
   ReadStats readStats;
   std::thread reader(readThread, std::move(readPipe), &readStats);
@@ -615,7 +621,9 @@ TEST(AsyncFileWriter, discard) {
   // Clear the read sleep duration so the reader will finish quickly now
   readStats.clearSleepDuration();
   reader.join();
-  readStats.check();
+  readStats.check(totalDiscarded);
+
+  AsyncFileWriter::setDiscardCallback(nullptr);
 }
 
 #ifndef _WIN32
@@ -625,6 +633,8 @@ TEST(AsyncFileWriter, discard) {
  */
 TEST(AsyncFileWriter, fork) {
 #if FOLLY_HAVE_PTHREAD_ATFORK
+  SKIP_IF(folly::kIsSanitizeThread) << "Not supported for TSAN";
+
   TemporaryFile tmpFile{"logging_test"};
 
   // The number of messages to send before the fork and from each process
@@ -727,6 +737,8 @@ TEST(AsyncFileWriter, fork) {
  */
 TEST(AsyncFileWriter, crazyForks) {
 #if FOLLY_HAVE_PTHREAD_ATFORK
+  SKIP_IF(folly::kIsSanitizeThread) << "Not supported for TSAN";
+
   constexpr size_t numAsyncWriterThreads = 10;
   constexpr size_t numForkThreads = 5;
   constexpr size_t numForkIterations = 20;

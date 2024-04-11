@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,19 @@
  */
 
 #include <folly/experimental/crypto/LtHash.h>
-#include <folly/Random.h>
-#include <folly/String.h>
-#include <folly/io/IOBuf.h>
-#include <folly/portability/GTest.h>
-#include <sodium.h>
+
 #include <algorithm>
 #include <memory>
 #include <random>
 #include <string>
 #include <vector>
+
+#include <sodium.h>
+
+#include <folly/Random.h>
+#include <folly/String.h>
+#include <folly/io/IOBuf.h>
+#include <folly/portability/GTest.h>
 
 using namespace ::testing;
 
@@ -44,26 +47,24 @@ std::unique_ptr<folly::IOBuf> makeRandomData(size_t length) {
 
 template <typename T>
 struct IsLtHash {
-  static inline constexpr bool value() {
-    return false;
-  }
+  static inline constexpr bool value() { return false; }
 };
 
 template <std::size_t B, std::size_t N>
 struct IsLtHash<LtHash<B, N>> {
-  static inline constexpr bool value() {
-    return true;
-  }
+  static inline constexpr bool value() { return true; }
 };
 
 } // namespace
 
+namespace folly::crypto {
 // Needed so an EXPECT_EQ() or EXPECT_NE() failure prints the LtHash checksum.
 template <std::size_t B, std::size_t N>
 static std::ostream& operator<<(std::ostream& os, const LtHash<B, N>& h) {
   os << toHex(*h.getChecksum());
   return os;
 }
+} // namespace folly::crypto
 
 // Note: the template parameter H must be an instance of LtHash<B, N> for some
 // valid B and N.
@@ -93,7 +94,7 @@ class LtHashTest : public ::testing::Test {
 // Some googletest macro magic to make TYPED_TEST work
 using LtHashTestTypes =
     ::testing::Types<LtHash<16, 1024>, LtHash<20, 1008>, LtHash<32, 1024>>;
-TYPED_TEST_CASE(LtHashTest, LtHashTestTypes);
+TYPED_TEST_SUITE(LtHashTest, LtHashTestTypes);
 
 // Note: in all test cases below, `TypeParam` refers to the H template param.
 // Static methods must be prefixed with `TestFixture::`, while class variables
@@ -704,4 +705,77 @@ TYPED_TEST(LtHashTest, addObjectWithKnownValue) {
            << h.getElementSizeInBits() << ", N=" << h.getElementCount()
            << ", checksum=" << toHex(*h.getChecksum());
   }
+}
+
+TYPED_TEST(LtHashTest, setKeyTooShort) {
+  TypeParam h1;
+  std::string shortKey = "0123456789abcde";
+  EXPECT_THROW(h1.setKey(folly::range(shortKey)), std::runtime_error);
+}
+
+TYPED_TEST(LtHashTest, setKeyTooLong) {
+  TypeParam h1;
+  std::string longKey =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0";
+  EXPECT_THROW(h1.setKey(folly::range(longKey)), std::runtime_error);
+}
+
+TYPED_TEST(LtHashTest, subtractWithDifferentKeysFail) {
+  TypeParam h1;
+  h1.addObject(folly::range(this->obj1_));
+
+  TypeParam h2;
+  h2.setKey(folly::range("0123456789abcdef"));
+  h2.addObject(folly::range(this->obj1_));
+
+  EXPECT_THROW(h1 - h2, std::runtime_error);
+}
+
+TYPED_TEST(LtHashTest, addWithDifferentKeysFail) {
+  TypeParam h1;
+  h1.addObject(folly::range(this->obj1_));
+
+  TypeParam h2;
+  h2.setKey(folly::range("0123456789abcdef"));
+  h2.addObject(folly::range(this->obj1_));
+
+  EXPECT_THROW(h1 + h2, std::runtime_error);
+}
+
+TYPED_TEST(LtHashTest, keyedLtHashesEqual) {
+  std::string key = "0123456789abcdef";
+  TypeParam h1;
+  h1.setKey(folly::range(key));
+  h1.addObject(folly::range(this->obj1_));
+  h1.addObject(folly::range(this->obj2_));
+
+  TypeParam h2;
+  h2.setKey(folly::range(key));
+  h2.addObject(folly::range(this->obj1_));
+  h2.addObject(folly::range(this->obj2_));
+
+  EXPECT_EQ(h1, h2);
+}
+
+TYPED_TEST(LtHashTest, keyedLtHashesDifferentKeysNotEqual) {
+  std::string key1 = "0123456789abcdef";
+  TypeParam h1;
+  h1.setKey(folly::range(key1));
+  h1.addObject(folly::range(this->obj1_));
+  h1.addObject(folly::range(this->obj2_));
+
+  std::string key2 = "1123456789abcdef";
+  TypeParam h2;
+  h1.setKey(folly::range(key2));
+  h2.addObject(folly::range(this->obj1_));
+  h2.addObject(folly::range(this->obj2_));
+
+  EXPECT_NE(h1, h2);
+
+  // Compare to unkeyed LtHash
+  TypeParam h3;
+  h3.addObject(folly::range(this->obj1_));
+  h3.addObject(folly::range(this->obj2_));
+
+  EXPECT_NE(h1, h3);
 }

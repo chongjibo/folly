@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,22 +32,14 @@ namespace {
 
 template <class T>
 struct TestTraits {
-  T limit() const {
-    return 1 << 24;
-  }
-  T generate() const {
-    return rand() % 26;
-  }
+  T limit() const { return 1 << 24; }
+  T generate() const { return rand() % 26; }
 };
 
 template <>
 struct TestTraits<std::string> {
-  unsigned int limit() const {
-    return 1 << 22;
-  }
-  std::string generate() const {
-    return std::string(12, ' ');
-  }
+  unsigned int limit() const { return 1 << 22; }
+  std::string generate() const { return std::string(12, ' '); }
 };
 
 template <class QueueType, size_t Size, bool Pop = false>
@@ -214,15 +206,9 @@ void correctnessTestType(const std::string& type) {
 
 struct DtorChecker {
   static unsigned int numInstances;
-  DtorChecker() {
-    ++numInstances;
-  }
-  DtorChecker(const DtorChecker& /* o */) {
-    ++numInstances;
-  }
-  ~DtorChecker() {
-    --numInstances;
-  }
+  DtorChecker() { ++numInstances; }
+  DtorChecker(const DtorChecker& /* o */) { ++numInstances; }
+  ~DtorChecker() { --numInstances; }
 };
 
 unsigned int DtorChecker::numInstances = 0;

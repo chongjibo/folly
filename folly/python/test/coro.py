@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,3 +25,15 @@ class Futures(unittest.TestCase):
         loop = asyncio.get_event_loop()
         res = loop.run_until_complete(simplebridgecoro.get_value_x5_coro(val))
         self.assertEqual(val * 5, res)
+
+    def test_cancellation(self):
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(self._return_five_after_cancelled())
+        self.assertEqual(5, res)
+
+    async def _return_five_after_cancelled(self):
+        task = asyncio.create_task(simplebridgecoro.return_five_after_cancelled())
+        await asyncio.sleep(0.1)
+        self.assertFalse(task.done())
+        task.cancel()
+        return await task

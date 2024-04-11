@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -104,7 +104,7 @@ inline void PolyVal<I>::swap(Poly<I>& that) noexcept {
         std::swap(vptr_, that.vptr_);
         return;
       }
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case State::eInSitu:
       std::swap(
           *this, static_cast<PolyVal<I>&>(that)); // NOTE: qualified, not ADL
@@ -120,9 +120,9 @@ inline AddCvrefOf<PolyRoot<I>, I>& PolyRef<I>::_polyRoot_() const noexcept {
 template <class I>
 constexpr RefType PolyRef<I>::refType() noexcept {
   using J = std::remove_reference_t<I>;
-  return std::is_rvalue_reference<I>::value
-      ? RefType::eRvalue
-      : std::is_const<J>::value ? RefType::eConstLvalue : RefType::eLvalue;
+  return std::is_rvalue_reference<I>::value ? RefType::eRvalue
+      : std::is_const<J>::value             ? RefType::eConstLvalue
+                                            : RefType::eLvalue;
 }
 
 template <class I>

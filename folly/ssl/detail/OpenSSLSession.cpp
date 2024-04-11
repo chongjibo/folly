@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,34 +15,34 @@
  */
 
 #include <folly/ssl/detail/OpenSSLSession.h>
+
+#include <folly/SharedMutex.h>
+#include <folly/Synchronized.h>
 #include <folly/portability/OpenSSL.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
-#include <atomic>
 
 namespace folly {
 namespace ssl {
 namespace detail {
 
-OpenSSLSession::~OpenSSLSession() {
-  SSL_SESSION* session = activeSession_.load();
-  if (session) {
-    SSL_SESSION_free(session);
-  }
-}
-
 void OpenSSLSession::setActiveSession(SSLSessionUniquePtr s) {
-  SSL_SESSION* oldSession = activeSession_.exchange(s.release());
-  if (oldSession) {
-    SSL_SESSION_free(oldSession);
-  }
+  // OpenSSLSession is typically shared as a std::shared_ptr<SSLSession>,
+  // and setActiveSession() may be invoked in mulitple threads. Consequently,
+  // changing the `activeSession_ pointer needs to be synchronized,
+  // such that readers are able to fully acquire a reference count in
+  // getActiveSession().
+
+  activeSession_.withWLock([&](auto& sessionPtr) { sessionPtr.swap(s); });
 }
 
 SSLSessionUniquePtr OpenSSLSession::getActiveSession() {
-  SSL_SESSION* session = activeSession_.load();
-  if (session) {
-    SSL_SESSION_up_ref(session);
-  }
-  return SSLSessionUniquePtr(session);
+  return activeSession_.withRLock([](auto& sessionPtr) {
+    SSL_SESSION* session = sessionPtr.get();
+    if (session) {
+      SSL_SESSION_up_ref(session);
+    }
+    return SSLSessionUniquePtr(session);
+  });
 }
 
 } // namespace detail

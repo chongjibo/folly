@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,6 +41,8 @@ enum class LogLevel : uint32_t;
  * LoggerDB stores the set of LogCategory objects.
  */
 class LoggerDB {
+  using ContextCallback = folly::Function<std::string() const>;
+
  public:
   /**
    * Get the main LoggerDB singleton.
@@ -148,8 +150,7 @@ class LoggerDB {
    * existing factory.
    */
   void registerHandlerFactory(
-      std::unique_ptr<LogHandlerFactory> factory,
-      bool replaceExisting = false);
+      std::unique_ptr<LogHandlerFactory> factory, bool replaceExisting = false);
 
   /**
    * Remove a registered LogHandlerFactory.
@@ -190,6 +191,23 @@ class LoggerDB {
   explicit LoggerDB(TestConstructorArg);
 
   /**
+   * Add a new context string callback to the list.
+   *
+   * The callbacks will be invoked during the construction of log messages,
+   * and returned strings will be appended in order to the tail of log
+   * log entry prefixes with space prepended to each item.
+   */
+  void addContextCallback(ContextCallback);
+
+  /**
+   * Return a context string to be appended after default log prefixes.
+   *
+   * The context string is cutomized through adding context callbacks to
+   * LoggerDB objects.
+   */
+  std::string getContextString() const;
+
+  /**
    * internalWarning() is used to report a problem when something goes wrong
    * internally in the logging library.
    *
@@ -202,9 +220,7 @@ class LoggerDB {
    */
   template <typename... Args>
   static void internalWarning(
-      folly::StringPiece file,
-      int lineNumber,
-      Args&&... args) noexcept {
+      folly::StringPiece file, int lineNumber, Args&&... args) noexcept {
     internalWarningImpl(
         file, lineNumber, folly::to<std::string>(std::forward<Args>(args)...));
   }
@@ -241,14 +257,25 @@ class LoggerDB {
     HandlerMap handlers;
   };
 
+  class ContextCallbackList {
+   public:
+    void addCallback(ContextCallback);
+    std::string getContextString() const;
+    ~ContextCallbackList();
+
+   private:
+    class CallbacksObj;
+    std::atomic<CallbacksObj*> callbacks_{nullptr};
+    std::mutex writeMutex_;
+  };
+
   // Forbidden copy constructor and assignment operator
   LoggerDB(LoggerDB const&) = delete;
   LoggerDB& operator=(LoggerDB const&) = delete;
 
   LoggerDB();
   LogCategory* getOrCreateCategoryLocked(
-      LoggerNameMap& loggersByName,
-      folly::StringPiece name);
+      LoggerNameMap& loggersByName, folly::StringPiece name);
   LogCategory* createCategoryLocked(
       LoggerNameMap& loggersByName,
       folly::StringPiece name,
@@ -274,13 +301,9 @@ class LoggerDB {
       const std::vector<std::string>& categoryHandlerNames);
 
   static void internalWarningImpl(
-      folly::StringPiece filename,
-      int lineNumber,
-      std::string&& msg) noexcept;
+      folly::StringPiece filename, int lineNumber, std::string&& msg) noexcept;
   static void defaultInternalWarningImpl(
-      folly::StringPiece filename,
-      int lineNumber,
-      std::string&& msg) noexcept;
+      folly::StringPiece filename, int lineNumber, std::string&& msg) noexcept;
 
   /**
    * A map of LogCategory objects by name.
@@ -298,6 +321,13 @@ class LoggerDB {
    */
   folly::Synchronized<HandlerInfo> handlerInfo_;
 
+  /**
+   * Callbacks returning context strings.
+   *
+   * Exceptions from the callbacks are catched and reflected in corresponding
+   * position in log entries.
+   */
+  ContextCallbackList contextCallbacks_;
   static std::atomic<InternalWarningHandler> warningHandler_;
 };
 

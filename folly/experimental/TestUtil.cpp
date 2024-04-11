@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include <boost/regex.hpp>
 #include <glog/logging.h>
 
 #include <folly/Exception.h>
@@ -27,11 +26,17 @@
 #include <folly/FileUtil.h>
 #include <folly/Memory.h>
 #include <folly/String.h>
+#include <folly/ext/test_ext.h>
 #include <folly/portability/Fcntl.h>
 
 #ifdef _WIN32
 #include <crtdbg.h> // @manual
 #endif
+
+// This needs to be at the end because some versions end up including
+// Windows.h without defining NOMINMAX, which breaks uses of std::numeric_limits
+// in various headers that we include.
+#include <boost/regex.hpp>
 
 namespace folly {
 namespace test {
@@ -54,10 +59,7 @@ fs::path generateUniquePath(fs::path path, StringPiece namePrefix) {
 } // namespace
 
 TemporaryFile::TemporaryFile(
-    StringPiece namePrefix,
-    fs::path dir,
-    Scope scope,
-    bool closeOnDestruction)
+    StringPiece namePrefix, fs::path dir, Scope scope, bool closeOnDestruction)
     : scope_(scope),
       closeOnDestruction_(closeOnDestruction),
       fd_(-1),
@@ -112,9 +114,7 @@ TemporaryFile::~TemporaryFile() {
 }
 
 TemporaryDirectory::TemporaryDirectory(
-    StringPiece namePrefix,
-    fs::path dir,
-    Scope scope)
+    StringPiece namePrefix, fs::path dir, Scope scope)
     : scope_(scope),
       path_(std::make_unique<fs::path>(
           generateUniquePath(std::move(dir), namePrefix))) {
@@ -226,6 +226,28 @@ std::string CaptureFD::readIncremental() {
   readOffset_ += off_t(size);
   chunkCob_(StringPiece(buf.get(), buf.get() + size));
   return std::string(buf.get(), size);
+}
+
+fs::path find_resource(const std::string& resource) {
+  auto const pos = resource.find_last_of('/');
+  if (pos == std::string::npos) {
+    throw std::invalid_argument("invalid: " + resource);
+  }
+  auto const dir = resource.substr(0, pos);
+  auto const tgt = resource.substr(pos + 1);
+  auto const exe = fs::executable_path();
+  auto const ext = folly::ext::test_find_resource;
+  auto const fns = std::vector<fs::path>{
+      ext == nullptr ? fs::path() : fs::path(ext(resource)),
+      exe.parent_path().parent_path() / tgt / tgt,
+      exe.parent_path() / tgt,
+  };
+  for (auto const& fn : fns) {
+    if (fs::exists(fn)) {
+      return fn;
+    }
+  }
+  throw std::runtime_error("missing: " + resource);
 }
 
 } // namespace test

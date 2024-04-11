@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,16 +14,19 @@
  * limitations under the License.
  */
 
+#include <folly/logging/CustomLogFormatter.h>
+
 #include <cstdlib>
 
 #include <folly/Format.h>
 #include <folly/init/Init.h>
-#include <folly/logging/CustomLogFormatter.h>
 #include <folly/logging/LogMessage.h>
 #include <folly/logging/Logger.h>
 #include <folly/logging/LoggerDB.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/Stdlib.h>
+
+FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
 
 using namespace folly;
 
@@ -36,6 +39,9 @@ const std::string kGlogFormatString =
 const std::string kGlogFormatStringWithFunctionName =
     "{L}{m:02d}{D:02d} {H:2d}:{M:02d}:{S:02d}.{USECS:06d} "
     "{THREAD:5d} {FILE}:{LINE} {FUN}()]";
+
+const std::string kFormatStringWithFileNameNoExt =
+    "{L}{m:02d}{D:02d} {FIL}::{FUN}]";
 
 /**
  * Helper function to format a LogMessage using the CustomLogFormatter.
@@ -64,13 +70,14 @@ std::string formatMsg(
   std::chrono::system_clock::time_point logTimePoint{
       std::chrono::duration_cast<std::chrono::system_clock::duration>(
           std::chrono::nanoseconds{timestampNS})};
-  LogMessage logMessage{category,
-                        level,
-                        logTimePoint,
-                        filename,
-                        lineNumber,
-                        functionName,
-                        msg.str()};
+  LogMessage logMessage{
+      category,
+      level,
+      logTimePoint,
+      filename,
+      lineNumber,
+      functionName,
+      msg.str()};
 
   return formatter.formatMessage(logMessage, category);
 }
@@ -146,6 +153,30 @@ TEST(CustomLogFormatter, functionName) {
           1234));
 }
 
+TEST(CustomLogFormatter, fileNoExt) {
+  StringPiece expected = "W0417 MyClassA::method1] hello world\n";
+  EXPECT_EQ(
+      expected,
+      formatMsg(
+          kFormatStringWithFileNameNoExt,
+          LogLevel::WARN,
+          "hello world",
+          "src/test/logging/code/MyClassA.cpp",
+          "method1",
+          1234));
+
+  expected = "W0417 MyClassB::method1] hello world\n";
+  EXPECT_EQ(
+      expected,
+      formatMsg(
+          kFormatStringWithFileNameNoExt,
+          LogLevel::WARN,
+          "hello world",
+          "src/test/logging/code/MyClassB",
+          "method1",
+          1234));
+}
+
 TEST(CustomLogFormatter, multiline) {
   auto tid = getOSThreadID();
   std::map<std::string, std::string> formatMap{
@@ -177,6 +208,32 @@ TEST(CustomLogFormatter, multiline) {
           "=============",
           "src/rodent.cpp",
           "testFunction",
+          777));
+
+  expected =
+      "V0417 rodent::print] Eeek, a mouse!\n"
+      "V0417 rodent::print]    .   .\n"
+      "V0417 rodent::print]   ( ).( )\n"
+      "V0417 rodent::print]    (o o) .-._.'\n"
+      "V0417 rodent::print]   (  -  )\n"
+      "V0417 rodent::print]    mm mm\n"
+      "V0417 rodent::print] \n"
+      "V0417 rodent::print] =============\n";
+  EXPECT_EQ(
+      expected,
+      formatMsg(
+          kFormatStringWithFileNameNoExt,
+          LogLevel::DBG9,
+          "Eeek, a mouse!\n"
+          "   .   .\n"
+          "  ( ).( )\n"
+          "   (o o) .-._.'\n"
+          "  (  -  )\n"
+          "   mm mm\n"
+          "\n"
+          "=============",
+          "src/rodent.cpp",
+          "print",
           777));
 }
 
@@ -381,7 +438,7 @@ TEST(CustomLogFormatter, validFormatStringsEdgeCases) {
 
 int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  folly::init(&argc, &argv);
+  folly::Init init(&argc, &argv);
 
   // Some of our tests check timestamps emitted by the formatter.
   // Set the timezone to a consistent value so that the tests are not

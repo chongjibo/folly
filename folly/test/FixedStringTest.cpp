@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-//
-// Author: eniebler@fb.com
-
 #include <folly/FixedString.h>
+
+#include <string_view>
+
+#include <folly/Range.h>
 #include <folly/portability/GTest.h>
 
 #define FS(x) ::folly::makeFixedString(x)
@@ -106,6 +107,14 @@ TEST(FixedStringCtorTest, FromStringOffsetAndCount) {
   static_assert(s3 == "world", "");
   // Out of bounds count, does not compile:
   // constexpr folly::FixedString<5> s4{s, 6, 6};
+}
+
+TEST(FixedStringCtorTest, FromStringView) {
+  constexpr folly::FixedString<11> s{
+      std::string_view{"hello world"},
+  };
+  static_assert(s == "hello world", "");
+  static_assert(s.size() == 11u, "");
 }
 
 TEST(FixedStringCtorTest, FromInitializerList) {
@@ -649,14 +658,19 @@ TEST(FixedStringReverseIteratorTest, ConstexprReverseIteration) {
   static_assert((alpha.rend() - 2) == (alpha.rbegin() + 24), "");
 }
 
-#include <folly/Range.h>
-
 TEST(FixedStringConversionTest, ConversionToFollyRange) {
-  // The following declaraction is static for compilers that haven't implemented
+  // The following declaration is static for compilers that haven't implemented
   // the resolution of:
   // http://www.open-std.org/jtc1/sc22/wg21/docs/cwg_defects.html#1454
   static constexpr folly::FixedString<16> tmp{"This is a string"};
   constexpr folly::StringPiece piece = tmp;
   static_assert(tmp.begin() == piece.begin(), "");
   static_assert(tmp.end() == piece.end(), "");
+}
+
+TEST(FixedStringConversionTest, ConversionToStringView) {
+  static constexpr folly::FixedString<16> tmp{"This is a string"};
+  constexpr std::string_view view = tmp;
+  static_assert(tmp.data() == view.data(), "");
+  static_assert(tmp.size() == view.size(), "");
 }

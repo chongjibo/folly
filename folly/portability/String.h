@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,10 +23,6 @@
 
 #if !defined(_WIN32)
 #include <strings.h>
-#endif
-
-#if !FOLLY_HAVE_MEMRCHR
-extern "C" void* memrchr(const void* s, int c, size_t n);
 #endif
 
 #if defined(_WIN32) || defined(__FreeBSD__)

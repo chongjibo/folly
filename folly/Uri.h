@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,9 +20,18 @@
 #include <string>
 #include <vector>
 
+#include <folly/Expected.h>
 #include <folly/String.h>
 
 namespace folly {
+/**
+ * Error codes for parsing issues. Used by tryFromString()
+ */
+enum class UriFormatError {
+  INVALID_URI,
+  INVALID_URI_AUTHORITY,
+  INVALID_URI_PORT,
+};
 
 /**
  * Class representing a URI.
@@ -43,29 +52,29 @@ namespace folly {
 class Uri {
  public:
   /**
-   * Parse a Uri from a string.  Throws std::invalid_argument on parse error.
+   * Parse a Uri from a string.  Same as tryFromString except it throws
+   * a std::invalid_argument if there's an error.
    */
   explicit Uri(StringPiece str);
 
-  const std::string& scheme() const {
-    return scheme_;
-  }
-  const std::string& username() const {
-    return username_;
-  }
-  const std::string& password() const {
-    return password_;
-  }
+  /**
+   * Parse a Uri from a string.
+   *
+   * On failure, returns UriFormatError.
+   */
+  static Expected<Uri, UriFormatError> tryFromString(StringPiece str) noexcept;
+
+  const std::string& scheme() const { return scheme_; }
+  const std::string& username() const { return username_; }
+  const std::string& password() const { return password_; }
   /**
    * Get host part of URI. If host is an IPv6 address, square brackets will be
    * returned, for example: "[::1]".
    */
-  const std::string& host() const {
-    return host_;
-  }
+  const std::string& host() const { return host_; }
   /**
    * Get host part of URI. If host is an IPv6 address, square brackets will not
-   * be returned, for exmaple "::1"; otherwise it returns the same thing as
+   * be returned, for example "::1"; otherwise it returns the same thing as
    * host().
    *
    * hostname() is what one needs to call if passing the host to any other tool
@@ -73,30 +82,18 @@ class Uri {
    * IPv6 host without square brackets
    */
   std::string hostname() const;
-  uint16_t port() const {
-    return port_;
-  }
-  const std::string& path() const {
-    return path_;
-  }
-  const std::string& query() const {
-    return query_;
-  }
-  const std::string& fragment() const {
-    return fragment_;
-  }
+  uint16_t port() const { return port_; }
+  const std::string& path() const { return path_; }
+  const std::string& query() const { return query_; }
+  const std::string& fragment() const { return fragment_; }
 
   std::string authority() const;
 
   template <class String>
   String toString() const;
 
-  std::string str() const {
-    return toString<std::string>();
-  }
-  fbstring fbstr() const {
-    return toString<fbstring>();
-  }
+  std::string str() const { return toString<std::string>(); }
+  fbstring fbstr() const { return toString<fbstring>(); }
 
   void setPort(uint16_t port) {
     hasAuthority_ = true;
@@ -126,6 +123,8 @@ class Uri {
   const std::vector<std::pair<std::string, std::string>>& getQueryParams();
 
  private:
+  explicit Uri();
+
   std::string scheme_;
   std::string username_;
   std::string password_;

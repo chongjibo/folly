@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ TEST(Optional, CoroutineSuccess) {
     EXPECT_EQ(2.0 * 7, y);
     auto z = co_await f3(x, y);
     EXPECT_EQ((int)(2.0 * 7 + 7), *z);
-    co_return* z;
+    co_return *z;
   }();
   EXPECT_TRUE(r0.has_value());
   EXPECT_EQ(21, *r0);
@@ -87,9 +87,7 @@ TEST(Optional, CoroutineException) {
 TEST(Optional, CoroutineCleanedUp) {
   int count_dest = 0;
   auto r = [&]() -> Optional<int> {
-    SCOPE_EXIT {
-      ++count_dest;
-    };
+    SCOPE_EXIT { ++count_dest; };
     auto x = co_await folly::Optional<int>();
     ADD_FAILURE() << "Should not be resuming";
     co_return x;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,13 @@
 
 #include <cassert>
 #include <exception>
-#include <experimental/coroutine>
 #include <type_traits>
 #include <utility>
+
+#include <folly/experimental/coro/Coroutine.h>
+#include <folly/experimental/coro/Invoke.h>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace coro {
@@ -39,17 +43,11 @@ class Generator {
     promise_type(const promise_type&) = delete;
     promise_type(promise_type&&) = delete;
 
-    auto get_return_object() noexcept {
-      return Generator<T>{*this};
-    }
+    auto get_return_object() noexcept { return Generator<T>{*this}; }
 
-    std::experimental::suspend_always initial_suspend() noexcept {
-      return {};
-    }
+    suspend_always initial_suspend() noexcept { return {}; }
 
-    std::experimental::suspend_always final_suspend() noexcept {
-      return {};
-    }
+    suspend_always final_suspend() noexcept { return {}; }
 
     void unhandled_exception() noexcept {
       m_exception = std::current_exception();
@@ -57,12 +55,12 @@ class Generator {
 
     void return_void() noexcept {}
 
-    std::experimental::suspend_always yield_value(T& value) noexcept {
+    suspend_always yield_value(T& value) noexcept {
       m_value = std::addressof(value);
       return {};
     }
 
-    std::experimental::suspend_always yield_value(T&& value) noexcept {
+    suspend_always yield_value(T&& value) noexcept {
       m_value = std::addressof(value);
       return {};
     }
@@ -75,12 +73,9 @@ class Generator {
       struct awaitable {
         awaitable(promise_type* childPromise) : m_childPromise(childPromise) {}
 
-        bool await_ready() noexcept {
-          return this->m_childPromise == nullptr;
-        }
+        bool await_ready() noexcept { return this->m_childPromise == nullptr; }
 
-        void await_suspend(
-            std::experimental::coroutine_handle<promise_type>) noexcept {}
+        void await_suspend(coroutine_handle<promise_type>) noexcept {}
 
         void await_resume() {
           if (this->m_childPromise != nullptr) {
@@ -98,7 +93,11 @@ class Generator {
         generator.m_promise->m_parentOrLeaf = this;
         generator.m_promise->resume();
 
-        if (!generator.m_promise->is_complete()) {
+        // NB: This branch looks like a (premature?) optimization for empty
+        // generators, and until proven otherwise in benchmarks, it may be
+        // advantageous to simply return `awaitable{generator.m_promise}`.
+        if (!generator.m_promise->is_complete() ||
+            generator.m_promise->m_exception != nullptr) {
           return awaitable{generator.m_promise};
         }
 
@@ -111,11 +110,10 @@ class Generator {
     // Don't allow any use of 'co_await' inside the Generator
     // coroutine.
     template <typename U>
-    std::experimental::suspend_never await_transform(U&& value) = delete;
+    void await_transform(U&& value) = delete;
 
     void destroy() noexcept {
-      std::experimental::coroutine_handle<promise_type>::from_promise(*this)
-          .destroy();
+      coroutine_handle<promise_type>::from_promise(*this).destroy();
     }
 
     void throw_if_exception() {
@@ -125,9 +123,7 @@ class Generator {
     }
 
     bool is_complete() noexcept {
-      return std::experimental::coroutine_handle<promise_type>::from_promise(
-                 *this)
-          .done();
+      return coroutine_handle<promise_type>::from_promise(*this).done();
     }
 
     T& value() noexcept {
@@ -150,8 +146,7 @@ class Generator {
 
    private:
     void resume() noexcept {
-      std::experimental::coroutine_handle<promise_type>::from_promise(*this)
-          .resume();
+      coroutine_handle<promise_type>::from_promise(*this).resume();
     }
 
     std::add_pointer_t<T> m_value;
@@ -231,18 +226,14 @@ class Generator {
       return *this;
     }
 
-    void operator++(int) {
-      (void)operator++();
-    }
+    void operator++(int) { (void)operator++(); }
 
     reference operator*() const noexcept {
       assert(m_promise != nullptr);
       return static_cast<reference>(m_promise->value());
     }
 
-    pointer operator->() const noexcept {
-      return std::addressof(operator*());
-    }
+    pointer operator->() const noexcept { return std::addressof(operator*()); }
 
    private:
     promise_type* m_promise;
@@ -261,12 +252,19 @@ class Generator {
     return iterator(nullptr);
   }
 
-  iterator end() noexcept {
-    return iterator(nullptr);
-  }
+  iterator end() noexcept { return iterator(nullptr); }
 
   void swap(Generator& other) noexcept {
     std::swap(m_promise, other.m_promise);
+  }
+
+  template <typename F, typename... A, typename F_, typename... A_>
+  friend Generator tag_invoke(
+      tag_t<co_invoke_fn>, tag_t<Generator, F, A...>, F_ f, A_... a) {
+    auto&& r = invoke(static_cast<F&&>(f), static_cast<A&&>(a)...);
+    for (auto&& v : r) {
+      co_yield std::move(v);
+    }
   }
 
  private:
@@ -281,3 +279,5 @@ void swap(Generator<T>& a, Generator<T>& b) noexcept {
 }
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

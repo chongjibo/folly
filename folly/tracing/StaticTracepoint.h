@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,12 @@
 
 #pragma once
 
-#if defined(__ELF__) && (defined(__x86_64__) || defined(__i386__)) && \
+#include <folly/portability/Config.h>
+
+#if FOLLY_HAVE_ELF && (defined(__x86_64__) || defined(__i386__)) && \
     !FOLLY_DISABLE_SDT
+
+#define FOLLY_HAVE_SDT 1
 
 #include <folly/tracing/StaticTracepoint-ELFx86.h>
 
@@ -34,6 +38,8 @@
 
 #else
 
+#define FOLLY_HAVE_SDT 0
+
 #define FOLLY_SDT(provider, name, ...) \
   do {                                 \
   } while (0)
@@ -43,4 +49,5 @@
 #define FOLLY_SDT_IS_ENABLED(provider, name) (false)
 #define FOLLY_SDT_DEFINE_SEMAPHORE(provider, name)
 #define FOLLY_SDT_DECLARE_SEMAPHORE(provider, name)
+
 #endif

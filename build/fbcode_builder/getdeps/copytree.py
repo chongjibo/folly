@@ -1,9 +1,9 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from __future__ import absolute_import, division, print_function, unicode_literals
+# pyre-unsafe
 
 import os
 import shutil
@@ -38,7 +38,7 @@ def find_eden_root(dirpath):
         repo_type, repo_root = containing_repo_type(dirpath)
         if repo_root is not None:
             if os.path.exists(os.path.join(repo_root, ".eden", "config")):
-                return os.path.realpath(repo_root)
+                return repo_root
         return None
 
     try:
@@ -47,28 +47,27 @@ def find_eden_root(dirpath):
         return None
 
 
-def prefetch_dir_if_eden(dirpath):
-    """ After an amend/rebase, Eden may need to fetch a large number
+def prefetch_dir_if_eden(dirpath) -> None:
+    """After an amend/rebase, Eden may need to fetch a large number
     of trees from the servers.  The simplistic single threaded walk
     performed by copytree makes this more expensive than is desirable
     so we help accelerate things by performing a prefetch on the
-    source directory """
+    source directory"""
     global PREFETCHED_DIRS
     if dirpath in PREFETCHED_DIRS:
         return
     root = find_eden_root(dirpath)
     if root is None:
         return
-    rel = os.path.relpath(dirpath, root)
-    print("Prefetching %s..." % rel)
-    subprocess.call(
-        ["edenfsctl", "prefetch", "--repo", root, "--silent", "%s/**" % rel]
-    )
+    glob = f"{os.path.relpath(dirpath, root).replace(os.sep, '/')}/**"
+    print(f"Prefetching {glob}")
+    subprocess.call(["edenfsctl", "prefetch", "--repo", root, glob, "--background"])
     PREFETCHED_DIRS.add(dirpath)
 
 
-def copytree(src_dir, dest_dir, ignore=None):
-    """ Recursively copy the src_dir to the dest_dir, filtering
+# pyre-fixme[9]: ignore has type `bool`; used as `None`.
+def copytree(src_dir, dest_dir, ignore: bool = None):
+    """Recursively copy the src_dir to the dest_dir, filtering
     out entries using the ignore lambda.  The behavior of the
     ignore lambda must match that described by `shutil.copytree`.
     This `copytree` function knows how to prefetch data when
@@ -77,4 +76,7 @@ def copytree(src_dir, dest_dir, ignore=None):
     uses watchman to mirror src_dir into dest_dir.
     """
     prefetch_dir_if_eden(src_dir)
+    # pyre-fixme[6]: For 3rd param expected
+    #  `Union[typing.Callable[[Union[PathLike[str], str], List[str]], Iterable[str]],
+    #  typing.Callable[[str, List[str]], Iterable[str]], None]` but got `bool`.
     return shutil.copytree(src_dir, dest_dir, ignore=ignore)

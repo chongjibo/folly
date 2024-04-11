@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,35 +18,63 @@
 
 #include <cstdint>
 
+#include <boost/intrusive/list.hpp>
+
 namespace folly {
 
 /**
- * Observes the execution of a task.
+ * Observes the execution of a task. Multiple execution observers can be chained
+ * together. As a caveat, execution observers should not remove themselves from
+ * the list of observers during execution
  */
-class ExecutionObserver {
+class ExecutionObserver
+    : public boost::intrusive::list_base_hook<
+          boost::intrusive::link_mode<boost::intrusive::auto_unlink>> {
  public:
-  virtual ~ExecutionObserver() {}
+  enum class CallbackType {
+    // Owned by EventBase.
+    Event,
+    Loop,
+    NotificationQueue,
+    // Owned by FiberManager.
+    Fiber,
+  };
+  // Constant time size = false to support auto_unlink behavior, options are
+  // mutually exclusive
+  typedef boost::intrusive::
+      list<ExecutionObserver, boost::intrusive::constant_time_size<false>>
+          List;
+
+  virtual ~ExecutionObserver() = default;
 
   /**
    * Called when a task is about to start executing.
    *
    * @param id Unique id for the task which is starting.
    */
-  virtual void starting(uintptr_t id) noexcept = 0;
-
-  /**
-   * Called when a task is ready to run.
-   *
-   * @param id Unique id for the task which is ready to run.
-   */
-  virtual void runnable(uintptr_t id) noexcept = 0;
+  virtual void starting(uintptr_t id, CallbackType callbackType) noexcept = 0;
 
   /**
    * Called just after a task stops executing.
    *
    * @param id Unique id for the task which stopped.
    */
-  virtual void stopped(uintptr_t id) noexcept = 0;
+  virtual void stopped(uintptr_t id, CallbackType callbackType) noexcept = 0;
+};
+
+class ExecutionObserverScopeGuard {
+ public:
+  ExecutionObserverScopeGuard(
+      folly::ExecutionObserver::List* observerList,
+      void* id,
+      folly::ExecutionObserver::CallbackType callbackType);
+
+  ~ExecutionObserverScopeGuard();
+
+ private:
+  folly::ExecutionObserver::List* observerList_;
+  uintptr_t id_;
+  folly::ExecutionObserver::CallbackType callbackType_;
 };
 
 } // namespace folly

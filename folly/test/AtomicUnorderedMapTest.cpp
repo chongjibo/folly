@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,11 +23,9 @@
 #include <folly/Benchmark.h>
 #include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
-#include <folly/portability/Semaphore.h>
 #include <folly/test/DeterministicSchedule.h>
 
 using namespace folly;
-using namespace folly::test;
 
 template <class T>
 struct non_atomic {
@@ -47,19 +45,15 @@ struct non_atomic {
   }
 
   /* implicit */
-  operator T() const {
-    return load();
-  }
+  operator T() const { return load(); }
 
   void store(
-      T desired,
-      std::memory_order /* order */ = std::memory_order_seq_cst) {
+      T desired, std::memory_order /* order */ = std::memory_order_seq_cst) {
     value = desired;
   }
 
   T exchange(
-      T desired,
-      std::memory_order /* order */ = std::memory_order_seq_cst) {
+      T desired, std::memory_order /* order */ = std::memory_order_seq_cst) {
     T old = load();
     store(desired);
     return old;
@@ -93,9 +87,7 @@ struct non_atomic {
     return false;
   }
 
-  bool is_lock_free() const {
-    return true;
-  }
+  bool is_lock_free() const { return true; }
 };
 
 template <
@@ -123,7 +115,7 @@ struct AtomicUnorderedInsertMapTest : public ::testing::Test {};
 // uint16_t doesn't make sense for most platforms, but we might as well
 // test it
 using IndexTypesToTest = ::testing::Types<uint16_t, uint32_t, uint64_t>;
-TYPED_TEST_CASE(AtomicUnorderedInsertMapTest, IndexTypesToTest);
+TYPED_TEST_SUITE(AtomicUnorderedInsertMapTest, IndexTypesToTest);
 
 TYPED_TEST(AtomicUnorderedInsertMapTest, basic) {
   UIM<std::string,
@@ -151,9 +143,17 @@ TYPED_TEST(AtomicUnorderedInsertMapTest, basic) {
   a++;
   EXPECT_TRUE(a == iter);
   EXPECT_TRUE(a != b);
+
+  auto rangeIter = m.cbegin();
+  for (const auto& [key, value] : m) {
+    EXPECT_EQ(key, rangeIter->first);
+    EXPECT_EQ(value, rangeIter->second);
+    rangeIter++;
+  }
+  EXPECT_EQ(m.end(), m.cend());
 }
 
-TEST(AtomicUnorderedInsertMap, load_factor) {
+TEST(AtomicUnorderedInsertMap, loadFactor) {
   AtomicUnorderedInsertMap<int, bool> m(5000, 0.5f);
 
   // we should be able to put in much more than 5000 things because of
@@ -163,7 +163,7 @@ TEST(AtomicUnorderedInsertMap, load_factor) {
   }
 }
 
-TEST(AtomicUnorderedInsertMap, capacity_exceeded) {
+TEST(AtomicUnorderedInsertMap, capacityExceeded) {
   AtomicUnorderedInsertMap<int, bool> m(5000, 1.0f);
 
   EXPECT_THROW(
@@ -175,7 +175,7 @@ TEST(AtomicUnorderedInsertMap, capacity_exceeded) {
       std::bad_alloc);
 }
 
-TYPED_TEST(AtomicUnorderedInsertMapTest, value_mutation) {
+TYPED_TEST(AtomicUnorderedInsertMapTest, valueMutation) {
   UIM<int, MutableAtom<int>, TypeParam> m(100);
 
   for (int i = 0; i < 50; ++i) {
@@ -185,7 +185,7 @@ TYPED_TEST(AtomicUnorderedInsertMapTest, value_mutation) {
   m.find(1)->second.data++;
 }
 
-TEST(UnorderedInsertMap, value_mutation) {
+TEST(UnorderedInsertMap, valueMutation) {
   UIM<int, MutableData<int>, uint32_t, non_atomic> m(100);
 
   for (int i = 0; i < 50; ++i) {
@@ -198,7 +198,7 @@ TEST(UnorderedInsertMap, value_mutation) {
 
 // This test is too expensive to run automatically.  On my dev server it
 // takes about 10 minutes for dbg build, 2 for opt.
-TEST(AtomicUnorderedInsertMap, DISABLED_mega_map) {
+TEST(AtomicUnorderedInsertMap, DISABLED_MegaMap) {
   size_t capacity = 2000000000;
   AtomicUnorderedInsertMap64<size_t, size_t> big(capacity);
   for (size_t i = 0; i < capacity * 2; i += 2) {
@@ -238,9 +238,7 @@ BENCHMARK(lookup_int_int_hit, iters) {
     EXPECT_EQ(iter->second, k + 1);
   }
 
-  BENCHMARK_SUSPEND {
-    ptr.reset(nullptr);
-  }
+  BENCHMARK_SUSPEND { ptr.reset(nullptr); }
 }
 
 struct PairHash {
@@ -304,9 +302,7 @@ void contendedRW(
     thr.join();
   }
 
-  BENCHMARK_SUSPEND {
-    ptr.reset(nullptr);
-  }
+  BENCHMARK_SUSPEND { ptr.reset(nullptr); }
 }
 
 // clang-format off

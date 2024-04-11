@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <folly/executors/GlobalExecutor.h>
+
 #include <memory>
 #include <thread>
 
@@ -22,23 +24,44 @@
 #include <folly/Singleton.h>
 #include <folly/detail/AsyncTrace.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
-#include <folly/executors/GlobalExecutor.h>
 #include <folly/executors/IOExecutor.h>
 #include <folly/executors/IOThreadPoolExecutor.h>
+#include <folly/executors/InlineExecutor.h>
 #include <folly/system/HardwareConcurrency.h>
 
 using namespace folly;
 
+FOLLY_GFLAGS_DEFINE_uint32(
+    folly_global_io_executor_threads,
+    0,
+    "Number of threads global IOThreadPoolExecutor will create");
+
+FOLLY_GFLAGS_DEFINE_uint32(
+    folly_global_cpu_executor_threads,
+    0,
+    "Number of threads global CPUThreadPoolExecutor will create");
+
+FOLLY_GFLAGS_DEFINE_bool(
+    folly_global_cpu_executor_use_throttled_lifo_sem,
+    true,
+    "Use ThrottledLifoSem in global CPUThreadPoolExecutor");
+
+FOLLY_GFLAGS_DEFINE_uint32(
+    folly_global_cpu_executor_wake_up_interval_us,
+    0,
+    "If --folly_global_cpu_executor_use_throttled_lifo_sem is true, use this "
+    "wake-up interval (in microseconds) in ThrottledLifoSem");
+
 namespace {
+
+using ImmutableGlobalCPUExecutor = CPUThreadPoolExecutor;
 
 class GlobalTag {};
 
 // aka InlineExecutor
-class DefaultCPUExecutor : public Executor {
+class DefaultCPUExecutor : public InlineLikeExecutor {
  public:
-  FOLLY_NOINLINE void add(Func f) override {
-    f();
-  }
+  FOLLY_NOINLINE void add(Func f) override { f(); }
 };
 
 Singleton<std::shared_ptr<DefaultCPUExecutor>> gDefaultGlobalCPUExecutor([] {
@@ -46,15 +69,24 @@ Singleton<std::shared_ptr<DefaultCPUExecutor>> gDefaultGlobalCPUExecutor([] {
 });
 
 Singleton<std::shared_ptr<Executor>, GlobalTag> gImmutableGlobalCPUExecutor([] {
-  return new std::shared_ptr<Executor>(new CPUThreadPoolExecutor(
-      folly::hardware_concurrency(),
+  size_t nthreads = FLAGS_folly_global_cpu_executor_threads;
+  nthreads = nthreads ? nthreads : folly::hardware_concurrency();
+  return new std::shared_ptr<Executor>(new ImmutableGlobalCPUExecutor(
+      nthreads,
+      FLAGS_folly_global_cpu_executor_use_throttled_lifo_sem
+          ? CPUThreadPoolExecutor::makeThrottledLifoSemQueue(
+                std::chrono::microseconds{
+                    FLAGS_folly_global_cpu_executor_wake_up_interval_us})
+          : CPUThreadPoolExecutor::makeDefaultQueue(),
       std::make_shared<NamedThreadFactory>("GlobalCPUThreadPool")));
 });
 
 Singleton<std::shared_ptr<IOExecutor>, GlobalTag> gImmutableGlobalIOExecutor(
     [] {
+      size_t nthreads = FLAGS_folly_global_io_executor_threads;
+      nthreads = nthreads ? nthreads : folly::hardware_concurrency();
       return new std::shared_ptr<IOExecutor>(new IOThreadPoolExecutor(
-          folly::hardware_concurrency(),
+          nthreads,
           std::make_shared<NamedThreadFactory>("GlobalIOThreadPool")));
     });
 
@@ -87,7 +119,7 @@ class GlobalExecutor {
       : getDefault_(std::move(constructDefault)) {}
 
   std::shared_ptr<ExecutorBase> get() {
-    SharedMutex::ReadHolder guard(mutex_);
+    std::shared_lock guard(mutex_);
     if (auto executor = executor_.lock()) {
       return executor; // Fast path.
     }
@@ -96,21 +128,21 @@ class GlobalExecutor {
   }
 
   void set(std::weak_ptr<ExecutorBase> executor) {
-    SharedMutex::WriteHolder guard(mutex_);
+    std::unique_lock guard(mutex_);
     executor_.swap(executor);
   }
 
   // Replace the constructDefault function to use the immutable singleton
   // rather than the default singleton
   void setFromImmutable() {
-    SharedMutex::WriteHolder guard(mutex_);
+    std::unique_lock guard(mutex_);
 
     getDefault_ = [] { return getImmutable<ExecutorBase>(); };
     executor_ = std::weak_ptr<ExecutorBase>{};
   }
 
  private:
-  SharedMutex mutex_;
+  mutable SharedMutex mutex_;
   std::weak_ptr<ExecutorBase> executor_;
   Function<std::shared_ptr<ExecutorBase>()> getDefault_;
 };
@@ -131,10 +163,15 @@ LeakySingleton<GlobalExecutor<IOExecutor>> gGlobalIOExecutor([] {
       // Default global IO executor is an IOThreadPoolExecutor.
       [] { return getImmutable<IOExecutor>(); });
 });
-
 } // namespace
 
 namespace folly {
+
+namespace detail {
+std::shared_ptr<Executor> tryGetImmutableCPUPtr() {
+  return getImmutable<Executor>();
+}
+} // namespace detail
 
 Executor::KeepAlive<> getGlobalCPUExecutor() {
   auto executorPtrPtr = getImmutablePtrPtr<Executor>();
@@ -145,7 +182,20 @@ Executor::KeepAlive<> getGlobalCPUExecutor() {
   return folly::getKeepAliveToken(executorPtrPtr->get());
 }
 
-Executor::KeepAlive<> getGlobalIOExecutor() {
+GlobalCPUExecutorCounters getGlobalCPUExecutorCounters() {
+  auto executorPtrPtr = getImmutablePtrPtr<Executor>();
+  if (!executorPtrPtr) {
+    throw std::runtime_error("Requested global CPU executor during shutdown.");
+  }
+  auto& executor = dynamic_cast<ImmutableGlobalCPUExecutor&>(**executorPtrPtr);
+  GlobalCPUExecutorCounters counters;
+  counters.numThreads = executor.numThreads();
+  counters.numActiveThreads = executor.numActiveThreads();
+  counters.numPendingTasks = executor.getTaskQueueSize();
+  return counters;
+}
+
+Executor::KeepAlive<IOExecutor> getGlobalIOExecutor() {
   auto executorPtrPtr = getImmutablePtrPtr<IOExecutor>();
   if (!executorPtrPtr) {
     throw std::runtime_error("Requested global IO executor during shutdown.");
@@ -154,42 +204,66 @@ Executor::KeepAlive<> getGlobalIOExecutor() {
   return folly::getKeepAliveToken(executorPtrPtr->get());
 }
 
-std::shared_ptr<Executor> getCPUExecutor() {
+std::shared_ptr<Executor> getUnsafeMutableGlobalCPUExecutor() {
   auto& singleton = gGlobalCPUExecutor.get();
   auto executor = singleton.get();
   async_tracing::logGetGlobalCPUExecutor(executor.get());
   return executor;
 }
 
-void setCPUExecutorToGlobalCPUExecutor() {
+std::shared_ptr<Executor> getCPUExecutor() {
+  return getUnsafeMutableGlobalCPUExecutor();
+}
+
+void setUnsafeMutableGlobalCPUExecutorToGlobalCPUExecutor() {
   async_tracing::logSetGlobalCPUExecutorToImmutable();
   gGlobalCPUExecutor.get().setFromImmutable();
 }
 
-void setCPUExecutor(std::weak_ptr<Executor> executor) {
+void setCPUExecutorToGlobalCPUExecutor() {
+  setUnsafeMutableGlobalCPUExecutorToGlobalCPUExecutor();
+}
+
+void setUnsafeMutableGlobalCPUExecutor(std::weak_ptr<Executor> executor) {
   async_tracing::logSetGlobalCPUExecutor(executor.lock().get());
   gGlobalCPUExecutor.get().set(std::move(executor));
 }
 
-std::shared_ptr<IOExecutor> getIOExecutor() {
+void setCPUExecutor(std::weak_ptr<Executor> executor) {
+  setUnsafeMutableGlobalCPUExecutor(std::move(executor));
+}
+
+std::shared_ptr<IOExecutor> getUnsafeMutableGlobalIOExecutor() {
   auto& singleton = gGlobalIOExecutor.get();
   auto executor = singleton.get();
   async_tracing::logGetGlobalIOExecutor(executor.get());
   return executor;
 }
 
-void setIOExecutor(std::weak_ptr<IOExecutor> executor) {
+std::shared_ptr<IOExecutor> getIOExecutor() {
+  return getUnsafeMutableGlobalIOExecutor();
+}
+
+void setUnsafeMutableGlobalIOExecutor(std::weak_ptr<IOExecutor> executor) {
   async_tracing::logSetGlobalIOExecutor(executor.lock().get());
   gGlobalIOExecutor.get().set(std::move(executor));
 }
 
-EventBase* getEventBase() {
-  auto executor = getIOExecutor();
+void setIOExecutor(std::weak_ptr<IOExecutor> executor) {
+  setUnsafeMutableGlobalIOExecutor(std::move(executor));
+}
+
+EventBase* getUnsafeMutableGlobalEventBase() {
+  auto executor = getUnsafeMutableGlobalIOExecutor();
   if (FOLLY_LIKELY(!!executor)) {
     return executor->getEventBase();
   }
 
   return nullptr;
+}
+
+EventBase* getEventBase() {
+  return getUnsafeMutableGlobalEventBase();
 }
 
 } // namespace folly

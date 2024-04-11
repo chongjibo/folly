@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,13 @@
 #include <folly/portability/GTest.h>
 
 namespace folly {
+
+TEST(SanitizeLeak, lsanIgnoreObject) {
+  int* ptr = new int(5);
+  EXPECT_EQ(*ptr, 5);
+  lsan_ignore_object(ptr);
+  EXPECT_EQ(*ptr, 5);
+}
 
 TEST(SanitizeLeak, ImplementationAlwaysWorks) {
   int* ptr = new int(5);
@@ -61,6 +68,27 @@ TEST(SanitizeLeak, NotLeaked) {
     ptr0 = ptr1;
   }
   annotate_object_leaked(ptr0);
+}
+
+TEST(SanitizeLeak, MultiLeaked) {
+  int* ptr0 = new int(0);
+  for (size_t i = 0; i < 3; ++i) {
+    annotate_object_leaked(ptr0);
+  }
+  for (size_t i = 0; i < 2; ++i) {
+    annotate_object_collected(ptr0);
+  }
+}
+
+TEST(SanitizeLeak, MultiNotLeaked) {
+  int* ptr0 = new int(0);
+  for (size_t i = 0; i < 3; ++i) {
+    annotate_object_leaked(ptr0);
+  }
+  for (size_t i = 0; i < 3; ++i) {
+    annotate_object_collected(ptr0);
+  }
+  delete ptr0;
 }
 
 TEST(SanitizeLeak, Concurrent) {

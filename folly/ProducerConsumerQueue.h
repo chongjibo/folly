@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,9 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// @author Bo Hu (bhu@fb.com)
-// @author Jordan DeLong (delong.j@fb.com)
 
 #pragma once
 
@@ -167,9 +164,7 @@ struct ProducerConsumerQueue {
   }
 
   // maximum number of items in the queue.
-  size_t capacity() const {
-    return size_ - 1;
-  }
+  size_t capacity() const { return size_ - 1; }
 
  private:
   using AtomicIndex = std::atomic<unsigned int>;

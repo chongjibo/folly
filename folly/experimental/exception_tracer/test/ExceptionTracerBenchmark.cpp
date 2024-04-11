@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,8 @@
 #include <folly/Benchmark.h>
 #include <folly/experimental/exception_tracer/ExceptionTracer.h>
 #include <folly/portability/GFlags.h>
+
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 void recurse(int level) {
   if (level == 0) {
@@ -53,6 +55,8 @@ BENCHMARK(ExceptionTracer, iters) {
     t.join();
   }
 }
+
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 int main(int argc, char* argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);

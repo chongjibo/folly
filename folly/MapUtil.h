@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,21 @@
  * limitations under the License.
  */
 
+/**
+ * MapUtil provides convenience functions to get a value from a map.
+ *
+ * @refcode folly/docs/examples/folly/MapUtil.cpp
+ * @file MapUtil.h
+ */
+
 #pragma once
+
+#include <tuple>
 
 #include <folly/Conv.h>
 #include <folly/Optional.h>
+#include <folly/Range.h>
 #include <folly/functional/Invoke.h>
-#include <tuple>
 
 namespace folly {
 
@@ -37,11 +46,12 @@ template <
     typename Key = typename Map::key_type,
     typename Value = typename Map::mapped_type,
     typename std::enable_if<!is_invocable_v<Value>>::type* = nullptr>
-typename Map::mapped_type
-get_default(const Map& map, const Key& key, Value&& dflt) {
+typename Map::mapped_type get_default(
+    const Map& map, const Key& key, Value&& dflt) {
   using M = typename Map::mapped_type;
   auto pos = map.find(key);
-  return (pos != map.end()) ? (pos->second) : M(std::forward<Value>(dflt));
+  return (pos != map.end()) ? pos->second
+                            : static_cast<M>(static_cast<Value&&>(dflt));
 }
 
 /**
@@ -54,8 +64,8 @@ template <
     typename Func,
     typename = typename std::enable_if<
         is_invocable_r_v<typename Map::mapped_type, Func>>::type>
-typename Map::mapped_type
-get_default(const Map& map, const Key& key, Func&& dflt) {
+typename Map::mapped_type get_default(
+    const Map& map, const Key& key, Func&& dflt) {
   auto pos = map.find(key);
   return pos != map.end() ? pos->second : dflt();
 }
@@ -71,7 +81,7 @@ template <
 const typename Map::mapped_type& get_or_throw(
     const Map& map,
     const Key& key,
-    const std::string& exceptionStrPrefix = std::string()) {
+    const StringPiece& exceptionStrPrefix = StringPiece()) {
   auto pos = map.find(key);
   if (pos != map.end()) {
     return pos->second;
@@ -86,7 +96,7 @@ template <
 typename Map::mapped_type& get_or_throw(
     Map& map,
     const Key& key,
-    const std::string& exceptionStrPrefix = std::string()) {
+    const StringPiece& exceptionStrPrefix = StringPiece()) {
   auto pos = map.find(key);
   if (pos != map.end()) {
     return pos->second;
@@ -98,15 +108,17 @@ typename Map::mapped_type& get_or_throw(
  * Given a map and a key, return a Optional<V> if the key exists and None if the
  * key does not exist in the map.
  */
-template <class Map, typename Key = typename Map::key_type>
-folly::Optional<typename Map::mapped_type> get_optional(
-    const Map& map,
-    const Key& key) {
+template <
+    template <typename> class Optional = folly::Optional,
+    class Map,
+    typename Key = typename Map::key_type>
+Optional<typename Map::mapped_type> get_optional(
+    const Map& map, const Key& key) {
   auto pos = map.find(key);
   if (pos != map.end()) {
-    return folly::Optional<typename Map::mapped_type>(pos->second);
+    return Optional<typename Map::mapped_type>(pos->second);
   } else {
-    return folly::none;
+    return {};
   }
 }
 
@@ -117,9 +129,7 @@ folly::Optional<typename Map::mapped_type> get_optional(
  */
 template <class Map, typename Key = typename Map::key_type>
 const typename Map::mapped_type& get_ref_default(
-    const Map& map,
-    const Key& key,
-    const typename Map::mapped_type& dflt) {
+    const Map& map, const Key& key, const typename Map::mapped_type& dflt) {
   auto pos = map.find(key);
   return (pos != map.end() ? pos->second : dflt);
 }
@@ -132,9 +142,7 @@ const typename Map::mapped_type& get_ref_default(
  */
 template <class Map, typename Key = typename Map::key_type>
 const typename Map::mapped_type& get_ref_default(
-    const Map& map,
-    const Key& key,
-    typename Map::mapped_type&& dflt) = delete;
+    const Map& map, const Key& key, typename Map::mapped_type&& dflt) = delete;
 
 template <class Map, typename Key = typename Map::key_type>
 const typename Map::mapped_type& get_ref_default(
@@ -155,18 +163,18 @@ template <
         is_invocable_r_v<const typename Map::mapped_type&, Func>>::type,
     typename = typename std::enable_if<
         std::is_reference<invoke_result_t<Func>>::value>::type>
-const typename Map::mapped_type&
-get_ref_default(const Map& map, const Key& key, Func&& dflt) {
+const typename Map::mapped_type& get_ref_default(
+    const Map& map, const Key& key, Func&& dflt) {
   auto pos = map.find(key);
   return (pos != map.end() ? pos->second : dflt());
 }
 
 /**
- * Given a map and a key, return a pointer to the value corresponding to the
- * key in the map, or nullptr if the key doesn't exist in the map.
+ * @brief Given a map and a key, return a pointer to the value corresponding to
+ * the key in the map, or nullptr if the key doesn't exist in the map.
  */
 template <class Map, typename Key = typename Map::key_type>
-const typename Map::mapped_type* get_ptr(const Map& map, const Key& key) {
+const auto* get_ptr(const Map& map, const Key& key) {
   auto pos = map.find(key);
   return (pos != map.end() ? &pos->second : nullptr);
 }
@@ -175,9 +183,39 @@ const typename Map::mapped_type* get_ptr(const Map& map, const Key& key) {
  * Non-const overload of the above.
  */
 template <class Map, typename Key = typename Map::key_type>
-typename Map::mapped_type* get_ptr(Map& map, const Key& key) {
+auto* get_ptr(Map& map, const Key& key) {
   auto pos = map.find(key);
   return (pos != map.end() ? &pos->second : nullptr);
+}
+
+/**
+ * Same as `get_ptr` but for `find` variants that search for two keys at once.
+ */
+template <class Map, typename Key = typename Map::key_type>
+std::pair<const typename Map::mapped_type*, const typename Map::mapped_type*>
+get_ptr2(const Map& map, const Key& key0, const Key& key1) {
+  const auto& iter_pair = map.find(key0, key1);
+  auto iter0 = iter_pair.first;
+  auto iter1 = iter_pair.second;
+  auto end = map.end();
+  return std::make_pair(
+      iter0 != end ? &iter0->second : nullptr,
+      iter1 != end ? &iter1->second : nullptr);
+}
+
+/**
+ * Same as `get_ptr` but for `find` variants that search for two keys at once.
+ */
+template <class Map, typename Key = typename Map::key_type>
+std::pair<typename Map::mapped_type*, typename Map::mapped_type*> get_ptr2(
+    Map& map, const Key& key0, const Key& key1) {
+  const auto& iter_pair = map.find(key0, key1);
+  auto iter0 = iter_pair.first;
+  auto iter1 = iter_pair.second;
+  auto end = map.end();
+  return std::make_pair(
+      iter0 != end ? &iter0->second : nullptr,
+      iter1 != end ? &iter1->second : nullptr);
 }
 
 // TODO: Remove the return type computations when clang 3.5 and gcc 5.1 are
@@ -222,10 +260,7 @@ auto extract_default(const KeysDefault&... keysDefault) ->
  */
 template <class Map, class Key1, class Key2, class... Keys>
 auto get_optional(
-    const Map& map,
-    const Key1& key1,
-    const Key2& key2,
-    const Keys&... keys)
+    const Map& map, const Key1& key1, const Key2& key2, const Keys&... keys)
     -> folly::Optional<
         typename detail::NestedMapType<Map, 2 + sizeof...(Keys)>::type> {
   auto pos = map.find(key1);
@@ -239,10 +274,7 @@ auto get_optional(
  */
 template <class Map, class Key1, class Key2, class... Keys>
 auto get_ptr(
-    const Map& map,
-    const Key1& key1,
-    const Key2& key2,
-    const Keys&... keys) ->
+    const Map& map, const Key1& key1, const Key2& key2, const Keys&... keys) ->
     typename detail::NestedMapType<Map, 2 + sizeof...(Keys)>::type const* {
   auto pos = map.find(key1);
   return pos != map.end() ? get_ptr(pos->second, key2, keys...) : nullptr;

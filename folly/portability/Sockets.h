@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,30 +23,13 @@
 namespace folly {
 namespace portability {
 namespace sockets {
-#ifndef _WIN32
-using ::accept;
-using ::bind;
-using ::connect;
-using ::getpeername;
-using ::getsockname;
-using ::getsockopt;
-using ::inet_ntop;
-using ::listen;
-using ::poll;
-using ::recv;
-using ::recvfrom;
-using ::send;
-using ::sendmsg;
-using ::sendto;
-using ::setsockopt;
-using ::shutdown;
-using ::socket;
-#else
+
+#ifdef _WIN32
+
 // Some Windows specific helper functions.
 bool is_fh_socket(int fh);
 SOCKET fd_to_socket(int fd);
 int socket_to_fd(SOCKET s);
-int translate_wsa_error(int wsaErr);
 
 // These aren't additional overloads, but rather other functions that
 // are referenced that we need to wrap, or, in the case of inet_aton,
@@ -84,11 +67,7 @@ ssize_t sendto(
     socklen_t tolen);
 ssize_t sendmsg(int socket, const struct msghdr* message, int flags);
 int setsockopt(
-    int s,
-    int level,
-    int optname,
-    const void* optval,
-    socklen_t optlen);
+    int s, int level, int optname, const void* optval, socklen_t optlen);
 int shutdown(int s, int how);
 
 // This is the only function that _must_ be referenced via the namespace
@@ -134,12 +113,34 @@ ssize_t sendto(
     const sockaddr* to,
     socklen_t tolen);
 int setsockopt(
-    int s,
-    int level,
-    int optname,
-    const char* optval,
-    socklen_t optlen);
+    int s, int level, int optname, const char* optval, socklen_t optlen);
+
+#elif defined(__EMSCRIPTEN__)
+
+// None of these are implemented or referenced right now.
+
+#else
+
+using ::accept;
+using ::bind;
+using ::connect;
+using ::getpeername;
+using ::getsockname;
+using ::getsockopt;
+using ::inet_ntop;
+using ::listen;
+using ::poll;
+using ::recv;
+using ::recvfrom;
+using ::send;
+using ::sendmsg;
+using ::sendto;
+using ::setsockopt;
+using ::shutdown;
+using ::socket;
+
 #endif
+
 } // namespace sockets
 } // namespace portability
 } // namespace folly

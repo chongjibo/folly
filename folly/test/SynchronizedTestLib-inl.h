@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,6 @@
 
 #pragma once
 
-#include <folly/Random.h>
-#include <folly/Synchronized.h>
-#include <folly/container/Foreach.h>
-#include <folly/portability/GTest.h>
-#include <glog/logging.h>
 #include <algorithm>
 #include <condition_variable>
 #include <functional>
@@ -29,18 +24,20 @@
 #include <thread>
 #include <vector>
 
+#include <glog/logging.h>
+
+#include <folly/Random.h>
+#include <folly/Synchronized.h>
+#include <folly/container/Foreach.h>
+#include <folly/portability/GTest.h>
+
 namespace folly {
 namespace sync_tests {
 
-inline std::mt19937& getRNG() {
-  static const auto seed = folly::randomNumberSeed();
-  static std::mt19937 rng(seed);
-  return rng;
-}
-
 void randomSleep(std::chrono::milliseconds min, std::chrono::milliseconds max) {
   std::uniform_int_distribution<> range(min.count(), max.count());
-  std::chrono::milliseconds duration(range(getRNG()));
+  folly::ThreadLocalPRNG prng;
+  std::chrono::milliseconds duration(range(prng));
   /* sleep override */
   std::this_thread::sleep_for(duration);
 }
@@ -75,7 +72,7 @@ void runParallel(size_t numThreads, const Function& function) {
     // as close to the same time as possible.
     {
       auto lockedGo = go.lock();
-      goCV.wait(lockedGo.getUniqueLock(), [&] { return *lockedGo; });
+      goCV.wait(lockedGo.as_lock(), [&] { return *lockedGo; });
     }
 
     function(threadIndex);
@@ -89,9 +86,8 @@ void runParallel(size_t numThreads, const Function& function) {
   // Wait for all threads to become ready
   {
     auto readyLocked = threadsReady.lock();
-    readyCV.wait(readyLocked.getUniqueLock(), [&] {
-      return *readyLocked == numThreads;
-    });
+    readyCV.wait(
+        readyLocked.as_lock(), [&] { return *readyLocked == numThreads; });
   }
   // Now signal the threads that they can go
   go = true;
@@ -105,7 +101,7 @@ void runParallel(size_t numThreads, const Function& function) {
 
 // testBasic() version for shared lock types
 template <class Mutex>
-typename std::enable_if<folly::LockTraits<Mutex>::is_shared>::type
+std::enable_if_t<folly::detail::kSynchronizedMutexIsShared<void, Mutex>>
 testBasicImpl() {
   folly::Synchronized<std::vector<int>, Mutex> obj;
   const auto& constObj = obj;
@@ -157,7 +153,7 @@ testBasicImpl() {
 
 // testBasic() version for non-shared lock types
 template <class Mutex>
-typename std::enable_if<!folly::LockTraits<Mutex>::is_shared>::type
+std::enable_if_t<!folly::detail::kSynchronizedMutexIsShared<void, Mutex>>
 testBasicImpl() {
   folly::Synchronized<std::vector<int>, Mutex> obj;
   const auto& constObj = obj;
@@ -202,7 +198,7 @@ void testBasic() {
 
 // testWithLock() version for shared lock types
 template <class Mutex>
-typename std::enable_if<folly::LockTraits<Mutex>::is_shared>::type
+std::enable_if_t<folly::detail::kSynchronizedMutexIsShared<void, Mutex>>
 testWithLock() {
   folly::Synchronized<std::vector<int>, Mutex> obj;
   const auto& constObj = obj;
@@ -228,7 +224,6 @@ testWithLock() {
     EXPECT_EQ(1002, lockedObj.size());
   });
 
-#if __cpp_generic_lambdas >= 201304
   obj.withWLock([](auto& lockedObj) { lockedObj.push_back(12); });
   obj.withWLock(
       [](const auto& lockedObj) { EXPECT_EQ(1003, lockedObj.size()); });
@@ -243,11 +238,9 @@ testWithLock() {
   constObj.withRLock(
       [](const auto& lockedObj) { EXPECT_EQ(1003, lockedObj.size()); });
   obj.withWLock([](auto& lockedObj) { lockedObj.pop_back(); });
-#endif
 
   // Test withWLockPtr() and withRLockPtr()
   using SynchType = folly::Synchronized<std::vector<int>, Mutex>;
-#if __cpp_generic_lambdas >= 201304
   obj.withWLockPtr([](auto&& lockedObj) { lockedObj->push_back(13); });
   obj.withRLockPtr([](auto&& lockedObj) {
     EXPECT_EQ(1003, lockedObj->size());
@@ -269,13 +262,6 @@ testWithLock() {
     EXPECT_EQ(1005, lockedObj->size());
     EXPECT_EQ(15, lockedObj->back());
   });
-#else
-  obj.withWLockPtr([](typename SynchType::LockedPtr&& lockedObj) {
-    lockedObj->push_back(13);
-    lockedObj->push_back(14);
-    lockedObj->push_back(15);
-  });
-#endif
 
   obj.withWLockPtr([](typename SynchType::LockedPtr&& lockedObj) {
     lockedObj->push_back(16);
@@ -301,7 +287,7 @@ testWithLock() {
 
 // testWithLock() version for non-shared lock types
 template <class Mutex>
-typename std::enable_if<!folly::LockTraits<Mutex>::is_shared>::type
+std::enable_if_t<!folly::detail::kSynchronizedMutexIsShared<void, Mutex>>
 testWithLock() {
   folly::Synchronized<std::vector<int>, Mutex> obj;
 
@@ -315,16 +301,13 @@ testWithLock() {
     EXPECT_EQ(1002, lockedObj.size());
   });
 
-#if __cpp_generic_lambdas >= 201304
   obj.withLock([](auto& lockedObj) { lockedObj.push_back(12); });
   obj.withLock(
       [](const auto& lockedObj) { EXPECT_EQ(1003, lockedObj.size()); });
   obj.withLock([](auto& lockedObj) { lockedObj.pop_back(); });
-#endif
 
   // Test withLockPtr()
   using SynchType = folly::Synchronized<std::vector<int>, Mutex>;
-#if __cpp_generic_lambdas >= 201304
   obj.withLockPtr([](auto&& lockedObj) { lockedObj->push_back(13); });
   obj.withLockPtr([](auto&& lockedObj) {
     EXPECT_EQ(1003, lockedObj->size());
@@ -339,13 +322,6 @@ testWithLock() {
     EXPECT_EQ(1005, lockedObj->size());
     EXPECT_EQ(15, lockedObj->back());
   });
-#else
-  obj.withLockPtr([](typename SynchType::LockedPtr&& lockedObj) {
-    lockedObj->push_back(13);
-    lockedObj->push_back(14);
-    lockedObj->push_back(15);
-  });
-#endif
 
   obj.withLockPtr([](typename SynchType::LockedPtr&& lockedObj) {
     lockedObj->push_back(16);
@@ -391,7 +367,7 @@ void testUnlockCommon() {
 
 // testUnlock() version for shared lock types
 template <class Mutex>
-typename std::enable_if<folly::LockTraits<Mutex>::is_shared>::type
+std::enable_if_t<folly::detail::kSynchronizedMutexIsShared<void, Mutex>>
 testUnlock() {
   folly::Synchronized<int, Mutex> value{10};
   {
@@ -424,7 +400,7 @@ testUnlock() {
 
 // testUnlock() version for non-shared lock types
 template <class Mutex>
-typename std::enable_if<!folly::LockTraits<Mutex>::is_shared>::type
+std::enable_if_t<!folly::detail::kSynchronizedMutexIsShared<void, Mutex>>
 testUnlock() {
   folly::Synchronized<int, Mutex> value{10};
   {
@@ -473,13 +449,9 @@ template <class Mutex>
     EXPECT_EQ(1000, obj2.contextualLock()->size());
   }
 
-  SYNCHRONIZED_CONST(obj) {
-    EXPECT_EQ(1001, obj.size());
-  }
+  SYNCHRONIZED_CONST(obj) { EXPECT_EQ(1001, obj.size()); }
 
-  SYNCHRONIZED(lockedObj, *&obj) {
-    lockedObj.front() = 2;
-  }
+  SYNCHRONIZED(lockedObj, *&obj) { lockedObj.front() = 2; }
 
   EXPECT_EQ(1001, obj.contextualLock()->size());
   EXPECT_EQ(10, obj.contextualLock()->back());
@@ -784,8 +756,8 @@ struct NotCopiableNotMovable {
 
 template <class Mutex>
 void testInPlaceConstruction() {
-  // This won't compile without in_place
-  folly::Synchronized<NotCopiableNotMovable> a(folly::in_place, 5, "a");
+  // This won't compile without std::in_place
+  folly::Synchronized<NotCopiableNotMovable> a(std::in_place, 5, "a");
 }
 
 template <class Mutex>

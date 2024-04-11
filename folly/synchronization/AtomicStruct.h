@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ class AtomicStruct {
   static_assert(alignof(T) <= alignof(Raw), "underlying type is under-aligned");
   static_assert(sizeof(T) <= sizeof(Raw), "underlying type is under-sized");
   static_assert(
-      std::is_trivial<T>::value || is_trivially_copyable<T>::value,
+      std::is_trivial<T>::value || std::is_trivially_copyable<T>::value,
       "target type must be trivially copyable");
 
   Atom<Raw> data;
@@ -86,14 +86,10 @@ class AtomicStruct {
 
   constexpr /* implicit */ AtomicStruct(T v) noexcept : data(encode(v)) {}
 
-  bool is_lock_free() const noexcept {
-    return data.is_lock_free();
-  }
+  bool is_lock_free() const noexcept { return data.is_lock_free(); }
 
   bool compare_exchange_strong(
-      T& v0,
-      T v1,
-      std::memory_order mo = std::memory_order_seq_cst) noexcept {
+      T& v0, T v1, std::memory_order mo = std::memory_order_seq_cst) noexcept {
     return compare_exchange_strong(
         v0, v1, mo, detail::default_failure_memory_order(mo));
   }
@@ -111,9 +107,7 @@ class AtomicStruct {
   }
 
   bool compare_exchange_weak(
-      T& v0,
-      T v1,
-      std::memory_order mo = std::memory_order_seq_cst) noexcept {
+      T& v0, T v1, std::memory_order mo = std::memory_order_seq_cst) noexcept {
     return compare_exchange_weak(
         v0, v1, mo, detail::default_failure_memory_order(mo));
   }
@@ -134,17 +128,13 @@ class AtomicStruct {
     return decode(data.exchange(encode(v), mo));
   }
 
-  /* implicit */ operator T() const noexcept {
-    return decode(data);
-  }
+  /* implicit */ operator T() const noexcept { return decode(data); }
 
   T load(std::memory_order mo = std::memory_order_seq_cst) const noexcept {
     return decode(data.load(mo));
   }
 
-  T operator=(T v) noexcept {
-    return decode(data = encode(v));
-  }
+  T operator=(T v) noexcept { return decode(data = encode(v)); }
 
   void store(T v, std::memory_order mo = std::memory_order_seq_cst) noexcept {
     data.store(encode(v), mo);

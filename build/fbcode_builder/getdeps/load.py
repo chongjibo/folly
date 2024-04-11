@@ -1,11 +1,12 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from __future__ import absolute_import, division, print_function, unicode_literals
+# pyre-unsafe
 
 import base64
+import copy
 import hashlib
 import os
 
@@ -16,11 +17,11 @@ from .manifest import ManifestParser
 
 
 class Loader(object):
-    """ The loader allows our tests to patch the load operation """
+    """The loader allows our tests to patch the load operation"""
 
     def _list_manifests(self, build_opts):
-        """ Returns a generator that iterates all the available manifests """
-        for (path, _, files) in os.walk(build_opts.manifests_dir):
+        """Returns a generator that iterates all the available manifests"""
+        for path, _, files in os.walk(build_opts.manifests_dir):
             for name in files:
                 # skip hidden files
                 if name.startswith("."):
@@ -57,7 +58,7 @@ class Loader(object):
 
 
 class ResourceLoader(Loader):
-    def __init__(self, namespace, manifests_dir):
+    def __init__(self, namespace, manifests_dir) -> None:
         self.namespace = namespace
         self.manifests_dir = manifests_dir
 
@@ -83,7 +84,7 @@ class ResourceLoader(Loader):
 
         raise ManifestNotFound(project_name)
 
-    def _load_manifest(self, path):
+    def _load_manifest(self, path: str):
         import pkg_resources
 
         contents = pkg_resources.resource_string(self.namespace, path).decode("utf8")
@@ -97,14 +98,14 @@ class ResourceLoader(Loader):
 LOADER = Loader()
 
 
-def patch_loader(namespace, manifests_dir="manifests"):
+def patch_loader(namespace, manifests_dir: str = "manifests") -> None:
     global LOADER
     LOADER = ResourceLoader(namespace, manifests_dir)
 
 
 def load_project(build_opts, project_name):
-    """ given the name of a project or a path to a manifest file,
-    load up the ManifestParser instance for it and return it """
+    """given the name of a project or a path to a manifest file,
+    load up the ManifestParser instance for it and return it"""
     return LOADER.load_project(build_opts, project_name)
 
 
@@ -113,14 +114,14 @@ def load_all_manifests(build_opts):
 
 
 class ManifestLoader(object):
-    """ ManifestLoader stores information about project manifest relationships for a
+    """ManifestLoader stores information about project manifest relationships for a
     given set of (build options + platform) configuration.
 
     The ManifestLoader class primarily serves as a location to cache project dependency
     relationships and project hash values for this build configuration.
     """
 
-    def __init__(self, build_opts, ctx_gen=None):
+    def __init__(self, build_opts, ctx_gen=None) -> None:
         self._loader = LOADER
         self.build_opts = build_opts
         if ctx_gen is None:
@@ -159,7 +160,7 @@ class ManifestLoader(object):
         return self.manifests_by_name
 
     def manifests_in_dependency_order(self, manifest=None):
-        """ Compute all dependencies of the specified project.  Returns a list of the
+        """Compute all dependencies of the specified project.  Returns a list of the
         dependencies plus the project itself, in topologically sorted order.
 
         Each entry in the returned list only depends on projects that appear before it
@@ -168,7 +169,7 @@ class ManifestLoader(object):
         If the input manifest is None, the dependencies for all currently loaded
         projects will be computed.  i.e., if you call load_all_manifests() followed by
         manifests_in_dependency_order() this will return a global dependency ordering of
-        all projects.  """
+        all projects."""
         # The list of deps that have been fully processed
         seen = set()
         # The list of deps which have yet to be evaluated.  This
@@ -180,6 +181,7 @@ class ManifestLoader(object):
             deps = [manifest]
         # The list of manifests in dependency order
         dep_order = []
+        system_packages = {}
 
         while len(deps) > 0:
             m = deps.pop(0)
@@ -192,19 +194,7 @@ class ManifestLoader(object):
             # to produce the same order regardless of how they are listed
             # in the project manifest files.
             ctx = self.ctx_gen.get_context(m.name)
-            dep_list = sorted(m.get_section_as_dict("dependencies", ctx).keys())
-            builder = m.get("build", "builder", ctx=ctx)
-            if builder in ("cmake", "python-wheel"):
-                dep_list.append("cmake")
-            elif builder == "autoconf" and m.name not in (
-                "autoconf",
-                "libtool",
-                "automake",
-            ):
-                # they need libtool and its deps (automake, autoconf) so add
-                # those as deps (but obviously not if we're building those
-                # projects themselves)
-                dep_list.append("libtool")
+            dep_list = m.get_dependencies(ctx)
 
             dep_count = 0
             for dep_name in dep_list:
@@ -226,20 +216,33 @@ class ManifestLoader(object):
 
             # Its deps are done, so we can emit it
             seen.add(m.name)
+            # Capture system packages as we may need to set PATHs to then later
+            if (
+                self.build_opts.allow_system_packages
+                and self.build_opts.host_type.get_package_manager()
+            ):
+                packages = m.get_required_system_packages(ctx)
+                for pkg_type, v in packages.items():
+                    merged = system_packages.get(pkg_type, [])
+                    if v not in merged:
+                        merged += v
+                    system_packages[pkg_type] = merged
+                # A manifest depends on all system packages in it dependencies as well
+                m.resolved_system_packages = copy.copy(system_packages)
             dep_order.append(m)
 
         return dep_order
 
-    def set_project_src_dir(self, project_name, path):
+    def set_project_src_dir(self, project_name, path) -> None:
         self._fetcher_overrides[project_name] = fetcher.LocalDirFetcher(path)
 
-    def set_project_build_dir(self, project_name, path):
+    def set_project_build_dir(self, project_name, path) -> None:
         self._build_dir_overrides[project_name] = path
 
-    def set_project_install_dir(self, project_name, path):
+    def set_project_install_dir(self, project_name, path) -> None:
         self._install_dir_overrides[project_name] = path
 
-    def set_project_install_prefix(self, project_name, path):
+    def set_project_install_prefix(self, project_name, path) -> None:
         self._install_prefix_overrides[project_name] = path
 
     def create_fetcher(self, manifest):
@@ -257,13 +260,13 @@ class ManifestLoader(object):
             self._project_hashes[manifest.name] = h
         return h
 
-    def _compute_project_hash(self, manifest):
-        """ This recursive function computes a hash for a given manifest.
+    def _compute_project_hash(self, manifest) -> str:
+        """This recursive function computes a hash for a given manifest.
         The hash takes into account some environmental factors on the
         host machine and includes the hashes of its dependencies.
         No caching of the computation is performed, which is theoretically
         wasteful but the computation is fast enough that it is not required
-        to cache across multiple invocations. """
+        to cache across multiple invocations."""
         ctx = self.ctx_gen.get_context(manifest.name)
 
         hasher = hashlib.sha256()
@@ -275,7 +278,15 @@ class ManifestLoader(object):
         env["os"] = self.build_opts.host_type.ostype
         env["distro"] = self.build_opts.host_type.distro
         env["distro_vers"] = self.build_opts.host_type.distrovers
-        for name in ["CXXFLAGS", "CPPFLAGS", "LDFLAGS", "CXX", "CC"]:
+        env["shared_libs"] = str(self.build_opts.shared_libs)
+        for name in [
+            "CXXFLAGS",
+            "CPPFLAGS",
+            "LDFLAGS",
+            "CXX",
+            "CC",
+            "GETDEPS_CMAKE_DEFINES",
+        ]:
             env[name] = os.environ.get(name)
         for tool in ["cc", "c++", "gcc", "g++", "clang", "clang++"]:
             env["tool-%s" % tool] = path_search(os.environ, tool)
@@ -296,7 +307,7 @@ class ManifestLoader(object):
 
         manifest.update_hash(hasher, ctx)
 
-        dep_list = sorted(manifest.get_section_as_dict("dependencies", ctx).keys())
+        dep_list = manifest.get_dependencies(ctx)
         for dep in dep_list:
             dep_manifest = self.load_manifest(dep)
             dep_hash = self.get_project_hash(dep_manifest)

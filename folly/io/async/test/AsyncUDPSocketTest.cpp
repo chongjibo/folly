@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#include <folly/io/SocketOptionMap.h>
+#include <folly/io/async/AsyncUDPSocket.h>
+
 #include <thread>
 
 #include <folly/Conv.h>
@@ -23,8 +26,8 @@
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/AsyncTimeout.h>
 #include <folly/io/async/AsyncUDPServerSocket.h>
-#include <folly/io/async/AsyncUDPSocket.h>
 #include <folly/io/async/EventBase.h>
+#include <folly/net/test/MockNetOpsDispatcher.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/Sockets.h>
@@ -42,15 +45,22 @@ using OnDataAvailableParams =
 
 class UDPAcceptor : public AsyncUDPServerSocket::Callback {
  public:
-  UDPAcceptor(EventBase* evb, int n, bool changePortForWrites)
-      : evb_(evb), n_(n), changePortForWrites_(changePortForWrites) {}
+  UDPAcceptor(
+      EventBase* evb,
+      int n,
+      bool changePortForWrites,
+      const folly::SocketAddress& serverAddress)
+      : evb_(evb),
+        n_(n),
+        changePortForWrites_(changePortForWrites),
+        serverAddress_(serverAddress) {}
 
   void onListenStarted() noexcept override {}
 
   void onListenStopped() noexcept override {}
 
   void onDataAvailable(
-      std::shared_ptr<folly::AsyncUDPSocket> socket,
+      std::shared_ptr<folly::AsyncUDPSocket> /* socket */,
       const folly::SocketAddress& client,
       std::unique_ptr<folly::IOBuf> data,
       bool truncated,
@@ -63,17 +73,20 @@ class UDPAcceptor : public AsyncUDPServerSocket::Callback {
             << "(trun:" << truncated << ") from " << client.describe() << " - "
             << lastMsg_;
 
-    sendPong(socket);
+    sendPong();
   }
 
-  void sendPong(std::shared_ptr<folly::AsyncUDPSocket> socket) noexcept {
+  void sendPong() noexcept {
     try {
-      auto writeSocket = socket;
+      auto writeSocket = std::make_shared<folly::AsyncUDPSocket>(evb_);
       if (changePortForWrites_) {
-        writeSocket = std::make_shared<folly::AsyncUDPSocket>(evb_);
         writeSocket->setReuseAddr(false);
         writeSocket->bind(folly::SocketAddress("127.0.0.1", 0));
+      } else {
+        writeSocket->setReusePort(true);
+        writeSocket->bind(serverAddress_);
       }
+      writeSocket->setTosOrTrafficClass(1);
       writeSocket->write(lastClient_, folly::IOBuf::copyBuffer(lastMsg_));
     } catch (const std::exception& ex) {
       VLOG(4) << "Failed to send PONG " << ex.what();
@@ -86,6 +99,7 @@ class UDPAcceptor : public AsyncUDPServerSocket::Callback {
   // Whether to create a new port per write.
   bool changePortForWrites_{true};
 
+  folly::SocketAddress serverAddress_;
   folly::SocketAddress lastClient_;
   std::string lastMsg_;
 };
@@ -99,6 +113,7 @@ class UDPServer {
     CHECK(evb_->isInEventBaseThread());
 
     socket_ = std::make_unique<AsyncUDPServerSocket>(evb_, 1500);
+    socket_->setReusePort(true);
 
     try {
       socket_->bind(addr_);
@@ -113,7 +128,8 @@ class UDPServer {
     // Add numWorkers thread
     int i = 0;
     for (auto& evb : evbs_) {
-      acceptors_.emplace_back(&evb, i, changePortForWrites_);
+      acceptors_.emplace_back(
+          &evb, i, changePortForWrites_, socket_->address());
 
       std::thread t([&]() { evb.loopForever(); });
 
@@ -127,9 +143,7 @@ class UDPServer {
     socket_->listen();
   }
 
-  folly::SocketAddress address() const {
-    return socket_->address();
-  }
+  folly::SocketAddress address() const { return socket_->address(); }
 
   void shutdown() {
     CHECK(evb_->isInEventBaseThread());
@@ -145,17 +159,11 @@ class UDPServer {
     }
   }
 
-  void pauseAccepting() {
-    socket_->pauseAccepting();
-  }
+  void pauseAccepting() { socket_->pauseAccepting(); }
 
-  void resumeAccepting() {
-    socket_->resumeAccepting();
-  }
+  void resumeAccepting() { socket_->resumeAccepting(); }
 
-  bool isAccepting() {
-    return socket_->isAccepting();
-  }
+  bool isAccepting() { return socket_->isAccepting(); }
 
   // Whether writes from the UDP server should change the port for each message.
   void setChangePortForWrites(bool changePortForWrites) {
@@ -183,11 +191,12 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
 
   explicit UDPClient(EventBase* evb) : AsyncTimeout(evb), evb_(evb) {}
 
-  void
-  start(const folly::SocketAddress& server, int n, bool sendClustered = false) {
+  void start(
+      const folly::SocketAddress& server, int n, bool sendClustered = false) {
     CHECK(evb_->isInEventBaseThread());
     server_ = server;
     socket_ = std::make_unique<AsyncUDPSocket>(evb_);
+    socket_->setRecvTos(recvTos_);
 
     try {
       if (bindSocket_ == BindSocket::YES) {
@@ -216,9 +225,11 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
 
   void shutdown() {
     CHECK(evb_->isInEventBaseThread());
-    socket_->pauseRead();
-    socket_->close();
-    socket_.reset();
+    if (socket_) {
+      socket_->pauseRead();
+      socket_->close();
+      socket_.reset();
+    }
     evb_->terminateLoopSoon();
   }
 
@@ -257,12 +268,16 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
       const folly::SocketAddress& client,
       size_t len,
       bool truncated,
-      OnDataAvailableParams) noexcept override {
+      OnDataAvailableParams params) noexcept override {
     VLOG(4) << "Read " << len << " bytes (trun:" << truncated << ") from "
             << client.describe() << " - " << std::string(buf_, len);
     VLOG(4) << n_ << " left";
+    VLOG(4) << "Type of Service value:" << params.tos;
 
     ++pongRecvd_;
+    if (params.tos != 0) {
+      ++tosMessagesRecvd_;
+    }
 
     sendPing();
   }
@@ -283,28 +298,23 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
     sendPing();
   }
 
-  int pongRecvd() const {
-    return pongRecvd_;
-  }
+  int pongRecvd() const { return pongRecvd_; }
 
-  AsyncUDPSocket& getSocket() {
-    return *socket_;
-  }
+  int tosMessagesRecvd() const { return tosMessagesRecvd_; }
+
+  AsyncUDPSocket& getSocket() { return *socket_; }
 
   void setShouldConnect(
-      const folly::SocketAddress& connectAddr,
-      BindSocket bindSocket) {
+      const folly::SocketAddress& connectAddr, BindSocket bindSocket) {
     connectAddr_ = connectAddr;
     bindSocket_ = bindSocket;
   }
 
-  bool error() const {
-    return error_;
-  }
+  void setRecvTos(bool recvTos) { recvTos_ = recvTos; }
 
-  void incrementPongCount(int n) {
-    pongRecvd_ += n;
-  }
+  bool error() const { return error_; }
+
+  void incrementPongCount(int n) { pongRecvd_ += n; }
 
  protected:
   folly::Optional<folly::SocketAddress> connectAddr_;
@@ -317,6 +327,8 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
 
  private:
   int pongRecvd_{0};
+  int tosMessagesRecvd_{0};
+  bool recvTos_{false};
 
   int n_{0};
   char buf_[1024];
@@ -327,14 +339,10 @@ class UDPNotifyClient : public UDPClient {
   ~UDPNotifyClient() override = default;
 
   explicit UDPNotifyClient(
-      EventBase* evb,
-      bool useRecvmmsg = false,
-      unsigned int numMsgs = 1)
+      EventBase* evb, bool useRecvmmsg = false, unsigned int numMsgs = 1)
       : UDPClient(evb), useRecvmmsg_(useRecvmmsg), numMsgs_(numMsgs) {}
 
-  bool shouldOnlyNotify() override {
-    return true;
-  }
+  bool shouldOnlyNotify() override { return true; }
 
   void onRecvMsg(AsyncUDPSocket& sock) {
     struct msghdr msg;
@@ -373,24 +381,13 @@ class UDPNotifyClient : public UDPClient {
   }
 
   void onRecvMmsg(AsyncUDPSocket& sock) {
-    std::vector<struct mmsghdr> msgs;
-    msgs.reserve(numMsgs_);
-    memset(msgs.data(), 0, sizeof(struct mmsghdr) * numMsgs_);
-
     const socklen_t addrLen = sizeof(struct sockaddr_storage);
 
     const size_t dataSize = 1024;
-    std::vector<char> buf;
-    buf.reserve(numMsgs_ * dataSize);
-    memset(buf.data(), 0, numMsgs_ * dataSize);
-
-    std::vector<struct sockaddr_storage> addrs;
-    addrs.reserve(numMsgs_);
-    memset(addrs.data(), 0, sizeof(struct sockaddr_storage) * numMsgs_);
-
-    std::vector<struct iovec> iovecs;
-    iovecs.reserve(numMsgs_);
-    memset(iovecs.data(), 0, sizeof(struct iovec) * numMsgs_);
+    std::vector<char> buf(numMsgs_ * dataSize);
+    std::vector<struct mmsghdr> msgs(numMsgs_);
+    std::vector<struct sockaddr_storage> addrs(numMsgs_);
+    std::vector<struct iovec> iovecs(numMsgs_);
 
     for (unsigned int i = 0; i < numMsgs_; ++i) {
       struct msghdr* msg = &msgs[i].msg_hdr;
@@ -487,10 +484,15 @@ class AsyncSocketIntegrationTest : public Test {
       folly::Optional<folly::SocketAddress> connectedAddress,
       BindSocket bindSocket = BindSocket::YES);
 
-  folly::EventBase sevb;
-  folly::EventBase cevb;
+  std::unique_ptr<UDPClient> performPingPongRecvTosTest(
+      folly::SocketAddress writeAddress,
+      folly::Optional<folly::SocketAddress> connectedAddress,
+      BindSocket bindSocket = BindSocket::YES);
+
   std::unique_ptr<std::thread> serverThread;
   std::unique_ptr<UDPServer> server;
+  folly::EventBase sevb;
+  folly::EventBase cevb;
 };
 
 std::unique_ptr<UDPClient> AsyncSocketIntegrationTest::performPingPongTest(
@@ -563,6 +565,32 @@ AsyncSocketIntegrationTest::performPingPongNotifyMmsgTest(
   return client;
 }
 
+std::unique_ptr<UDPClient>
+AsyncSocketIntegrationTest::performPingPongRecvTosTest(
+    folly::SocketAddress writeAddress,
+    folly::Optional<folly::SocketAddress> connectedAddress,
+    BindSocket bindSocket) {
+  auto client = std::make_unique<UDPClient>(&cevb);
+  if (connectedAddress) {
+    client->setShouldConnect(*connectedAddress, bindSocket);
+  }
+  // Start event loop in a separate thread
+  auto clientThread = std::thread([this]() { cevb.loopForever(); });
+
+  // Wait for event loop to start
+  cevb.waitUntilRunning();
+
+  // Enable receiving ToS value
+  client->setRecvTos(true);
+
+  // Send ping
+  cevb.runInEventBaseThread([&]() { client->start(writeAddress, 100); });
+
+  // Wait for client to finish
+  clientThread.join();
+  return client;
+}
+
 TEST_F(AsyncSocketIntegrationTest, PingPong) {
   startServer();
   auto pingClient = performPingPongTest(server->address(), folly::none);
@@ -587,6 +615,22 @@ TEST_F(AsyncSocketIntegrationTest, PingPongNotifyMmsg) {
   ASSERT_TRUE(pingClient->notifyInvoked);
 }
 
+TEST_F(AsyncSocketIntegrationTest, PingPongRecvTosDisabled) {
+  startServer();
+  auto pingClient = performPingPongTest(server->address(), folly::none);
+  // This should succeed.
+  ASSERT_GT(pingClient->pongRecvd(), 0);
+  ASSERT_EQ(pingClient->tosMessagesRecvd(), 0);
+}
+
+TEST_F(AsyncSocketIntegrationTest, PingPongRecvTos) {
+  startServer();
+  auto pingClient = performPingPongRecvTosTest(server->address(), folly::none);
+  // This should succeed.
+  ASSERT_GT(pingClient->pongRecvd(), 0);
+  ASSERT_GT(pingClient->tosMessagesRecvd(), 0);
+}
+
 class ConnectedAsyncSocketIntegrationTest
     : public AsyncSocketIntegrationTest,
       public WithParamInterface<BindSocket> {};
@@ -601,8 +645,7 @@ TEST_P(ConnectedAsyncSocketIntegrationTest, ConnectedPingPong) {
 }
 
 TEST_P(
-    ConnectedAsyncSocketIntegrationTest,
-    ConnectedPingPongServerWrongAddress) {
+    ConnectedAsyncSocketIntegrationTest, ConnectedPingPongServerWrongAddress) {
   server->setChangePortForWrites(true);
   startServer();
   auto pingClient =
@@ -612,8 +655,7 @@ TEST_P(
 }
 
 TEST_P(
-    ConnectedAsyncSocketIntegrationTest,
-    ConnectedPingPongClientWrongAddress) {
+    ConnectedAsyncSocketIntegrationTest, ConnectedPingPongClientWrongAddress) {
   server->setChangePortForWrites(false);
   startServer();
   folly::SocketAddress connectAddr(
@@ -639,7 +681,7 @@ TEST_P(
   EXPECT_TRUE(pingClient->error());
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     ConnectedAsyncSocketIntegrationTests,
     ConnectedAsyncSocketIntegrationTest,
     Values(BindSocket::YES, BindSocket::NO));
@@ -664,12 +706,10 @@ class MockErrMessageCallback : public AsyncUDPSocket::ErrMessageCallback {
  public:
   ~MockErrMessageCallback() override = default;
 
-  MOCK_METHOD1(errMessage_, void(const cmsghdr&));
-  void errMessage(const cmsghdr& cmsg) noexcept override {
-    errMessage_(cmsg);
-  }
+  MOCK_METHOD(void, errMessage_, (const cmsghdr&));
+  void errMessage(const cmsghdr& cmsg) noexcept override { errMessage_(cmsg); }
 
-  MOCK_METHOD1(errMessageError_, void(const folly::AsyncSocketException&));
+  MOCK_METHOD(void, errMessageError_, (const folly::AsyncSocketException&));
   void errMessageError(
       const folly::AsyncSocketException& ex) noexcept override {
     errMessageError_(ex);
@@ -680,20 +720,21 @@ class MockUDPReadCallback : public AsyncUDPSocket::ReadCallback {
  public:
   ~MockUDPReadCallback() override = default;
 
-  MOCK_METHOD2(getReadBuffer_, void(void**, size_t*));
+  MOCK_METHOD(void, getReadBuffer_, (void**, size_t*));
   void getReadBuffer(void** buf, size_t* len) noexcept override {
     getReadBuffer_(buf, len);
   }
 
-  MOCK_METHOD0(shouldOnlyNotify, bool());
-  MOCK_METHOD1(onNotifyDataAvailable_, void(folly::AsyncUDPSocket&));
+  MOCK_METHOD(bool, shouldOnlyNotify, ());
+  MOCK_METHOD(void, onNotifyDataAvailable_, (folly::AsyncUDPSocket&));
   void onNotifyDataAvailable(folly::AsyncUDPSocket& sock) noexcept override {
     onNotifyDataAvailable_(sock);
   }
 
-  MOCK_METHOD4(
+  MOCK_METHOD(
+      void,
       onDataAvailable_,
-      void(const folly::SocketAddress&, size_t, bool, OnDataAvailableParams));
+      (const folly::SocketAddress&, size_t, bool, OnDataAvailableParams));
   void onDataAvailable(
       const folly::SocketAddress& client,
       size_t len,
@@ -702,15 +743,13 @@ class MockUDPReadCallback : public AsyncUDPSocket::ReadCallback {
     onDataAvailable_(client, len, truncated, params);
   }
 
-  MOCK_METHOD1(onReadError_, void(const folly::AsyncSocketException&));
+  MOCK_METHOD(void, onReadError_, (const folly::AsyncSocketException&));
   void onReadError(const folly::AsyncSocketException& ex) noexcept override {
     onReadError_(ex);
   }
 
-  MOCK_METHOD0(onReadClosed_, void());
-  void onReadClosed() noexcept override {
-    onReadClosed_();
-  }
+  MOCK_METHOD(void, onReadClosed_, ());
+  void onReadClosed() noexcept override { onReadClosed_(); }
 };
 
 class AsyncUDPSocketTest : public Test {
@@ -894,4 +933,548 @@ TEST_F(AsyncUDPSocketTest, TestDetachAttach) {
   });
   t.join();
   EXPECT_EQ(packetsRecvd, 2);
+}
+
+MATCHER_P(HasCmsgs, cmsgs, "") {
+  struct msghdr* msg = const_cast<struct msghdr*>(arg);
+  if (msg == nullptr) {
+    return false;
+  }
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
+  folly::SocketCmsgMap sentCmsgs;
+
+  struct cmsghdr* cmsg;
+  for (cmsg = CMSG_FIRSTHDR(msg); cmsg != nullptr;
+       cmsg = CMSG_NXTHDR(msg, cmsg)) {
+    if (cmsg->cmsg_level == SOL_UDP) {
+      if (cmsg->cmsg_type == UDP_SEGMENT) {
+        uint16_t gso;
+        memcpy(
+            &gso,
+            reinterpret_cast<struct timespec*>(CMSG_DATA(cmsg)),
+            sizeof(gso));
+        sentCmsgs[{SOL_UDP, UDP_SEGMENT}] = gso;
+      }
+    }
+    if (cmsg->cmsg_level == SOL_SOCKET) {
+      if (cmsg->cmsg_type == SO_MARK) {
+        uint32_t somark;
+        memcpy(
+            &somark,
+            reinterpret_cast<struct timespec*>(CMSG_DATA(cmsg)),
+            sizeof(somark));
+        sentCmsgs[{SOL_SOCKET, SO_MARK}] = somark;
+      }
+    }
+    if (cmsg->cmsg_level == IPPROTO_IP) {
+      if (cmsg->cmsg_type == IP_TOS) {
+        uint32_t tos;
+        memcpy(
+            &tos,
+            reinterpret_cast<struct timespec*>(CMSG_DATA(cmsg)),
+            sizeof(tos));
+        sentCmsgs[{IPPROTO_IP, IP_TOS}] = tos;
+      }
+      if (cmsg->cmsg_type == IP_TTL) {
+        uint32_t ttl;
+        memcpy(
+            &ttl,
+            reinterpret_cast<struct timespec*>(CMSG_DATA(cmsg)),
+            sizeof(ttl));
+        sentCmsgs[{IPPROTO_IP, IP_TTL}] = ttl;
+      }
+    }
+  }
+  return sentCmsgs == cmsgs;
+#else
+  return false;
+#endif
+}
+
+MATCHER_P(HasNontrivialCmsgs, cmsgs, "") {
+  struct msghdr* msg = const_cast<struct msghdr*>(arg);
+  if (msg == nullptr) {
+    return false;
+  }
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
+  folly::SocketNontrivialCmsgMap sentCmsgs;
+
+  struct cmsghdr* cmsg;
+  for (cmsg = CMSG_FIRSTHDR(msg); cmsg != nullptr;
+       cmsg = CMSG_NXTHDR(msg, cmsg)) {
+    if (cmsg->cmsg_level == SOL_SOCKET) {
+      if (cmsg->cmsg_type == SO_LINGER) {
+        struct linger sl {
+          .l_onoff = 0, .l_linger = 0,
+        };
+
+        memcpy(
+            &sl, reinterpret_cast<struct linger*>(CMSG_DATA(cmsg)), sizeof(sl));
+        sentCmsgs[{SOL_SOCKET, SO_LINGER}] =
+            std::string(reinterpret_cast<const char*>(&sl), sizeof(sl));
+      }
+    }
+  }
+  return sentCmsgs == cmsgs;
+#else
+  return false;
+#endif
+}
+
+TEST_F(AsyncUDPSocketTest, TestWriteCmsg) {
+  folly::SocketAddress addr("127.0.0.1", 10000);
+  auto netOpsDispatcher =
+      std::make_shared<NiceMock<folly::netops::test::MockDispatcher>>();
+  socket_->setOverrideNetOpsDispatcher(netOpsDispatcher);
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
+  // empty
+  {
+    folly::SocketCmsgMap cmsgs;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(cmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+  // writeGSO
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{SOL_UDP, UDP_SEGMENT}] = 1;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(cmsgs), _));
+    socket_->writeGSO(
+        addr,
+        folly::IOBuf::copyBuffer("hey"),
+        folly::AsyncUDPSocket::WriteOptions(
+            1 /*gsoVal*/, false /* zerocopyVal*/));
+  }
+  // SO_MARK
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    socket_->setCmsgs(cmsgs);
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(cmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+  // append IP_TOS
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    socket_->appendCmsgs(cmsgs);
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+  // append IP_TOS with a different value
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{IPPROTO_IP, IP_TOS}] = 789;
+    socket_->appendCmsgs(cmsgs);
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 789;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    socket_->setCmsgs(expectedCmsgs);
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+  // writeGSO with IP_TOS and SO_MARK
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 789;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{SOL_UDP, UDP_SEGMENT}] = 1;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->writeGSO(
+        addr,
+        folly::IOBuf::copyBuffer("hey"),
+        folly::AsyncUDPSocket::WriteOptions(
+            1 /*gsoVal*/, false /* zerocopyVal*/));
+  }
+#endif // FOLLY_HAVE_MSG_ERRQUEUE
+  socket_->close();
+}
+
+TEST_F(AsyncUDPSocketTest, TestWriteDynamicCmsg) {
+  folly::SocketAddress addr("127.0.0.1", 10000);
+  auto netOpsDispatcher =
+      std::make_shared<NiceMock<folly::netops::test::MockDispatcher>>();
+  socket_->setOverrideNetOpsDispatcher(netOpsDispatcher);
+
+  MockFunction<AsyncUDPSocket::AdditionalCmsgsFunc> mockAdditionalCmsgs;
+  int mockCallCount = 1;
+  socket_->setAdditionalCmsgsFunc([&mockCallCount]() {
+    folly::SocketCmsgMap additionalCmsgs;
+    additionalCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount++;
+    return additionalCmsgs;
+  });
+
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
+  // Dynamic cmsgs only (IP_TTL)
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+  // writeGSO with dynamic cmsgs (IP_TTL)
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{SOL_UDP, UDP_SEGMENT}] = 1;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->writeGSO(
+        addr,
+        folly::IOBuf::copyBuffer("hey"),
+        folly::AsyncUDPSocket::WriteOptions(
+            1 /*gsoVal*/, false /* zerocopyVal*/));
+  }
+  // SO_MARK with dynamic cmsgs (IP_TTL)
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    socket_->setCmsgs(cmsgs);
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+  // append IP_TOS + IP_TTL + overwrite with dynamic cmsgs (IP_TTL)
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    cmsgs[{IPPROTO_IP, IP_TTL}] = 9999;
+    socket_->appendCmsgs(cmsgs);
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+  // append IP_TOS with a different value + dynamic cmsgs (IP_TTL)
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{IPPROTO_IP, IP_TOS}] = 789;
+    socket_->appendCmsgs(cmsgs);
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 789;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+  // writeGSO with IP_TOS and SO_MARK + dynamic cmsgs (IP_TTL)
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 789;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{SOL_UDP, UDP_SEGMENT}] = 1;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->writeGSO(
+        addr,
+        folly::IOBuf::copyBuffer("hey"),
+        folly::AsyncUDPSocket::WriteOptions(
+            1 /*gsoVal*/, false /* zerocopyVal*/));
+  }
+  // Empty dynamic cmsgs should revert to default cmsgs
+  socket_->setAdditionalCmsgsFunc([]() { return folly::none; });
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 789;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = 9999; // This won't be overwritten
+    EXPECT_CALL(*netOpsDispatcher, sendmsg(_, HasCmsgs(expectedCmsgs), _));
+    socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
+  }
+
+#endif // FOLLY_HAVE_MSG_ERRQUEUE
+  socket_->close();
+}
+
+MATCHER_P2(AllHaveCmsgs, cmsgs, count, "") {
+  if (arg == nullptr) {
+    return false;
+  }
+  for (size_t i = 0; i < count; ++i) {
+    auto msg = arg[i].msg_hdr;
+    if (!Matches(HasCmsgs(cmsgs))(&msg)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+MATCHER_P3(AllHaveCmsgsAndNontrivialCmsgs, cmsgs, nontrivialCmsgs, count, "") {
+  if (arg == nullptr) {
+    return false;
+  }
+  for (size_t i = 0; i < count; ++i) {
+    auto msg = arg[i].msg_hdr;
+    if (!Matches(HasCmsgs(cmsgs))(&msg) &&
+        !Matches(HasNontrivialCmsgs(nontrivialCmsgs))(&msg)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+TEST(MatcherTest, AllHaveCmsgsTest) {
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
+  size_t count = 2;
+  size_t controlSize = 2;
+  mmsghdr msgvec[count];
+  char control[count * controlSize * CMSG_SPACE(sizeof(uint16_t))];
+  memset(control, 0, sizeof(control));
+  // two messages, one with all cmsgs, the other with only one
+  {
+    auto& msg = msgvec[0].msg_hdr;
+    msg.msg_control = &control[0];
+    msg.msg_controllen = controlSize * CMSG_SPACE(sizeof(int));
+    struct cmsghdr* cm = nullptr;
+    cm = CMSG_FIRSTHDR(&msg);
+    int val1 = 20;
+    cm->cmsg_level = SOL_SOCKET;
+    cm->cmsg_type = SO_MARK;
+    cm->cmsg_len = CMSG_LEN(sizeof(val1));
+    memcpy(CMSG_DATA(cm), &val1, sizeof(val1));
+    cm = CMSG_NXTHDR(&msg, cm);
+    int val2 = 30;
+    cm->cmsg_level = IPPROTO_IP;
+    cm->cmsg_type = IP_TOS;
+    cm->cmsg_len = CMSG_LEN(sizeof(val2));
+    memcpy(CMSG_DATA(cm), &val2, sizeof(val2));
+  }
+  {
+    auto& msg = msgvec[1].msg_hdr;
+    msg.msg_control = &control[controlSize * CMSG_SPACE(sizeof(uint16_t))];
+    msg.msg_controllen = CMSG_SPACE(sizeof(int));
+    struct cmsghdr* cm = nullptr;
+    cm = CMSG_FIRSTHDR(&msg);
+    int val = 20;
+    cm->cmsg_level = SOL_SOCKET;
+    cm->cmsg_type = SO_MARK;
+    cm->cmsg_len = CMSG_LEN(sizeof(val));
+    memcpy(CMSG_DATA(cm), &val, sizeof(val));
+  }
+  folly::SocketCmsgMap cmsgs;
+  cmsgs[{SOL_SOCKET, SO_MARK}] = 20;
+  cmsgs[{IPPROTO_IP, IP_TOS}] = 30;
+  struct mmsghdr* msgvecPtr = nullptr;
+  EXPECT_THAT(msgvecPtr, Not(AllHaveCmsgs(cmsgs, count)));
+  msgvecPtr = msgvec;
+  EXPECT_THAT(msgvecPtr, Not(AllHaveCmsgs(cmsgs, count)));
+  // true cases are tested in TestWritemCmsg
+#endif // FOLLY_HAVE_MSG_ERRQUEUE
+}
+
+TEST_F(AsyncUDPSocketTest, TestWritemCmsg) {
+  folly::SocketAddress addr("127.0.0.1", 10000);
+  auto netOpsDispatcher =
+      std::make_shared<NiceMock<folly::netops::test::MockDispatcher>>();
+  socket_->setOverrideNetOpsDispatcher(netOpsDispatcher);
+  std::vector<std::unique_ptr<folly::IOBuf>> bufs;
+  bufs.emplace_back(folly::IOBuf::copyBuffer("hey1"));
+  bufs.emplace_back(folly::IOBuf::copyBuffer("hey2"));
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
+  // empty
+  {
+    folly::SocketCmsgMap cmsgs;
+    EXPECT_CALL(
+        *netOpsDispatcher, sendmmsg(_, AllHaveCmsgs(cmsgs, bufs.size()), _, _));
+    socket_->writem(folly::range(&addr, &addr + 1), bufs.data(), bufs.size());
+  }
+  // set IP_TOS & SO_MARK
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    cmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    socket_->setCmsgs(cmsgs);
+    EXPECT_CALL(
+        *netOpsDispatcher, sendmmsg(_, AllHaveCmsgs(cmsgs, bufs.size()), _, _));
+    socket_->writem(folly::range(&addr, &addr + 1), bufs.data(), bufs.size());
+  }
+  // writemGSO
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{SOL_UDP, UDP_SEGMENT}] = 1;
+    EXPECT_CALL(
+        *netOpsDispatcher,
+        sendmmsg(_, AllHaveCmsgs(expectedCmsgs, bufs.size()), _, _));
+    std::vector<folly::AsyncUDPSocket::WriteOptions> options{
+        {1, false}, {1, false}};
+    socket_->writemGSO(
+        folly::range(&addr, &addr + 1),
+        bufs.data(),
+        bufs.size(),
+        options.data());
+  }
+#endif // FOLLY_HAVE_MSG_ERRQUEUE
+  socket_->close();
+}
+
+TEST_F(AsyncUDPSocketTest, TestWritemDynamicCmsg) {
+  folly::SocketAddress addr("127.0.0.1", 10000);
+  auto netOpsDispatcher =
+      std::make_shared<NiceMock<folly::netops::test::MockDispatcher>>();
+  socket_->setOverrideNetOpsDispatcher(netOpsDispatcher);
+  std::vector<std::unique_ptr<folly::IOBuf>> bufs;
+  bufs.emplace_back(folly::IOBuf::copyBuffer("hey1"));
+  bufs.emplace_back(folly::IOBuf::copyBuffer("hey2"));
+
+  MockFunction<AsyncUDPSocket::AdditionalCmsgsFunc> mockAdditionalCmsgs;
+  int mockCallCount = 1;
+  socket_->setAdditionalCmsgsFunc([&mockCallCount]() {
+    folly::SocketCmsgMap additionalCmsgs;
+    additionalCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount++;
+    return additionalCmsgs;
+  });
+
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
+  // Dynamic cmsgs only (IP_TTL)
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(
+        *netOpsDispatcher,
+        sendmmsg(_, AllHaveCmsgs(expectedCmsgs, bufs.size()), _, _));
+    socket_->writem(folly::range(&addr, &addr + 1), bufs.data(), bufs.size());
+  }
+  // set IP_TOS & SO_MARK & IP_TTL + overwrite from dynamic cmsgs (IP_TTL)
+  {
+    folly::SocketCmsgMap cmsgs;
+    cmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    cmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    cmsgs[{IPPROTO_IP, IP_TTL}] = 9999;
+    socket_->setCmsgs(cmsgs);
+    auto expectedCmsgs = cmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(
+        *netOpsDispatcher,
+        sendmmsg(_, AllHaveCmsgs(expectedCmsgs, bufs.size()), _, _));
+    socket_->writem(folly::range(&addr, &addr + 1), bufs.data(), bufs.size());
+  }
+  // writemGSO + dynamic cmsgs (IP_TTL)
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{SOL_UDP, UDP_SEGMENT}] = 1;
+    expectedCmsgs[{IPPROTO_IP, IP_TTL}] = mockCallCount;
+    EXPECT_CALL(
+        *netOpsDispatcher,
+        sendmmsg(_, AllHaveCmsgs(expectedCmsgs, bufs.size()), _, _));
+    std::vector<folly::AsyncUDPSocket::WriteOptions> options{
+        {1, false}, {1, false}};
+    socket_->writemGSO(
+        folly::range(&addr, &addr + 1),
+        bufs.data(),
+        bufs.size(),
+        options.data());
+  }
+#endif // FOLLY_HAVE_MSG_ERRQUEUE
+  socket_->close();
+}
+
+TEST_F(AsyncUDPSocketTest, TestApplyStringOptionsPostBind) {
+  EventBase evb;
+  AsyncUDPSocket socket(&evb);
+  ASSERT_FALSE(socket.isBound());
+  folly::SocketAddress address("127.0.0.1", 443);
+  socket.connect(address);
+  ASSERT_TRUE(socket.isBound());
+
+  const auto& localAddr = socket.address();
+  ASSERT_TRUE(localAddr.isInitialized());
+  ASSERT_GT(localAddr.getPort(), 0);
+
+  folly::SocketOptionMap options = folly::emptySocketOptionMap;
+  struct linger sl {
+    .l_onoff = 1, .l_linger = 123,
+  };
+
+  options.insert(
+      {folly::SocketOptionKey{SOL_SOCKET, SO_LINGER},
+       std::string((char*)&sl, sizeof(sl))});
+
+  socket.applyOptions(options, folly::SocketOptionKey::ApplyPos::POST_BIND);
+}
+
+TEST_F(AsyncUDPSocketTest, TestWritemNontrivialCmsgs) {
+  folly::SocketAddress addr("127.0.0.1", 10001);
+  auto netOpsDispatcher =
+      std::make_shared<NiceMock<folly::netops::test::MockDispatcher>>();
+  socket_->setOverrideNetOpsDispatcher(netOpsDispatcher);
+  std::vector<std::unique_ptr<folly::IOBuf>> bufs;
+  bufs.emplace_back(folly::IOBuf::copyBuffer("hey1"));
+  bufs.emplace_back(folly::IOBuf::copyBuffer("hey2"));
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
+  // empty
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    folly::SocketNontrivialCmsgMap expectedNontrivialCmsgs;
+    EXPECT_CALL(
+        *netOpsDispatcher,
+        sendmmsg(
+            _,
+            AllHaveCmsgsAndNontrivialCmsgs(
+                expectedCmsgs, expectedNontrivialCmsgs, bufs.size()),
+            _,
+            _));
+    socket_->writem(folly::range(&addr, &addr + 1), bufs.data(), bufs.size());
+  }
+  // set IP_TOS & SO_MARK
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    folly::SocketNontrivialCmsgMap expectedNontrivialCmsgs;
+    struct linger sl {
+      .l_onoff = 1, .l_linger = 123,
+    };
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedNontrivialCmsgs[{SOL_SOCKET, SO_LINGER}] =
+        std::string(reinterpret_cast<const char*>(&sl), sizeof(sl));
+    socket_->setCmsgs(expectedCmsgs);
+    socket_->setNontrivialCmsgs(expectedNontrivialCmsgs);
+    EXPECT_CALL(
+        *netOpsDispatcher,
+        sendmmsg(
+            _,
+            AllHaveCmsgsAndNontrivialCmsgs(
+                expectedCmsgs, expectedNontrivialCmsgs, bufs.size()),
+            _,
+            _));
+    socket_->writem(folly::range(&addr, &addr + 1), bufs.data(), bufs.size());
+  }
+  // writemGSO
+  {
+    folly::SocketCmsgMap expectedCmsgs;
+    folly::SocketNontrivialCmsgMap expectedNontrivialCmsgs;
+    struct linger sl {
+      .l_onoff = 1, .l_linger = 123,
+    };
+    expectedCmsgs[{IPPROTO_IP, IP_TOS}] = 456;
+    expectedCmsgs[{SOL_SOCKET, SO_MARK}] = 123;
+    expectedCmsgs[{SOL_UDP, UDP_SEGMENT}] = 1;
+    expectedNontrivialCmsgs[{SOL_SOCKET, SO_LINGER}] =
+        std::string(reinterpret_cast<const char*>(&sl), sizeof(sl));
+    EXPECT_CALL(
+        *netOpsDispatcher,
+        sendmmsg(
+            _,
+            AllHaveCmsgsAndNontrivialCmsgs(
+                expectedCmsgs, expectedNontrivialCmsgs, bufs.size()),
+            _,
+            _));
+    std::vector<folly::AsyncUDPSocket::WriteOptions> options{
+        {1, false}, {1, false}};
+    socket_->writemGSO(
+        folly::range(&addr, &addr + 1),
+        bufs.data(),
+        bufs.size(),
+        options.data());
+  }
+#endif // FOLLY_HAVE_MSG_ERRQUEUE
+  socket_->close();
 }

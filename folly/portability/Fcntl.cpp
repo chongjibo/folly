@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -101,6 +101,9 @@ int open(char const* fn, int of, int pm) {
     // Windows doesn't have a /dev/null, but it does have
     // NUL, which achieves the same result.
     fn = "NUL";
+  }
+  if ((of & _O_TEXT) != _O_TEXT) {
+    of |= _O_BINARY;
   }
   errno_t res = _sopen_s(&fh, fn, of, _SH_DENYNO, realMode);
   return res ? -1 : fh;

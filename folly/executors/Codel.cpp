@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,15 @@
 
 #include <folly/executors/Codel.h>
 
-#include <folly/portability/GFlags.h>
 #include <algorithm>
 #include <stdexcept>
 
-DEFINE_int32(codel_interval, 100, "Codel default interval time in ms");
-DEFINE_int32(codel_target_delay, 5, "Target codel queueing delay in ms");
+#include <folly/portability/GFlags.h>
+
+FOLLY_GFLAGS_DEFINE_int32(
+    codel_interval, 100, "Codel default interval time in ms");
+FOLLY_GFLAGS_DEFINE_int32(
+    codel_target_delay, 5, "Target codel queueing delay in ms");
 
 using namespace std::chrono;
 
@@ -42,9 +45,9 @@ Codel::Codel(const Options& options)
       codelResetDelay_(true),
       overloaded_(false) {}
 
-bool Codel::overloaded(nanoseconds delay) {
+bool Codel::overloaded_explicit_now(
+    nanoseconds delay, steady_clock::time_point now) {
   bool ret = false;
-  auto now = steady_clock::now();
 
   // Avoid another thread updating the value at the same time we are using it
   // to calculate the overloaded state
@@ -125,6 +128,10 @@ const Codel::Options Codel::getOptions() const {
 
 nanoseconds Codel::getMinDelay() {
   return nanoseconds(codelMinDelayNs_);
+}
+
+steady_clock::time_point Codel::getIntervalTime() {
+  return steady_clock::time_point(nanoseconds(codelIntervalTimeNs_));
 }
 
 milliseconds Codel::getSloughTimeout(milliseconds delay) const {

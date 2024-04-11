@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,9 +58,7 @@ class StandardLogHandler : public LogHandler {
   /**
    * Get the LogWriter used by this handler.
    */
-  const std::shared_ptr<LogWriter>& getWriter() const {
-    return writer_;
-  }
+  const std::shared_ptr<LogWriter>& getWriter() const { return writer_; }
 
   /**
    * Get the handler's current LogLevel.
@@ -68,9 +66,7 @@ class StandardLogHandler : public LogHandler {
    * Messages less than this LogLevel will be ignored.  This defaults to
    * LogLevel::NONE when the handler is constructed.
    */
-  LogLevel getLevel() const {
-    return level_.load(std::memory_order_acquire);
-  }
+  LogLevel getLevel() const { return level_.load(std::memory_order_acquire); }
 
   /**
    * Set the handler's current LogLevel.
@@ -82,8 +78,7 @@ class StandardLogHandler : public LogHandler {
   }
 
   void handleMessage(
-      const LogMessage& message,
-      const LogCategory* handlerCategory) override;
+      const LogMessage& message, const LogCategory* handlerCategory) override;
 
   void flush() override;
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,22 +16,47 @@
 
 #include <folly/experimental/symbolizer/Symbolizer.h>
 
+#include <signal.h>
 #include <array>
 #include <cstdlib>
 
+#include <glog/logging.h>
 #include <folly/Demangle.h>
 #include <folly/Range.h>
+#include <folly/ScopeGuard.h>
 #include <folly/String.h>
+#include <folly/experimental/symbolizer/ElfCache.h>
 #include <folly/experimental/symbolizer/SymbolizedFrame.h>
+#include <folly/experimental/symbolizer/detail/Debug.h>
 #include <folly/experimental/symbolizer/test/SymbolizerTestUtils.h>
+#include <folly/portability/Filesystem.h>
 #include <folly/portability/GTest.h>
+#include <folly/portability/Unistd.h>
+#include <folly/synchronization/Baton.h>
 #include <folly/test/TestUtils.h>
+
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 namespace folly {
 namespace symbolizer {
 namespace test {
 
+#define SCOPED_TRACE_FRAMES(frames) \
+  SCOPED_TRACE([&] {                \
+    StringSymbolizePrinter printer; \
+    printer.println(frames);        \
+    return printer.str();           \
+  }())
+
 void foo() {}
+
+FOLLY_NOINLINE void bar() {
+  std::array<int, 2> a = {{1, 2}};
+  // Use lfind, which is in a different library
+  int key = 1;
+  unsigned long nmemb = 2;
+  lfind(&key, a.data(), &nmemb, sizeof(int), testComparator);
+}
 
 TEST(Symbolizer, Single) {
   SKIP_IF(!Symbolizer::isAvailable());
@@ -53,16 +78,48 @@ TEST(Symbolizer, Single) {
   EXPECT_EQ("SymbolizerTest.cpp", basename.str());
 }
 
-// Test stack frames...
-FOLLY_NOINLINE void bar();
+TEST(Symbolizer, SingleCustomExePath) {
+  SKIP_IF(!Symbolizer::isAvailable());
 
-void bar(FrameArray<100>& frames) {
-  framesToFill = &frames;
-  std::array<int, 2> a = {1, 2};
-  // Use qsort, which is in a different library
-  qsort(a.data(), 2, sizeof(int), comparator<100>);
-  framesToFill = nullptr;
+  auto pid = ::fork();
+  if (pid == -1) {
+    SKIP("fork failed");
+  } else if (pid == 0) {
+    // child process waits forever, parent will kill
+    folly::Baton<> baton;
+    baton.wait();
+  } else {
+    // parent process
+
+    // kill the child process on cleanup
+    auto guard = folly::makeGuard([pid] {
+      auto error = ::kill(pid, SIGKILL);
+      ASSERT_EQ(0, error);
+    });
+
+    // path to executable for child binary
+    auto exePath = folly::to<std::string>("/proc/", pid, "/exe");
+
+    // It looks like we could only use .debug_aranges with "-g2", with
+    // "-g1 -gdwarf-aranges", the code has to fallback to line-tables to
+    // get the file name.
+    Symbolizer symbolizer(
+        nullptr, LocationInfoMode::FULL, 0, std::move(exePath));
+    SymbolizedFrame a;
+    ASSERT_TRUE(symbolizer.symbolize(reinterpret_cast<uintptr_t>(foo), a));
+    EXPECT_EQ("folly::symbolizer::test::foo()", folly::demangle(a.name));
+
+    auto path = a.location.file.toString();
+    folly::StringPiece basename(path);
+    auto pos = basename.rfind('/');
+    if (pos != folly::StringPiece::npos) {
+      basename.advance(pos + 1);
+    }
+    EXPECT_EQ("SymbolizerTest.cpp", basename.str());
+  }
 }
+
+// Test stack frames...
 
 class ElfCacheTest : public testing::Test {
  protected:
@@ -75,7 +132,10 @@ FrameArray<100> goldenFrames;
 void ElfCacheTest::SetUp() {
   SKIP_IF(!Symbolizer::isAvailable());
 
-  bar(goldenFrames);
+  gComparatorGetStackTraceArg = &goldenFrames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  bar();
+
   Symbolizer symbolizer;
   symbolizer.symbolize(goldenFrames);
   // At least 3 stack frames from us + getStackTrace()
@@ -88,6 +148,8 @@ void runElfCacheTest(Symbolizer& symbolizer) {
     frames.frames[i].clear();
   }
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
+
   ASSERT_LE(4, frames.frameCount);
   for (size_t i = 1; i < 4; ++i) {
     EXPECT_STREQ(goldenFrames.frames[i].name, frames.frames[i].name);
@@ -116,12 +178,19 @@ TEST(SymbolizerTest, SymbolCache) {
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL, 100);
 
   FrameArray<100> frames;
-  bar(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  bar();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
   FrameArray<100> frames2;
-  bar(frames2);
+  gComparatorGetStackTraceArg = &frames2;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  bar();
   symbolizer.symbolize(frames2);
+  SCOPED_TRACE_FRAMES(frames2);
+
   for (size_t i = 0; i < frames.frameCount; i++) {
     EXPECT_STREQ(frames.frames[i].name, frames2.frames[i].name);
   }
@@ -129,43 +198,37 @@ TEST(SymbolizerTest, SymbolCache) {
 
 namespace {
 
-template <size_t kNumFrames>
-FOLLY_NOINLINE void lexicalBlockBar(FrameArray<kNumFrames>& frames) try {
-  size_t unused = 0;
-  unused++;
-  kInlineBarCallByLexicalBarLineNo = __LINE__ + 1;
-  inlineBar(frames);
-} catch (...) {
-  folly::assume_unreachable();
-}
-
-void verifyStackTrace(
-    Symbolizer& symbolizer,
-    const FrameArray<100>& frames,
-    const std::string& barName,
-    size_t barLine,
-    const std::string& barFile) {
-  EXPECT_EQ(
-      "void folly::symbolizer::test::inlineFoo<100ul>("
-      "folly::symbolizer::FrameArray<100ul>&)",
-      std::string(folly::demangle(frames.frames[5].name)));
-  EXPECT_EQ(
-      "./folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
-      std::string(frames.frames[5].location.file.toString()));
-  EXPECT_EQ(kQsortCallLineNo, frames.frames[5].location.line);
-  EXPECT_EQ(barName, std::string(folly::demangle(frames.frames[6].name)));
-  EXPECT_EQ(barFile, std::string(frames.frames[6].location.file.toString()));
-  EXPECT_EQ(barLine, frames.frames[6].location.line);
-
-  FrameArray<10> singleAddressFrames;
-  singleAddressFrames.frameCount = 1;
-  singleAddressFrames.addresses[0] = frames.frames[7].addr;
-  // Two inline function calls are added into frames.
-  EXPECT_EQ(3, symbolizer.symbolize(singleAddressFrames));
+void expectFrameEq(
+    SymbolizedFrame frame,
+    const std::string& shortName,
+    const std::string& fullName,
+    const std::string& file,
+    size_t lineno) {
+  auto normalizePath = [](std::string path) {
+    path = fs::lexically_normal(path).native();
+    return (path.find("./", 0) != std::string::npos) ? path.substr(2) : path;
+  };
+  auto demangled = folly::demangle(frame.name);
+  EXPECT_TRUE(demangled == shortName || demangled == fullName)
+      << "Found: demangled=" << demangled
+      << " expecting shortName=" << shortName << " or fullName=" << fullName
+      << " address: " << frame.addr << " hex(address): " << std::hex
+      << frame.addr;
+  // Use endsWith in case the build system adds extra paths in front.
+  EXPECT_TRUE(folly::StringPiece(normalizePath(frame.location.file.toString()))
+                  .endsWith(normalizePath(file)))
+      << ' ' << fullName << " address: " << frame.addr
+      << " hex(address): " << std::hex << frame.addr
+      << " frame.location.file.toString(): " << frame.location.file.toString()
+      << " normalizePath(frame.location.file.toString()): "
+      << normalizePath(frame.location.file.toString()) //
+      << " file: " << file //
+      << " normalizePath(file): " << normalizePath(file);
+  EXPECT_EQ(frame.location.line, lineno) << ' ' << fullName;
 }
 
 template <size_t kNumFrames = 100>
-void compareFrames(
+void expectFramesEq(
     const FrameArray<kNumFrames>& frames1,
     const FrameArray<kNumFrames>& frames2) {
   EXPECT_EQ(frames1.frameCount, frames2.frameCount);
@@ -174,27 +237,17 @@ void compareFrames(
   }
 }
 
+template <size_t kNumFrames = 100>
+void printFrames(const FrameArray<kNumFrames>& frames) {
+  for (size_t i = 0; i < frames.frameCount; i++) {
+    auto& frame = frames.frames[i];
+    LOG(INFO) << std::hex << frame.addr << ": " << frame.name << " in "
+              << frame.location.file.toString() << ":" << std::dec
+              << frame.location.line;
+  }
+}
+
 } // namespace
-
-class ClassWithInlineFunctions {
- public:
-  FOLLY_ALWAYS_INLINE void inlineBar(FrameArray<100>& frames) const {
-    kFooCallByClassBarLineNo = __LINE__ + 1;
-    inlineFoo(frames);
-  }
-
-  FOLLY_ALWAYS_INLINE static void staticInlineBar(FrameArray<100>& frames) {
-    kFooCallByClassStaticBarLineNo = __LINE__ + 1;
-    inlineFoo(frames);
-  }
-
-  // Dummy non-inline function.
-  size_t dummy() const {
-    return dummy_;
-  }
-
-  size_t dummy_ = 0;
-};
 
 TEST(SymbolizerTest, InlineFunctionBasic) {
   SKIP_IF(!Symbolizer::isAvailable());
@@ -202,39 +255,40 @@ TEST(SymbolizerTest, InlineFunctionBasic) {
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 0);
 
   FrameArray<100> frames;
-  inlineBar<100>(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_inlineB_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  // clang-format off
-  // Expected full stack trace with @mode/dev. The last frame is missing in opt
-  // mode.
-  //  Frame: _ZN5folly10symbolizer13getStackTraceEPmm
-  //  Frame: _ZN5folly10symbolizer13getStackTraceILm100EEEbRNS0_10FrameArrayIXT_EEE
-  //  Frame: _ZN5folly10symbolizer4test10comparatorILm100EEEiPKvS4_
-  //  Frame: msort_with_tmp.part.0
-  //  Frame: __GI___qsort_r
-  //  Frame: _ZN5folly10symbolizer4test9inlineFooILm100EEEvRNS0_10FrameArrayIXT_EEE
-  //  Frame: _ZN5folly10symbolizer4test12_GLOBAL__N_19inlineBarILm100EEEvRNS0_10FrameArrayIXT_EEE
-  //  Frame: _ZN5folly10symbolizer4test39SymbolizerTest_InlineFunctionBasic_Test8TestBodyEv
-  //  Frame: _ZN7testing8internal35HandleExceptionsInMethodIfSupportedINS_4TestEvEET0_PT_MS4_FS3_vEPKc
-  //  Frame: _ZN7testing4Test3RunEv
-  //  Frame: _ZN7testing8TestInfo3RunEv
-  //  Frame: _ZN7testing8TestCase3RunEv
-  //  Frame: _ZN7testing8internal12UnitTestImpl11RunAllTestsEv
-  // clang-format on
-  verifyStackTrace(
-      symbolizer,
-      frames,
-      "void folly::symbolizer::test::inlineBar<100ul>("
-      "folly::symbolizer::FrameArray<100ul>&)",
-      kFooCallByStandaloneBarLineNo,
-      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h");
+  printFrames(frames);
+
+  expectFrameEq(
+      frames.frames[4],
+      "inlineA_lfind",
+      "folly::symbolizer::test::inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_lfind);
+
+  expectFrameEq(
+      frames.frames[5],
+      "inlineB_inlineA_lfind",
+      "folly::symbolizer::test::inlineB_inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_inlineA_lfind);
 
   FrameArray<100> frames2;
-  inlineBar<100>(frames2);
+  gComparatorGetStackTraceArg = &frames2;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_inlineB_inlineA_lfind();
   symbolizer.symbolize(frames2);
 
-  compareFrames(frames, frames2);
+  expectFramesEq(frames, frames2);
+}
+
+FOLLY_NOINLINE void call_B_A_lfind() {
+  kLineno_inlineB_inlineA_lfind = __LINE__ + 1;
+  inlineB_inlineA_lfind();
 }
 
 TEST(SymbolizerTest, InlineFunctionWithoutEnoughFrames) {
@@ -243,32 +297,31 @@ TEST(SymbolizerTest, InlineFunctionWithoutEnoughFrames) {
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 0);
 
   FrameArray<100> frames;
-  lexicalBlockBar<100>(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_B_A_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  // The address of the line where lexicalBlockBar calls inlineBar.
-  uintptr_t address = frames.frames[7].addr;
   std::array<SymbolizedFrame, 2> limitedFrames;
+
+  // The address of the line where call_B_A_lfind calls inlineB_inlineA_lfind.
   symbolizer.symbolize(
-      folly::Range<const uintptr_t*>(&address, 1), folly::range(limitedFrames));
+      folly::Range<const uintptr_t*>(&frames.addresses[4], 1),
+      folly::range(limitedFrames));
 
-  EXPECT_EQ(
-      "void folly::symbolizer::test::inlineBar<100ul>("
-      "folly::symbolizer::FrameArray<100ul>&)",
-      std::string(folly::demangle(limitedFrames[0].name)));
-  EXPECT_EQ(
+  expectFrameEq(
+      limitedFrames[0],
+      "inlineB_inlineA_lfind",
+      "folly::symbolizer::test::inlineB_inlineA_lfind()",
       "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
-      std::string(limitedFrames[0].location.file.toString()));
-  EXPECT_EQ(kFooCallByStandaloneBarLineNo, limitedFrames[0].location.line);
-
-  EXPECT_EQ(
-      "void folly::symbolizer::test::(anonymous namespace)::lexicalBlockBar"
-      "<100ul>(folly::symbolizer::FrameArray<100ul>&)",
-      std::string(folly::demangle(limitedFrames[1].name)));
-  EXPECT_EQ(
+      kLineno_inlineA_lfind);
+  expectFrameEq(
+      limitedFrames[1],
+      "call_B_A_lfind",
+      "folly::symbolizer::test::call_B_A_lfind()",
       "folly/experimental/symbolizer/test/SymbolizerTest.cpp",
-      std::string(limitedFrames[1].location.file.toString()));
-  EXPECT_EQ(kInlineBarCallByLexicalBarLineNo, limitedFrames[1].location.line);
+      kLineno_inlineB_inlineA_lfind);
 }
 
 TEST(SymbolizerTest, InlineFunctionInLexicalBlock) {
@@ -277,25 +330,34 @@ TEST(SymbolizerTest, InlineFunctionInLexicalBlock) {
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 0);
 
   FrameArray<100> frames;
-  lexicalBlockBar<100>(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_lexicalBlock_inlineB_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  verifyStackTrace(
-      symbolizer,
-      frames,
-      "void folly::symbolizer::test::inlineBar<100ul>("
-      "folly::symbolizer::FrameArray<100ul>&)",
-      kFooCallByStandaloneBarLineNo,
-      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h");
+  expectFrameEq(
+      frames.frames[4],
+      "inlineA_lfind",
+      "folly::symbolizer::test::inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_lfind);
 
-  EXPECT_EQ(
-      "void folly::symbolizer::test::(anonymous namespace)::lexicalBlockBar"
-      "<100ul>(folly::symbolizer::FrameArray<100ul>&)",
-      std::string(folly::demangle(frames.frames[7].name)));
-  EXPECT_EQ(
-      "folly/experimental/symbolizer/test/SymbolizerTest.cpp",
-      std::string(frames.frames[7].location.file.toString()));
-  EXPECT_EQ(kInlineBarCallByLexicalBarLineNo, frames.frames[7].location.line);
+  expectFrameEq(
+      frames.frames[5],
+      "inlineB_inlineA_lfind",
+      "folly::symbolizer::test::inlineB_inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_inlineA_lfind);
+
+  expectFrameEq(
+      frames.frames[6],
+      "lexicalBlock_inlineB_inlineA_lfind",
+      "folly::symbolizer::test::lexicalBlock_inlineB_inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils.cpp",
+      kLineno_inlineB_inlineA_lfind);
+
+  printFrames(frames);
 }
 
 TEST(SymbolizerTest, InlineFunctionInDifferentCompilationUnit) {
@@ -304,55 +366,73 @@ TEST(SymbolizerTest, InlineFunctionInDifferentCompilationUnit) {
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 0);
 
   FrameArray<100> frames;
-  // NOTE: inlineBaz is only inlined with thinlto compilation mode enabled.
-  inlineBaz(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  // NOTE: inlineLTO_inlineA_lfind is only inlined with LTO/ThinLTO.
+  call_inlineLTO_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  EXPECT_EQ(
-      "folly::symbolizer::test::inlineBaz("
-      "folly::symbolizer::FrameArray<100ul>&)",
-      std::string(folly::demangle(frames.frames[6].name)));
-  EXPECT_EQ(
+  expectFrameEq(
+      frames.frames[5],
+      "inlineLTO_inlineA_lfind",
+      "folly::symbolizer::test::inlineLTO_inlineA_lfind()",
       "folly/experimental/symbolizer/test/SymbolizerTestUtils.cpp",
-      std::string(frames.frames[6].location.file.toString()));
-  EXPECT_EQ(kFooCallByStandaloneBazLineNo, frames.frames[6].location.line);
+      kLineno_inlineA_lfind);
 }
 
-TEST(SymbolizerTest, InlineClassMemberFunction) {
+TEST(SymbolizerTest, InlineClassMemberFunctionSameFile) {
   SKIP_IF(!Symbolizer::isAvailable());
 
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 0);
 
   FrameArray<100> frames;
-  ClassWithInlineFunctions obj;
-  obj.inlineBar(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_same_file_memberInline_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  verifyStackTrace(
-      symbolizer,
-      frames,
-      "folly::symbolizer::test::ClassWithInlineFunctions::inlineBar("
-      "folly::symbolizer::FrameArray<100ul>&) const",
-      kFooCallByClassBarLineNo,
-      "folly/experimental/symbolizer/test/SymbolizerTest.cpp");
+  expectFrameEq(
+      frames.frames[4],
+      "inlineA_lfind",
+      "folly::symbolizer::test::inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_lfind);
+
+  expectFrameEq(
+      frames.frames[5],
+      "memberInline_inlineA_lfind",
+      "folly::symbolizer::test::ClassSameFile::memberInline_inlineA_lfind() const",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils.cpp",
+      kLineno_inlineA_lfind);
 }
 
-TEST(SymbolizerTest, StaticInlineClassMemberFunction) {
+TEST(SymbolizerTest, StaticInlineClassMemberFunctionSameFile) {
   SKIP_IF(!Symbolizer::isAvailable());
 
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 0);
 
   FrameArray<100> frames;
-  ClassWithInlineFunctions::staticInlineBar(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_same_file_staticMemberInline_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  verifyStackTrace(
-      symbolizer,
-      frames,
-      "folly::symbolizer::test::ClassWithInlineFunctions::staticInlineBar("
-      "folly::symbolizer::FrameArray<100ul>&)",
-      kFooCallByClassStaticBarLineNo,
-      "folly/experimental/symbolizer/test/SymbolizerTest.cpp");
+  expectFrameEq(
+      frames.frames[4],
+      "inlineA_lfind",
+      "folly::symbolizer::test::inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_lfind);
+
+  expectFrameEq(
+      frames.frames[5],
+      "staticMemberInline_inlineA_lfind",
+      "folly::symbolizer::test::ClassSameFile::staticMemberInline_inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils.cpp",
+      kLineno_inlineA_lfind);
 }
 
 TEST(SymbolizerTest, InlineClassMemberFunctionInDifferentFile) {
@@ -361,17 +441,25 @@ TEST(SymbolizerTest, InlineClassMemberFunctionInDifferentFile) {
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 0);
 
   FrameArray<100> frames;
-  InlineFunctionsWrapper obj;
-  obj.inlineBar(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_different_file_memberInline_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  verifyStackTrace(
-      symbolizer,
-      frames,
-      "folly::symbolizer::test::InlineFunctionsWrapper::inlineBar("
-      "folly::symbolizer::FrameArray<100ul>&) const",
-      kFooCallByClassInDifferentFileBarLineNo,
-      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h");
+  expectFrameEq(
+      frames.frames[4],
+      "inlineA_lfind",
+      "folly::symbolizer::test::inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_lfind);
+
+  expectFrameEq(
+      frames.frames[5],
+      "memberInline_inlineA_lfind",
+      "folly::symbolizer::test::ClassDifferentFile::memberInline_inlineA_lfind() const",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_inlineA_lfind);
 }
 
 TEST(SymbolizerTest, StaticInlineClassMemberFunctionInDifferentFile) {
@@ -380,33 +468,48 @@ TEST(SymbolizerTest, StaticInlineClassMemberFunctionInDifferentFile) {
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 0);
 
   FrameArray<100> frames;
-  InlineFunctionsWrapper::staticInlineBar(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_different_file_staticMemberInline_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  verifyStackTrace(
-      symbolizer,
-      frames,
-      "folly::symbolizer::test::InlineFunctionsWrapper::staticInlineBar("
-      "folly::symbolizer::FrameArray<100ul>&)",
-      kFooCallByClassInDifferentFileStaticBarLineNo,
-      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h");
+  expectFrameEq(
+      frames.frames[4],
+      "inlineA_lfind",
+      "folly::symbolizer::test::inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_lfind);
+
+  expectFrameEq(
+      frames.frames[5],
+      "staticMemberInline_inlineA_lfind",
+      "folly::symbolizer::test::ClassDifferentFile::staticMemberInline_inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_inlineA_lfind);
 }
 
 // No inline frames should be filled because of no extra frames.
-TEST(SymbolizerTest, InlineFunctionBasicNoExtraFrames) {
+TEST(SymbolizerTest, InlineFunctionNoExtraFrames) {
   SKIP_IF(!Symbolizer::isAvailable());
 
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 100);
-  FrameArray<8> frames;
-  inlineBar<8>(frames);
+  FrameArray<9> frames;
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<9>;
+  call_inlineB_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
   Symbolizer symbolizer2(nullptr, LocationInfoMode::FULL, 100);
-  FrameArray<8> frames2;
-  inlineBar<8>(frames2);
+  FrameArray<9> frames2;
+  gComparatorGetStackTraceArg = &frames2;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<9>;
+  call_inlineB_inlineA_lfind();
   symbolizer2.symbolize(frames2);
+  SCOPED_TRACE_FRAMES(frames2);
 
-  compareFrames<8>(frames, frames2);
+  expectFramesEq<9>(frames, frames2);
 }
 
 TEST(SymbolizerTest, InlineFunctionWithCache) {
@@ -415,26 +518,77 @@ TEST(SymbolizerTest, InlineFunctionWithCache) {
   Symbolizer symbolizer(nullptr, LocationInfoMode::FULL_WITH_INLINE, 100);
 
   FrameArray<100> frames;
-  inlineBar<100>(frames);
+  gComparatorGetStackTraceArg = &frames;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_inlineB_inlineA_lfind();
   symbolizer.symbolize(frames);
+  SCOPED_TRACE_FRAMES(frames);
 
-  verifyStackTrace(
-      symbolizer,
-      frames,
-      "void folly::symbolizer::test::inlineBar<100ul>("
-      "folly::symbolizer::FrameArray<100ul>&)",
-      kFooCallByStandaloneBarLineNo,
-      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h");
+  expectFrameEq(
+      frames.frames[4],
+      "inlineA_lfind",
+      "folly::symbolizer::test::inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_lfind);
+
+  expectFrameEq(
+      frames.frames[5],
+      "inlineB_inlineA_lfind",
+      "folly::symbolizer::test::inlineB_inlineA_lfind()",
+      "folly/experimental/symbolizer/test/SymbolizerTestUtils-inl.h",
+      kLineno_inlineA_lfind);
 
   FrameArray<100> frames2;
-  inlineBar<100>(frames2);
+  gComparatorGetStackTraceArg = &frames2;
+  gComparatorGetStackTrace = (bool (*)(void*))getStackTrace<100>;
+  call_inlineB_inlineA_lfind();
   symbolizer.symbolize(frames2);
-  compareFrames(frames, frames2);
+  expectFramesEq(frames, frames2);
 }
+
+int64_t functionWithTwoParameters(size_t a, int32_t b) {
+  return a + b;
+}
+
+TEST(Dwarf, FindParameterNames) {
+  SKIP_IF(!Symbolizer::isAvailable());
+
+  ElfCache elfCache;
+
+  auto address = reinterpret_cast<uintptr_t>(functionWithTwoParameters);
+  Symbolizer symbolizer;
+  SymbolizedFrame frame;
+  ASSERT_TRUE(symbolizer.symbolize(address, frame));
+
+  std::vector<folly::StringPiece> names;
+  Dwarf dwarf(&elfCache, frame.file.get());
+
+  folly::Range<SymbolizedFrame*> extraInlineFrames = {};
+  dwarf.findAddress(
+      frame.addr,
+      LocationInfoMode::FAST,
+      frame,
+      extraInlineFrames,
+      [&](const folly::StringPiece name) { names.push_back(name); });
+
+  if (names.empty()) {
+    // When using -fsplit-dwarf-inlining info about parameters will not be
+    // emitted for the inlined debug info.
+    return;
+  }
+
+  ASSERT_EQ(2, names.size());
+  ASSERT_EQ("a", names[0]);
+  ASSERT_EQ("b", names[1]);
+}
+
+#undef SCOPED_TRACE_FRAMES
 
 } // namespace test
 } // namespace symbolizer
 } // namespace folly
+
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 // Can't use initFacebookLight since that would install its own signal handlers
 // Can't use initFacebookNoSignals since we cannot depend on common

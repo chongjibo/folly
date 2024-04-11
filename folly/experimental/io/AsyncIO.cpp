@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,26 @@
 
 #include <folly/experimental/io/AsyncIO.h>
 
-#include <sys/eventfd.h>
 #include <cerrno>
 #include <ostream>
 #include <stdexcept>
 #include <string>
 
 #include <boost/intrusive/parent_from_member.hpp>
+#include <fmt/ostream.h>
 #include <glog/logging.h>
 
 #include <folly/Exception.h>
-#include <folly/Format.h>
 #include <folly/Likely.h>
 #include <folly/String.h>
 #include <folly/portability/Unistd.h>
+#include <folly/small_vector.h>
+
+#if __has_include(<sys/eventfd.h>)
+#include <sys/eventfd.h>
+#endif
+
+#if __has_include(<libaio.h>)
 
 // debugging helpers
 namespace {
@@ -48,14 +54,15 @@ const char* iocbCmdToString(short int cmd_short) {
     X(IO_CMD_NOOP);
     X(IO_CMD_PREADV);
     X(IO_CMD_PWRITEV);
-  };
+  }
   return "<INVALID io_iocb_cmd>";
 }
 
 #undef X
 
 void toStream(std::ostream& os, const iocb& cb) {
-  os << folly::format(
+  fmt::print(
+      os,
       "data={}, key={}, opcode={}, reqprio={}, fd={}, f={}, ",
       cb.data,
       cb.key,
@@ -67,7 +74,8 @@ void toStream(std::ostream& os, const iocb& cb) {
   switch (cb.aio_lio_opcode) {
     case IO_CMD_PREAD:
     case IO_CMD_PWRITE:
-      os << folly::format(
+      fmt::print(
+          os,
           "buf={}, offset={}, nbytes={}, ",
           cb.u.c.buf,
           cb.u.c.offset,
@@ -142,13 +150,31 @@ std::ostream& operator<<(std::ostream& os, const AsyncIOOp& op) {
 }
 
 AsyncIO::AsyncIO(size_t capacity, PollMode pollMode)
-    : AsyncBase(capacity, pollMode) {}
+    : AsyncBase(capacity, pollMode) {
+  // we need to create the eventfd in the constructor
+  // since we have code that relies on registering the pollFd_
+  // before any operation is started
+
+  if (pollMode_ == POLLABLE) {
+#if __has_include(<sys/eventfd.h>)
+    pollFd_ = eventfd(0, EFD_NONBLOCK);
+    checkUnixError(pollFd_, "AsyncIO: eventfd creation failed");
+#else
+    // fallthrough to not-pollable, observed as: pollFd() == -1
+#endif
+  }
+}
 
 AsyncIO::~AsyncIO() {
   CHECK_EQ(pending_, 0);
   if (ctx_) {
     int rc = io_queue_release(ctx_);
     CHECK_EQ(rc, 0) << "io_queue_release: " << errnoStr(-rc);
+  }
+
+  if (pollFd_ != -1) {
+    CHECK_ERR(close(pollFd_));
+    pollFd_ = -1;
   }
 }
 
@@ -176,9 +202,27 @@ void AsyncIO::initializeContext() {
 
       checkKernelError(rc, "AsyncIO: io_queue_init failed");
       DCHECK(ctx_);
+
       init_.store(true, std::memory_order_release);
     }
   }
+}
+
+int AsyncIO::drainPollFd() {
+  uint64_t numEvents;
+  // This sets the eventFd counter to 0, see
+  // http://www.kernel.org/doc/man-pages/online/pages/man2/eventfd.2.html
+  ssize_t rc;
+  do {
+    rc = ::read(pollFd_, &numEvents, 8);
+  } while (rc == -1 && errno == EINTR);
+  if (FOLLY_UNLIKELY(rc == -1 && errno == EAGAIN)) {
+    return 0;
+  }
+  checkUnixError(rc, "AsyncIO: read from event fd failed");
+  DCHECK_EQ(rc, 8);
+  DCHECK_GT(numEvents, 0);
+  return static_cast<int>(numEvents);
 }
 
 int AsyncIO::submitOne(AsyncBase::Op* op) {
@@ -198,12 +242,34 @@ int AsyncIO::submitOne(AsyncBase::Op* op) {
   return io_submit(ctx_, 1, &cb);
 }
 
+int AsyncIO::submitRange(Range<AsyncBase::Op**> ops) {
+  std::vector<iocb*> vec;
+  vec.reserve(ops.size());
+  for (auto& op : ops) {
+    AsyncIOOp* aop = op->getAsyncIOOp();
+    if (!aop) {
+      continue;
+    }
+
+    iocb* cb = &aop->iocb_;
+    cb->data = nullptr; // unused
+    if (pollFd_ != -1) {
+      io_set_eventfd(cb, pollFd_);
+    }
+
+    vec.push_back(cb);
+  }
+
+  return vec.size() ? io_submit(ctx_, vec.size(), vec.data()) : -1;
+}
+
 Range<AsyncBase::Op**> AsyncIO::doWait(
     WaitType type,
     size_t minRequests,
     size_t maxRequests,
     std::vector<AsyncBase::Op*>& result) {
-  io_event events[maxRequests];
+  size_t constexpr kNumInlineRequests = 16;
+  folly::small_vector<io_event, kNumInlineRequests> events(maxRequests);
 
   // Unfortunately, Linux AIO doesn't implement io_cancel, so even for
   // WaitType::CANCEL we have to wait for IO completion.
@@ -218,7 +284,7 @@ Range<AsyncBase::Op**> AsyncIO::doWait(
           ctx_,
           minRequests - count,
           maxRequests - count,
-          events + count,
+          events.data() + count,
           /* timeout */ nullptr); // wait forever
     } while (ret == -EINTR);
     // Check as may not be able to recover without leaking events.
@@ -249,3 +315,5 @@ Range<AsyncBase::Op**> AsyncIO::doWait(
 }
 
 } // namespace folly
+
+#endif

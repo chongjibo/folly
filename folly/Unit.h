@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,12 +34,8 @@ namespace folly {
 /// possible to construct a value of this type, but it is always the same value
 /// every time, so it is uninteresting.
 struct Unit {
-  constexpr bool operator==(const Unit& /*other*/) const {
-    return true;
-  }
-  constexpr bool operator!=(const Unit& /*other*/) const {
-    return false;
-  }
+  constexpr bool operator==(const Unit& /*other*/) const { return true; }
+  constexpr bool operator!=(const Unit& /*other*/) const { return false; }
 };
 
 constexpr Unit unit{};

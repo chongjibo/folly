@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <folly/executors/EDFThreadPoolExecutor.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -26,13 +28,14 @@
 #include <utility>
 #include <vector>
 
+#include <glog/logging.h>
 #include <folly/ScopeGuard.h>
-#include <folly/executors/EDFThreadPoolExecutor.h>
+#include <folly/concurrency/ProcessLocalUniqueId.h>
+#include <folly/synchronization/LifoSem.h>
+#include <folly/synchronization/ThrottledLifoSem.h>
+#include <folly/tracing/StaticTracepoint.h>
 
 namespace folly {
-namespace {
-constexpr folly::StringPiece executorName = "EDFThreadPoolExecutor";
-}
 
 class EDFThreadPoolExecutor::Task {
  public:
@@ -42,13 +45,15 @@ class EDFThreadPoolExecutor::Task {
   explicit Task(std::vector<Func>&& fs, uint64_t deadline)
       : fs_(std::move(fs)), total_(fs_.size()), deadline_(deadline) {}
 
-  uint64_t getDeadline() const {
-    return deadline_;
-  }
+  uint64_t getDeadline() const { return deadline_; }
+  uint64_t getEnqueueOrder() const { return enqueueOrder_; }
 
   bool isDone() const {
     return iter_.load(std::memory_order_relaxed) >= total_;
   }
+
+  // Cannot be set in the ctor because known only after acquiring the lock.
+  void setEnqueueOrder(uint64_t enqueueOrder) { enqueueOrder_ = enqueueOrder; }
 
   int next() {
     if (isDone()) {
@@ -78,9 +83,11 @@ class EDFThreadPoolExecutor::Task {
   std::atomic<int> iter_{0};
   int total_;
   uint64_t deadline_;
+  uint64_t enqueueOrder_;
   std::shared_ptr<RequestContext> context_ = RequestContext::saveContext();
   std::chrono::steady_clock::time_point enqueueTime_ =
       std::chrono::steady_clock::now();
+  uint64_t taskId_ = processLocalUniqueId();
 };
 
 class EDFThreadPoolExecutor::TaskQueue {
@@ -89,16 +96,20 @@ class EDFThreadPoolExecutor::TaskQueue {
 
   // This is not a `Synchronized` because we perform a few "peek" operations.
   struct Bucket {
-    SharedMutex mutex;
+    mutable SharedMutex mutex;
 
     struct Compare {
       bool operator()(const TaskPtr& lhs, const TaskPtr& rhs) const {
-        return lhs->getDeadline() > rhs->getDeadline();
+        if (lhs->getDeadline() != rhs->getDeadline()) {
+          return lhs->getDeadline() > rhs->getDeadline();
+        }
+        return lhs->getEnqueueOrder() > rhs->getEnqueueOrder();
       }
     };
 
     std::priority_queue<TaskPtr, std::vector<TaskPtr>, Compare> tasks;
     std::atomic<bool> empty{true};
+    uint64_t enqueued = 0;
   };
 
   static constexpr std::size_t kNumBuckets = 2 << 5;
@@ -110,7 +121,8 @@ class EDFThreadPoolExecutor::TaskQueue {
     auto deadline = task->getDeadline();
     auto& bucket = getBucket(deadline);
     {
-      SharedMutex::WriteHolder guard(&bucket.mutex);
+      std::unique_lock guard(bucket.mutex);
+      task->setEnqueueOrder(bucket.enqueued++);
       bucket.tasks.push(std::move(task));
       bucket.empty.store(bucket.tasks.empty(), std::memory_order_relaxed);
     }
@@ -151,7 +163,7 @@ class EDFThreadPoolExecutor::TaskQueue {
 
       {
         // Fast path. Take bucket reader lock.
-        SharedMutex::ReadHolder guard(&bucket.mutex);
+        std::shared_lock guard(bucket.mutex);
         if (bucket.tasks.empty()) {
           continue;
         }
@@ -164,7 +176,7 @@ class EDFThreadPoolExecutor::TaskQueue {
 
       {
         // Take the writer lock to clean up the finished task.
-        SharedMutex::WriteHolder guard(&bucket.mutex);
+        std::unique_lock guard(bucket.mutex);
         if (bucket.tasks.empty()) {
           continue;
         }
@@ -183,9 +195,7 @@ class EDFThreadPoolExecutor::TaskQueue {
     }
   }
 
-  std::size_t size() const {
-    return numItems_.load(std::memory_order_seq_cst);
-  }
+  std::size_t size() const { return numItems_.load(std::memory_order_seq_cst); }
 
  private:
   Bucket& getBucket(uint64_t deadline) {
@@ -204,7 +214,7 @@ class EDFThreadPoolExecutor::TaskQueue {
         continue;
       }
 
-      SharedMutex::ReadHolder guard(&bucket.mutex);
+      std::shared_lock guard(bucket.mutex);
       auto curDeadline = curDeadline_.load(std::memory_order_relaxed);
       if (prevDeadline != curDeadline) {
         // Bail out early if something already happened
@@ -244,11 +254,26 @@ class EDFThreadPoolExecutor::TaskQueue {
   std::atomic<std::size_t> numItems_;
 };
 
+/* static */ std::unique_ptr<EDFThreadPoolSemaphore>
+EDFThreadPoolExecutor::makeDefaultSemaphore() {
+  return std::make_unique<EDFThreadPoolSemaphoreImpl<LifoSem>>();
+}
+
+/* static */ std::unique_ptr<EDFThreadPoolSemaphore>
+EDFThreadPoolExecutor::makeThrottledLifoSemSemaphore(
+    std::chrono::nanoseconds wakeUpInterval) {
+  ThrottledLifoSem::Options opts;
+  opts.wakeUpInterval = wakeUpInterval;
+  return std::make_unique<EDFThreadPoolSemaphoreImpl<ThrottledLifoSem>>(opts);
+}
+
 EDFThreadPoolExecutor::EDFThreadPoolExecutor(
     std::size_t numThreads,
-    std::shared_ptr<ThreadFactory> threadFactory)
+    std::shared_ptr<ThreadFactory> threadFactory,
+    std::unique_ptr<EDFThreadPoolSemaphore> semaphore)
     : ThreadPoolExecutor(numThreads, numThreads, std::move(threadFactory)),
-      taskQueue_(std::make_unique<TaskQueue>()) {
+      taskQueue_(std::make_unique<TaskQueue>()),
+      sem_(std::move(semaphore)) {
   setNumThreads(numThreads);
   registerThreadPoolExecutor(this);
 }
@@ -262,96 +287,54 @@ void EDFThreadPoolExecutor::add(Func f) {
   add(std::move(f), kLatestDeadline);
 }
 
-void EDFThreadPoolExecutor::add(Func f, uint64_t deadline) {
-  add(std::move(f), 1, deadline);
-}
-
 void EDFThreadPoolExecutor::add(Func f, std::size_t total, uint64_t deadline) {
-  if (UNLIKELY(isJoin_.load(std::memory_order_relaxed) || total == 0)) {
+  if (FOLLY_UNLIKELY(isJoin_.load(std::memory_order_relaxed) || total == 0)) {
     return;
   }
 
-  taskQueue_->push(std::make_shared<Task>(std::move(f), total, deadline));
+  auto task = std::make_shared<Task>(std::move(f), total, deadline);
+  registerTaskEnqueue(*task);
+  taskQueue_->push(std::move(task));
 
   auto numIdleThreads = numIdleThreads_.load(std::memory_order_seq_cst);
   if (numIdleThreads > 0) {
     // If idle threads are available notify them, otherwise all worker threads
     // are running and will get around to this task in time.
-    sem_.post(std::min(total, numIdleThreads));
+    sem_->post(std::min(total, numIdleThreads));
   }
 }
 
 void EDFThreadPoolExecutor::add(std::vector<Func> fs, uint64_t deadline) {
-  if (UNLIKELY(fs.empty())) {
+  if (FOLLY_UNLIKELY(fs.empty())) {
     return;
   }
 
   auto total = fs.size();
-  taskQueue_->push(std::make_shared<Task>(std::move(fs), deadline));
+  auto task = std::make_shared<Task>(std::move(fs), deadline);
+  registerTaskEnqueue(*task);
+  taskQueue_->push(std::move(task));
 
   auto numIdleThreads = numIdleThreads_.load(std::memory_order_seq_cst);
   if (numIdleThreads > 0) {
     // If idle threads are available notify them, otherwise all worker threads
     // are running and will get around to this task in time.
-    sem_.post(std::min(total, numIdleThreads));
+    sem_->post(std::min(total, numIdleThreads));
   }
-}
-
-folly::Executor::KeepAlive<> EDFThreadPoolExecutor::deadlineExecutor(
-    uint64_t deadline) {
-  class DeadlineExecutor : public folly::Executor {
-   public:
-    static KeepAlive<> create(
-        uint64_t deadline,
-        KeepAlive<EDFThreadPoolExecutor> executor) {
-      return makeKeepAlive(new DeadlineExecutor(deadline, std::move(executor)));
-    }
-
-    void add(folly::Func f) override {
-      executor_->add(std::move(f), deadline_);
-    }
-
-    bool keepAliveAcquire() override {
-      const auto count =
-          keepAliveCount_.fetch_add(1, std::memory_order_relaxed);
-      DCHECK_GT(count, 0);
-      return true;
-    }
-
-    void keepAliveRelease() override {
-      const auto count =
-          keepAliveCount_.fetch_sub(1, std::memory_order_acq_rel);
-      DCHECK_GT(count, 0);
-      if (count == 1) {
-        delete this;
-      }
-    }
-
-   private:
-    DeadlineExecutor(
-        uint64_t deadline,
-        KeepAlive<EDFThreadPoolExecutor> executor)
-        : deadline_(deadline), executor_(std::move(executor)) {}
-
-    std::atomic<size_t> keepAliveCount_{1};
-    uint64_t deadline_;
-    KeepAlive<EDFThreadPoolExecutor> executor_;
-  };
-  return DeadlineExecutor::create(deadline, getKeepAliveToken(this));
 }
 
 void EDFThreadPoolExecutor::threadRun(ThreadPtr thread) {
   this->threadPoolHook_.registerThread();
-  ExecutorBlockingGuard guard{ExecutorBlockingGuard::ForbidTag{}, executorName};
+  ExecutorBlockingGuard guard{
+      ExecutorBlockingGuard::TrackTag{}, this, getName()};
 
   thread->startupBaton.post();
   for (;;) {
     auto task = take();
 
     // Handle thread stopping
-    if (UNLIKELY(!task)) {
+    if (FOLLY_UNLIKELY(!task)) {
       // Actually remove the thread from the list.
-      SharedMutex::WriteHolder w{&threadListLock_};
+      std::unique_lock w{threadListLock_};
       for (auto& o : observers_) {
         o->threadStopped(thread.get());
       }
@@ -361,58 +344,54 @@ void EDFThreadPoolExecutor::threadRun(ThreadPtr thread) {
     }
 
     int iter = task->next();
-    if (UNLIKELY(iter < 0)) {
+    if (FOLLY_UNLIKELY(iter < 0)) {
       // This task is already finished
       continue;
     }
 
     thread->idle.store(false, std::memory_order_relaxed);
     auto startTime = std::chrono::steady_clock::now();
-    TaskStats stats;
-    stats.enqueueTime = task->enqueueTime_;
-    if (task->context_) {
-      stats.requestId = task->context_->getRootId();
-    }
+    ProcessedTaskInfo taskInfo;
+    fillTaskInfo(*task, taskInfo);
+    taskInfo.waitTime = startTime - taskInfo.enqueueTime;
+    FOLLY_SDT(
+        folly,
+        thread_pool_executor_task_dequeued,
+        threadFactory_->getNamePrefix().c_str(),
+        taskInfo.requestId,
+        taskInfo.enqueueTime.time_since_epoch().count(),
+        taskInfo.waitTime.count(),
+        taskInfo.taskId);
+    forEachTaskObserver(
+        [&](auto& observer) { observer.taskDequeued(taskInfo); });
 
-    stats.waitTime = startTime - stats.enqueueTime;
-    try {
-      task->run(iter);
-    } catch (const std::exception& e) {
-      LOG(ERROR) << "EDFThreadPoolExecutor: func threw unhandled "
-                 << typeid(e).name() << " exception: " << e.what();
-    } catch (...) {
-      LOG(ERROR)
-          << "EDFThreadPoolExecutor: func threw unhandled non-exception object";
-    }
-    stats.runTime = std::chrono::steady_clock::now() - startTime;
+    invokeCatchingExns("EDFThreadPoolExecutor: func", [&] {
+      std::exchange(task, {})->run(iter);
+    });
+    taskInfo.runTime = std::chrono::steady_clock::now() - startTime;
+
+    FOLLY_SDT(
+        folly,
+        thread_pool_executor_task_taskInfo,
+        threadFactory_->getNamePrefix().c_str(),
+        taskInfo.requestId,
+        taskInfo.enqueueTime.time_since_epoch().count(),
+        taskInfo.waitTime.count(),
+        taskInfo.runTime.count(),
+        taskInfo.taskId);
+    forEachTaskObserver(
+        [&](auto& observer) { observer.taskProcessed(taskInfo); });
+
     thread->idle.store(true, std::memory_order_relaxed);
     thread->lastActiveTime.store(
         std::chrono::steady_clock::now(), std::memory_order_relaxed);
-    thread->taskStatsCallbacks->callbackList.withRLock([&](auto& callbacks) {
-      *thread->taskStatsCallbacks->inCallback = true;
-      SCOPE_EXIT {
-        *thread->taskStatsCallbacks->inCallback = false;
-      };
-      try {
-        for (auto& callback : callbacks) {
-          callback(stats);
-        }
-      } catch (const std::exception& e) {
-        LOG(ERROR) << "EDFThreadPoolExecutor: task stats callback threw "
-                      "unhandled "
-                   << typeid(e).name() << " exception: " << e.what();
-      } catch (...) {
-        LOG(ERROR) << "EDFThreadPoolExecutor: task stats callback threw "
-                      "unhandled non-exception object";
-      }
-    });
   }
 }
 
 // threadListLock_ is writelocked.
 void EDFThreadPoolExecutor::stopThreads(std::size_t numThreads) {
   threadsToStop_.fetch_add(numThreads, std::memory_order_relaxed);
-  sem_.post(numThreads);
+  sem_->post(numThreads);
 }
 
 // threadListLock_ is read (or write) locked.
@@ -436,7 +415,7 @@ bool EDFThreadPoolExecutor::shouldStop() {
 }
 
 std::shared_ptr<EDFThreadPoolExecutor::Task> EDFThreadPoolExecutor::take() {
-  if (UNLIKELY(shouldStop())) {
+  if (FOLLY_UNLIKELY(shouldStop())) {
     return nullptr;
   }
 
@@ -444,19 +423,17 @@ std::shared_ptr<EDFThreadPoolExecutor::Task> EDFThreadPoolExecutor::take() {
     return task;
   }
 
-  if (UNLIKELY(isJoin_.load(std::memory_order_relaxed))) {
+  if (FOLLY_UNLIKELY(isJoin_.load(std::memory_order_relaxed))) {
     return nullptr;
   }
 
   // No tasks on the horizon, so go sleep
   numIdleThreads_.fetch_add(1, std::memory_order_seq_cst);
 
-  SCOPE_EXIT {
-    numIdleThreads_.fetch_sub(1, std::memory_order_seq_cst);
-  };
+  SCOPE_EXIT { numIdleThreads_.fetch_sub(1, std::memory_order_seq_cst); };
 
   for (;;) {
-    if (UNLIKELY(shouldStop())) {
+    if (FOLLY_UNLIKELY(shouldStop())) {
       return nullptr;
     }
 
@@ -466,12 +443,34 @@ std::shared_ptr<EDFThreadPoolExecutor::Task> EDFThreadPoolExecutor::take() {
       return task;
     }
 
-    if (UNLIKELY(isJoin_.load(std::memory_order_relaxed))) {
+    if (FOLLY_UNLIKELY(isJoin_.load(std::memory_order_relaxed))) {
       return nullptr;
     }
 
-    sem_.wait();
+    sem_->wait();
   }
+}
+
+void EDFThreadPoolExecutor::fillTaskInfo(const Task& task, TaskInfo& info) {
+  info.priority = 0; // Priorities are not supported.
+  if (task.context_) {
+    info.requestId = task.context_->getRootId();
+  }
+  info.enqueueTime = task.enqueueTime_;
+  info.taskId = task.taskId_;
+}
+
+void EDFThreadPoolExecutor::registerTaskEnqueue(const Task& task) {
+  TaskInfo info;
+  fillTaskInfo(task, info);
+  forEachTaskObserver([&](auto& observer) { observer.taskEnqueued(info); });
+  FOLLY_SDT(
+      folly,
+      thread_pool_executor_task_enqueued,
+      threadFactory_->getNamePrefix().c_str(),
+      info.requestId,
+      info.enqueueTime.time_since_epoch().count(),
+      info.taskId);
 }
 
 } // namespace folly

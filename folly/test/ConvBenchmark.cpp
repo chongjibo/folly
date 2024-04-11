@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,16 @@
 
 #include <folly/Conv.h>
 
+#include <array>
+#include <limits>
+#include <stdexcept>
+
 #include <boost/lexical_cast.hpp>
 
 #include <folly/Benchmark.h>
 #include <folly/CppAttributes.h>
 #include <folly/container/Foreach.h>
-
-#include <array>
-#include <limits>
-#include <stdexcept>
+#include <folly/lang/ToAscii.h>
 
 using namespace std;
 using namespace folly;
@@ -260,7 +261,6 @@ void checkArrayIndex(const T& array, size_t index) {
 ////////////////////////////////////////////////////////////////////////////////
 // Benchmarks for ASCII to int conversion
 ////////////////////////////////////////////////////////////////////////////////
-// @author: Rajat Goel (rajat)
 
 static int64_t handwrittenAtoi(const char* start, const char* end) {
   bool positive = true;
@@ -277,10 +277,10 @@ static int64_t handwrittenAtoi(const char* start, const char* end) {
   switch (*start) {
     case '-':
       positive = false;
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case '+':
       ++start;
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     default:
       break;
   }
@@ -345,7 +345,7 @@ unsigned u64ToAsciiTable(uint64_t value, char* dst) {
       "80818283848586878889"
       "90919293949596979899";
 
-  uint32_t const length = digits10(value);
+  uint32_t const length = to_ascii_size_decimal(value);
   uint32_t next = length - 1;
   while (value >= 100) {
     auto const i = (value % 100) * 2;
@@ -407,7 +407,7 @@ void u64ToAsciiFollyBM(unsigned int n, size_t index) {
   checkArrayIndex(uint64Num, index);
   char buf[20];
   FOR_EACH_RANGE (i, 0, n) {
-    doNotOptimizeAway(uint64ToBufferUnsafe(uint64Num[index] + (i % 8), buf));
+    doNotOptimizeAway(to_ascii_decimal(buf, uint64Num[index] + (i % 8)));
   }
 }
 
@@ -465,7 +465,7 @@ void u2aAppendFollyBM(unsigned int n, size_t index) {
   FOR_EACH_RANGE (i, 0, n) {
     // auto buf = &s.back() + 1;
     char buffer[20];
-    s.append(buffer, uint64ToBufferUnsafe(uint64Num[index] + (i % 8), buffer));
+    s.append(buffer, to_ascii_decimal(buffer, uint64Num[index] + (i % 8)));
     doNotOptimizeAway(s.size());
   }
 }
@@ -475,9 +475,7 @@ struct StringIdenticalToBM {
   StringIdenticalToBM() {}
   void operator()(unsigned int n, size_t len) const {
     String s;
-    BENCHMARK_SUSPEND {
-      s.append(len, '0');
-    }
+    BENCHMARK_SUSPEND { s.append(len, '0'); }
     FOR_EACH_RANGE (i, 0, n) {
       String result = to<String>(s);
       doNotOptimizeAway(result.size());
@@ -490,9 +488,7 @@ struct StringVariadicToBM {
   StringVariadicToBM() {}
   void operator()(unsigned int n, size_t len) const {
     String s;
-    BENCHMARK_SUSPEND {
-      s.append(len, '0');
-    }
+    BENCHMARK_SUSPEND { s.append(len, '0'); }
     FOR_EACH_RANGE (i, 0, n) {
       String result = to<String>(s, nullptr);
       doNotOptimizeAway(result.size());
@@ -1084,20 +1080,14 @@ STRING_TO_TYPE_BENCHMARK(
     " -8123456789123456789 ",
     "-10000000000000000000000")
 STRING_TO_TYPE_BENCHMARK(
-    unsigned long long,
-    LongLongUnsigned,
-    " 18123456789123456789 ",
-    "-4711")
+    unsigned long long, LongLongUnsigned, " 18123456789123456789 ", "-4711")
 BENCHMARK_DRAW_LINE();
 
 PTR_PAIR_TO_INT_BENCHMARK(signed char, CharSigned, "-47", "1000")
 PTR_PAIR_TO_INT_BENCHMARK(unsigned char, CharUnsigned, "47", "1000")
 PTR_PAIR_TO_INT_BENCHMARK(int, IntSigned, "-4711", "-10000000000000000000000")
 PTR_PAIR_TO_INT_BENCHMARK(
-    unsigned int,
-    IntUnsigned,
-    "4711",
-    "10000000000000000000000")
+    unsigned int, IntUnsigned, "4711", "10000000000000000000000")
 PTR_PAIR_TO_INT_BENCHMARK(
     long long,
     LongLongSigned,

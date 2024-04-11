@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,13 +30,12 @@ SemiFuture<T> SharedPromise<T>::getSemiFuture() const {
   size_.value++;
   if (hasResult()) {
     return makeFuture<T>(Try<T>(try_.value));
-  } else {
-    promises_.emplace_back();
-    if (interruptHandler_) {
-      promises_.back().setInterruptHandler(interruptHandler_);
-    }
-    return promises_.back().getSemiFuture();
   }
+  auto& promise = promises_.emplace_back();
+  if (interruptHandler_) {
+    promise.setInterruptHandler(interruptHandler_);
+  }
+  return promise.getSemiFuture();
 }
 
 template <class T>
@@ -72,13 +71,13 @@ void SharedPromise<T>::setInterruptHandler(
 template <class T>
 template <class M>
 void SharedPromise<T>::setValue(M&& v) {
-  setTry(Try<T>(std::forward<M>(v)));
+  setTry(Try<T>(static_cast<M&&>(v)));
 }
 
 template <class T>
 template <class F>
 void SharedPromise<T>::setWith(F&& func) {
-  setTry(makeTryWith(std::forward<F>(func)));
+  setTry(makeTryWith(static_cast<F&&>(func)));
 }
 
 template <class T>
@@ -104,5 +103,10 @@ bool SharedPromise<T>::isFulfilled() const {
   std::lock_guard<std::mutex> g(mutex_);
   return hasResult();
 }
+
+#if FOLLY_USE_EXTERN_FUTURE_UNIT
+// limited to the instances unconditionally forced by the futures library
+extern template class SharedPromise<Unit>;
+#endif
 
 } // namespace folly

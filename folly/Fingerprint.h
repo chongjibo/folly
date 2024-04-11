@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,8 +37,6 @@
  * (unsurprisingly, Fingerprint<96> and Fingerprint<128> take the
  * same amount of time, as they both use 128-bit operations; the least
  * significant 32 bits of Fingerprint<96> will always be 0)
- *
- * @author Tudor Bosman (tudorb@facebook.com)
  */
 
 #pragma once
@@ -150,12 +148,10 @@ class Fingerprint {
   /**
    * Return the number of uint64s needed to hold the fingerprint value.
    */
-  constexpr static int size() {
-    return detail::poly_size(BITS);
-  }
+  constexpr static int size() { return detail::poly_size(BITS); }
 
   /**
-   * Write the computed fingeprint to an array of size() uint64_t's.
+   * Write the computed fingerprint to an array of size() uint64_t's.
    * For Fingerprint<64>,  size()==1; we write 64 bits in out[0]
    * For Fingerprint<96>,  size()==2; we write 64 bits in out[0] and
    *                                  the most significant 32 bits of out[1]

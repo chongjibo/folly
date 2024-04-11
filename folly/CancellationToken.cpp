@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -164,7 +164,7 @@ bool CancellationState::requestCancellation() noexcept {
       // This was the last item in the queue when we dequeued it.
       // No more items should be added to the queue after we have
       // marked the state as cancelled, only removed from the queue.
-      // Avoid acquring/releasing the lock in this case.
+      // Avoid acquiring/releasing the lock in this case.
       return false;
     }
 

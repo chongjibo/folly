@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,7 +36,12 @@ namespace compression {
  * make for less contention, but mean that a context is less likely to be hot
  * in cache.
  */
-template <typename T, typename Creator, typename Deleter, size_t NumStripes = 8>
+template <
+    typename T,
+    typename Creator,
+    typename Deleter,
+    typename Resetter,
+    size_t NumStripes = 8>
 class CompressionCoreLocalContextPool {
  private:
   /**
@@ -51,22 +56,22 @@ class CompressionCoreLocalContextPool {
 
   class ReturnToPoolDeleter {
    public:
-    using Pool =
-        CompressionCoreLocalContextPool<T, Creator, Deleter, NumStripes>;
+    using Pool = CompressionCoreLocalContextPool<
+        T,
+        Creator,
+        Deleter,
+        Resetter,
+        NumStripes>;
 
-    explicit ReturnToPoolDeleter(Pool* pool) : pool_(pool) {
-      DCHECK(pool_);
-    }
+    explicit ReturnToPoolDeleter(Pool* pool) : pool_(pool) { DCHECK(pool_); }
 
-    void operator()(T* ptr) {
-      pool_->store(ptr);
-    }
+    void operator()(T* ptr) { pool_->store(ptr); }
 
    private:
     Pool* pool_;
   };
 
-  using BackingPool = CompressionContextPool<T, Creator, Deleter>;
+  using BackingPool = CompressionContextPool<T, Creator, Deleter, Resetter>;
   using BackingPoolRef = typename BackingPool::Ref;
 
  public:
@@ -75,16 +80,12 @@ class CompressionCoreLocalContextPool {
 
   explicit CompressionCoreLocalContextPool(
       Creator creator = Creator(),
-      Deleter deleter = Deleter())
-      : pool_(std::move(creator), std::move(deleter)), caches_() {}
+      Deleter deleter = Deleter(),
+      Resetter resetter = Resetter())
+      : pool_(std::move(creator), std::move(deleter), std::move(resetter)),
+        caches_() {}
 
-  ~CompressionCoreLocalContextPool() {
-    for (auto& cache : caches_) {
-      // Return all cached contexts back to the backing pool.
-      auto ptr = cache.ptr.exchange(nullptr);
-      return_to_backing_pool(ptr);
-    }
-  }
+  ~CompressionCoreLocalContextPool() { flush_shallow(); }
 
   Ref get() {
     auto ptr = local().ptr.exchange(nullptr);
@@ -96,17 +97,29 @@ class CompressionCoreLocalContextPool {
     return Ref(ptr, get_deleter());
   }
 
-  Ref getNull() {
-    return Ref(nullptr, get_deleter());
+  Ref getNull() { return Ref(nullptr, get_deleter()); }
+
+  size_t created_count() const { return pool_.created_count(); }
+
+  void flush_deep() {
+    flush_shallow();
+    pool_.flush_deep();
+  }
+
+  void flush_shallow() {
+    for (auto& cache : caches_) {
+      // Return all cached contexts back to the backing pool.
+      auto ptr = cache.ptr.exchange(nullptr);
+      return_to_backing_pool(ptr);
+    }
   }
 
  private:
-  ReturnToPoolDeleter get_deleter() {
-    return ReturnToPoolDeleter(this);
-  }
+  ReturnToPoolDeleter get_deleter() { return ReturnToPoolDeleter(this); }
 
   void store(T* ptr) {
     DCHECK(ptr);
+    pool_.get_resetter()(ptr);
     T* expected = nullptr;
     const bool stored = local().ptr.compare_exchange_weak(expected, ptr);
     if (!stored) {

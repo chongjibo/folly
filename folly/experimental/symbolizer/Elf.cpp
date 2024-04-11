@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,8 @@
 #include <folly/experimental/symbolizer/Elf.h>
 
 #include <fcntl.h>
-#include <folly/portability/SysMman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
 #include <cstring>
 #include <string>
 
@@ -29,10 +27,27 @@
 #include <folly/Conv.h>
 #include <folly/Exception.h>
 #include <folly/ScopeGuard.h>
+#include <folly/lang/CString.h>
+#include <folly/portability/Config.h>
+#include <folly/portability/SysMman.h>
+
+#if FOLLY_HAVE_ELF
 
 #ifndef STT_GNU_IFUNC
 #define STT_GNU_IFUNC 10
 #endif
+
+#if defined(__ELF_NATIVE_CLASS)
+#define FOLLY_ELF_NATIVE_CLASS __ELF_NATIVE_CLASS
+#elif defined(__FreeBSD__)
+#if defined(__LP64__)
+#define FOLLY_ELF_NATIVE_CLASS 64
+#else
+#define FOLLY_ELF_NATIVE_CLASS 32
+#endif
+#elif defined(__ANDROID__)
+#define FOLLY_ELF_NATIVE_CLASS __WORDSIZE
+#endif // __ELF_NATIVE_CLASS
 
 namespace folly {
 namespace symbolizer {
@@ -41,12 +56,14 @@ ElfFile::ElfFile() noexcept
     : fd_(-1),
       file_(static_cast<char*>(MAP_FAILED)),
       length_(0),
+      fileId_(),
       baseAddress_(0) {}
 
 ElfFile::ElfFile(const char* name, Options const& options)
     : fd_(-1),
       file_(static_cast<char*>(MAP_FAILED)),
       length_(0),
+      fileId_(),
       baseAddress_(0) {
   open(name, options);
 }
@@ -61,13 +78,12 @@ void ElfFile::open(const char* name, Options const& options) {
 }
 
 ElfFile::OpenResult ElfFile::openNoThrow(
-    const char* name,
-    Options const& options) noexcept {
+    const char* name, Options const& options) noexcept {
   FOLLY_SAFE_CHECK(fd_ == -1, "File already open");
   // Always close fd and unmap in case of failure along the way to avoid
   // check failure above if we leave fd != -1 and the object is recycled
   auto guard = makeGuard([&] { reset(); });
-  strncat(filepath_, name, kFilepathMaxLen - 1);
+  strlcpy(filepath_, name, kFilepathMaxLen - 1);
   fd_ = ::open(name, options.writable() ? O_RDWR : O_RDONLY);
   if (fd_ == -1) {
     return {kSystemError, "open"};
@@ -77,6 +93,9 @@ ElfFile::OpenResult ElfFile::openNoThrow(
   if (r == -1) {
     return {kSystemError, "fstat"};
   }
+
+  uint64_t mtime_ns = st.st_mtim.tv_sec * 1000'000'000LL + st.st_mtim.tv_nsec;
+  fileId_ = ElfFileId{st.st_dev, st.st_ino, st.st_size, mtime_ns};
 
   length_ = st.st_size;
   int prot = PROT_READ;
@@ -98,8 +117,7 @@ ElfFile::OpenResult ElfFile::openNoThrow(
 }
 
 ElfFile::OpenResult ElfFile::openAndFollow(
-    const char* name,
-    Options const& options) noexcept {
+    const char* name, Options const& options) noexcept {
   auto result = openNoThrow(name, options);
   if (options.writable() || result != kSuccess) {
     return result;
@@ -148,13 +166,15 @@ ElfFile::ElfFile(ElfFile&& other) noexcept
     : fd_(other.fd_),
       file_(other.file_),
       length_(other.length_),
+      fileId_(other.fileId_),
       baseAddress_(other.baseAddress_) {
   // copy other.filepath_, leaving filepath_ zero-terminated, always.
-  strncat(filepath_, other.filepath_, kFilepathMaxLen - 1);
+  strlcpy(filepath_, other.filepath_, kFilepathMaxLen - 1);
   other.filepath_[0] = 0;
   other.fd_ = -1;
   other.file_ = static_cast<char*>(MAP_FAILED);
   other.length_ = 0;
+  other.fileId_ = {};
   other.baseAddress_ = 0;
 }
 
@@ -163,16 +183,18 @@ ElfFile& ElfFile::operator=(ElfFile&& other) noexcept {
   reset();
 
   // copy other.filepath_, leaving filepath_ zero-terminated, always.
-  strncat(filepath_, other.filepath_, kFilepathMaxLen - 1);
+  strlcpy(filepath_, other.filepath_, kFilepathMaxLen - 1);
   fd_ = other.fd_;
   file_ = other.file_;
   length_ = other.length_;
+  fileId_ = other.fileId_;
   baseAddress_ = other.baseAddress_;
 
   other.filepath_[0] = 0;
   other.fd_ = -1;
   other.file_ = static_cast<char*>(MAP_FAILED);
   other.length_ = 0;
+  other.fileId_ = {};
   other.baseAddress_ = 0;
 
   return *this;
@@ -190,6 +212,8 @@ void ElfFile::reset() noexcept {
     close(fd_);
     fd_ = -1;
   }
+
+  fileId_ = {};
 }
 
 ElfFile::OpenResult ElfFile::init() noexcept {
@@ -204,9 +228,19 @@ ElfFile::OpenResult ElfFile::init() noexcept {
   if (std::strncmp(elfMagBuf.data(), ELFMAG, sizeof(ELFMAG)) != 0) {
     return {kInvalidElfFile, "invalid ELF magic"};
   }
+  char c;
+  if (::pread(fd_, &c, 1, length_ - 1) != 1) {
+    auto msg =
+        "The last bit of the mmaped memory is no longer valid. This may be "
+        "caused by the original file being resized, "
+        "deleted or otherwise modified.";
+    return {kInvalidElfFile, msg};
+  }
+
   if (::lseek(fd_, 0, SEEK_SET) != 0) {
-    return {kInvalidElfFile,
-            "unable to reset file descriptor after reading ELF magic number"};
+    return {
+        kInvalidElfFile,
+        "unable to reset file descriptor after reading ELF magic number"};
   }
 
   auto& elfHeader = this->elfHeader();
@@ -236,17 +270,23 @@ ElfFile::OpenResult ElfFile::init() noexcept {
   }
 
   // We only support executable and shared object files
-  if (elfHeader.e_type != ET_EXEC && elfHeader.e_type != ET_DYN &&
-      elfHeader.e_type != ET_CORE) {
+  if (elfHeader.e_type != ET_REL && elfHeader.e_type != ET_EXEC &&
+      elfHeader.e_type != ET_DYN && elfHeader.e_type != ET_CORE) {
     return {kInvalidElfFile, "invalid ELF file type"};
   }
 
-  if (elfHeader.e_phnum == 0) {
-    return {kInvalidElfFile, "no program header!"};
-  }
+  // We support executable and shared object files and extracting debug info
+  // from relocatable objects (.dwo sections in .o/.dwo files). The e_phnum and
+  // e_phentsize header fileds are not required for relocatable files.
+  // https://docs.oracle.com/cd/E19620-01/805-4693/6j4emccrq/index.html
+  if (elfHeader.e_type != ET_REL) {
+    if (elfHeader.e_phnum == 0) {
+      return {kInvalidElfFile, "no program header!"};
+    }
 
-  if (elfHeader.e_phentsize != sizeof(ElfPhdr)) {
-    return {kInvalidElfFile, "invalid program header entry size"};
+    if (elfHeader.e_phentsize != sizeof(ElfPhdr)) {
+      return {kInvalidElfFile, "invalid program header entry size"};
+    }
   }
 
   if (elfHeader.e_shentsize != sizeof(ElfShdr)) {
@@ -257,24 +297,30 @@ ElfFile::OpenResult ElfFile::init() noexcept {
 
   // Program headers are sorted by load address, so the first PT_LOAD
   // header gives us the base address.
-  const ElfPhdr* programHeader =
-      iterateProgramHeaders([](auto& h) { return h.p_type == PT_LOAD; });
+  if (elfHeader.e_type != ET_REL) {
+    const ElfPhdr* programHeader =
+        iterateProgramHeaders([](auto& h) { return h.p_type == PT_LOAD; });
 
-  if (!programHeader) {
-    return {kInvalidElfFile, "could not find base address"};
+    if (!programHeader) {
+      return {kInvalidElfFile, "could not find base address"};
+    }
+    baseAddress_ = programHeader->p_vaddr;
   }
-  baseAddress_ = programHeader->p_vaddr;
 
   return {kSuccess, nullptr};
 }
 
 const ElfShdr* ElfFile::getSectionByIndex(size_t idx) const noexcept {
   FOLLY_SAFE_CHECK(idx < elfHeader().e_shnum, "invalid section index");
+  if (elfHeader().e_shoff + (idx + 1) * sizeof(ElfShdr) > length_) {
+    // Handle ELFs with invalid internal offsets to program/section headers.
+    return nullptr;
+  }
   return &at<ElfShdr>(elfHeader().e_shoff + idx * sizeof(ElfShdr));
 }
 
-folly::StringPiece ElfFile::getSectionBody(const ElfShdr& section) const
-    noexcept {
+folly::StringPiece ElfFile::getSectionBody(
+    const ElfShdr& section) const noexcept {
   return folly::StringPiece(file_ + section.sh_offset, section.sh_size);
 }
 
@@ -290,8 +336,8 @@ void ElfFile::validateStringTable(const ElfShdr& stringTable) const noexcept {
       "invalid string table");
 }
 
-const char* ElfFile::getString(const ElfShdr& stringTable, size_t offset) const
-    noexcept {
+const char* ElfFile::getString(
+    const ElfShdr& stringTable, size_t offset) const noexcept {
   validateStringTable(stringTable);
   FOLLY_SAFE_CHECK(
       offset < stringTable.sh_size, "invalid offset in string table");
@@ -304,8 +350,11 @@ const char* ElfFile::getSectionName(const ElfShdr& section) const noexcept {
     return nullptr; // no section name string table
   }
 
-  const ElfShdr& sectionNames = *getSectionByIndex(elfHeader().e_shstrndx);
-  return getString(sectionNames, section.sh_name);
+  auto stringSection = getSectionByIndex(elfHeader().e_shstrndx);
+  if (!stringSection) {
+    return nullptr;
+  }
+  return getString(*stringSection, section.sh_name);
 }
 
 const ElfShdr* ElfFile::getSectionByName(const char* name) const noexcept {
@@ -313,7 +362,11 @@ const ElfShdr* ElfFile::getSectionByName(const char* name) const noexcept {
     return nullptr; // no section name string table
   }
 
-  const ElfShdr& sectionNames = *getSectionByIndex(elfHeader().e_shstrndx);
+  auto stringSection = getSectionByIndex(elfHeader().e_shstrndx);
+  if (!stringSection) {
+    return nullptr;
+  }
+  const ElfShdr& sectionNames = *stringSection;
   const char* start = file_ + sectionNames.sh_offset;
 
   // Find section with the appropriate sh_name offset
@@ -326,12 +379,12 @@ const ElfShdr* ElfFile::getSectionByName(const char* name) const noexcept {
   return foundSection;
 }
 
-ElfFile::Symbol ElfFile::getDefinitionByAddress(uintptr_t address) const
-    noexcept {
+ElfFile::Symbol ElfFile::getDefinitionByAddress(
+    uintptr_t address) const noexcept {
   Symbol foundSymbol{nullptr, nullptr};
 
-  auto findSection = [&](const ElfShdr& section) {
-    auto findSymbols = [&](const ElfSym& sym) {
+  auto findSection = [&, address](const ElfShdr& section) {
+    auto findSymbols = [&, address](const ElfSym& sym) {
       if (sym.st_shndx == SHN_UNDEF) {
         return false; // not a definition
       }
@@ -355,7 +408,8 @@ ElfFile::Symbol ElfFile::getDefinitionByAddress(uintptr_t address) const
   return foundSymbol;
 }
 
-ElfFile::Symbol ElfFile::getSymbolByName(const char* name) const noexcept {
+ElfFile::Symbol ElfFile::getSymbolByName(
+    const char* name, std::initializer_list<uint32_t> types) const noexcept {
   Symbol foundSymbol{nullptr, nullptr};
 
   auto findSection = [&](const ElfShdr& section) -> bool {
@@ -372,8 +426,11 @@ ElfFile::Symbol ElfFile::getSymbolByName(const char* name) const noexcept {
       if (sym.st_name == 0) {
         return false; // no name for this symbol
       }
-      const char* sym_name =
-          getString(*getSectionByIndex(section.sh_link), sym.st_name);
+      auto linkSection = getSectionByIndex(section.sh_link);
+      if (!linkSection) {
+        return false;
+      }
+      const char* sym_name = getString(*linkSection, sym.st_name);
       if (strcmp(sym_name, name) == 0) {
         foundSymbol.first = &section;
         foundSymbol.second = &sym;
@@ -383,8 +440,7 @@ ElfFile::Symbol ElfFile::getSymbolByName(const char* name) const noexcept {
       return false;
     };
 
-    return iterateSymbolsWithTypes(
-        section, {STT_OBJECT, STT_FUNC, STT_GNU_IFUNC}, findSymbols);
+    return iterateSymbolsWithTypes(section, types, findSymbols);
   };
 
   // Try the .dynsym section first if it exists, it's smaller.
@@ -394,14 +450,14 @@ ElfFile::Symbol ElfFile::getSymbolByName(const char* name) const noexcept {
   return foundSymbol;
 }
 
-const ElfShdr* ElfFile::getSectionContainingAddress(ElfAddr addr) const
-    noexcept {
+const ElfShdr* ElfFile::getSectionContainingAddress(
+    ElfAddr addr) const noexcept {
   return iterateSections([&](const ElfShdr& sh) -> bool {
     return (addr >= sh.sh_addr) && (addr < (sh.sh_addr + sh.sh_size));
   });
 }
 
-const char* ElfFile::getSymbolName(Symbol symbol) const noexcept {
+const char* ElfFile::getSymbolName(const Symbol& symbol) const noexcept {
   if (!symbol.first || !symbol.second) {
     return nullptr;
   }
@@ -414,9 +470,31 @@ const char* ElfFile::getSymbolName(Symbol symbol) const noexcept {
     return nullptr; // symbol table has no strings
   }
 
-  return getString(
-      *getSectionByIndex(symbol.first->sh_link), symbol.second->st_name);
+  auto linkSection = getSectionByIndex(symbol.first->sh_link);
+  if (!linkSection) {
+    return nullptr;
+  }
+  return getString(*linkSection, symbol.second->st_name);
+}
+
+std::pair<const int, char const*> ElfFile::posixFadvise(
+    off_t offset, off_t len, int const advice) const noexcept {
+  if (fd_ == -1) {
+    return {1, "file not open"};
+  }
+  int res = posix_fadvise(fd_, offset, len, advice);
+  if (res != 0) {
+    return {res, "posix_fadvise failed for file"};
+  }
+  return {res, ""};
+}
+
+std::pair<const int, char const*> ElfFile::posixFadvise(
+    int const advice) const noexcept {
+  return posixFadvise(0, 0, advice);
 }
 
 } // namespace symbolizer
 } // namespace folly
+
+#endif // FOLLY_HAVE_ELF

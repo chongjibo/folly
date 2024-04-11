@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,8 @@
  * limitations under the License.
  */
 
+#include <folly/Conv.h>
 #include <folly/Portability.h>
-
-#if FOLLY_HAS_COROUTINES
 
 #include <folly/executors/InlineExecutor.h>
 #include <folly/executors/ManualExecutor.h>
@@ -28,9 +27,13 @@
 #include <folly/experimental/coro/Task.h>
 #include <folly/experimental/coro/detail/InlineTask.h>
 #include <folly/futures/Future.h>
+#include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GTest.h>
 
+#include <stdexcept>
 #include <type_traits>
+
+#if FOLLY_HAS_COROUTINES
 
 using namespace folly;
 
@@ -62,8 +65,9 @@ static_assert(
     "");
 static_assert(
     std::is_same<
-        folly::coro::semi_await_result_t<decltype(
-            std::declval<folly::coro::SharedMutex&>().co_scoped_lock_shared())>,
+        folly::coro::semi_await_result_t<
+            decltype(std::declval<folly::coro::SharedMutex&>()
+                         .co_scoped_lock_shared())>,
         folly::coro::SharedLock<folly::coro::SharedMutex>>::value,
     "");
 
@@ -76,13 +80,9 @@ class TestRequestData : public RequestData {
  public:
   explicit TestRequestData(std::string key) noexcept : key_(std::move(key)) {}
 
-  bool hasCallback() override {
-    return false;
-  }
+  bool hasCallback() override { return false; }
 
-  const std::string& key() const noexcept {
-    return key_;
-  }
+  const std::string& key() const noexcept { return key_; }
 
  private:
   std::string key_;
@@ -349,9 +349,27 @@ TEST_F(TaskTest, FutureTailCall) {
           })));
 }
 
-// NOTE: This function is unused.
+TEST_F(TaskTest, FutureRoundtrip) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    co_yield folly::coro::co_result(co_await folly::coro::co_awaitTry(
+        []() -> folly::coro::Task<void> { co_return; }().semi()));
+  }());
+
+  EXPECT_THROW(
+      folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+        co_yield folly::coro::co_result(co_await folly::coro::co_awaitTry(
+            []() -> folly::coro::Task<void> {
+              co_yield folly::coro::co_error(std::runtime_error(""));
+            }()
+                        .semi()));
+      }()),
+      std::runtime_error);
+}
+
+namespace {
+
 // We just want to make sure this compiles without errors or warnings.
-folly::coro::Task<void>
+[[maybe_unused]] folly::coro::Task<void>
 checkAwaitingFutureOfUnitDoesntWarnAboutDiscardedResult() {
   co_await folly::makeSemiFuture();
 
@@ -359,11 +377,13 @@ checkAwaitingFutureOfUnitDoesntWarnAboutDiscardedResult() {
   co_await folly::futures::sleep(1ms);
 }
 
-folly::coro::Task<int&> returnIntRef(int& value) {
-  co_return value;
-}
+} // namespace
 
 TEST_F(TaskTest, TaskOfLvalueReference) {
+  auto returnIntRef = [](int& value) -> folly::coro::Task<int&> {
+    co_return value;
+  };
+
   int value = 123;
   auto&& result = folly::coro::blockingWait(returnIntRef(value));
   static_assert(std::is_same_v<decltype(result), int&>);
@@ -372,6 +392,10 @@ TEST_F(TaskTest, TaskOfLvalueReference) {
 
 TEST_F(TaskTest, TaskOfLvalueReferenceAsTry) {
   folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto returnIntRef = [](int& value) -> folly::coro::Task<int&> {
+      co_return value;
+    };
+
     int value = 123;
     auto&& result = co_await co_awaitTry(returnIntRef(value));
     CHECK(result.hasValue());
@@ -397,13 +421,12 @@ TEST_F(TaskTest, CancellationPropagation) {
 
           // The cancellation token should implicitly propagate into the
           //
-          co_await[&]()->folly::coro::Task<void> {
+          co_await [&]() -> folly::coro::Task<void> {
             auto token3 = co_await folly::coro::co_current_cancellation_token;
             CHECK(token3 == token2);
             cancelSource.requestCancellation();
             CHECK(token3.isCancellationRequested());
-          }
-          ();
+          }();
           CHECK(token2.isCancellationRequested());
         }());
   }());
@@ -428,13 +451,12 @@ TEST_F(TaskTest, StartInlineUnsafe) {
     auto executor = co_await folly::coro::co_current_executor;
     bool hasStarted = false;
     bool hasFinished = false;
-    auto sf = [&]() -> folly::coro::Task<void> {
+    auto makeTask = [&]() -> folly::coro::Task<void> {
       hasStarted = true;
       co_await folly::coro::co_reschedule_on_current_executor;
       hasFinished = true;
-    }()
-                           .scheduleOn(executor)
-                           .startInlineUnsafe();
+    };
+    auto sf = makeTask().scheduleOn(executor).startInlineUnsafe();
 
     // Check that the task started inline on the current thread.
     // It should not yet have completed, however, since the rest
@@ -449,4 +471,294 @@ TEST_F(TaskTest, StartInlineUnsafe) {
   }());
 }
 
+TEST_F(TaskTest, YieldTry) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto innerTaskVoid = []() -> folly::coro::Task<void> {
+      co_yield folly::coro::co_error(std::runtime_error(""));
+    }();
+    auto retVoid = co_await co_awaitTry([&]() -> folly::coro::Task<void> {
+      co_yield folly::coro::co_result(
+          co_await co_awaitTry(std::move(innerTaskVoid)));
+    }());
+    EXPECT_TRUE(retVoid.hasException());
+
+    innerTaskVoid = []() -> folly::coro::Task<void> { co_return; }();
+    retVoid = co_await co_awaitTry([&]() -> folly::coro::Task<void> {
+      co_yield folly::coro::co_result(
+          co_await co_awaitTry(std::move(innerTaskVoid)));
+    }());
+    EXPECT_FALSE(retVoid.hasException());
+
+    auto innerTaskInt = []() -> folly::coro::Task<int> {
+      co_yield folly::coro::co_error(std::runtime_error(""));
+    }();
+    auto retInt = co_await co_awaitTry([&]() -> folly::coro::Task<int> {
+      co_yield folly::coro::co_result(
+          co_await co_awaitTry(std::move(innerTaskInt)));
+    }());
+    EXPECT_TRUE(retInt.hasException());
+
+    innerTaskInt = []() -> folly::coro::Task<int> { co_return 0; }();
+    retInt = co_await co_awaitTry([&]() -> folly::coro::Task<int> {
+      co_yield folly::coro::co_result(
+          co_await co_awaitTry(std::move(innerTaskInt)));
+    }());
+    EXPECT_TRUE(retInt.hasValue());
+
+    EXPECT_THROW(
+        co_await [&]() -> folly::coro::Task<int> {
+          co_yield folly::coro::co_result(folly::Try<int>());
+        }(),
+        UsingUninitializedTry);
+  }());
+}
+
+TEST_F(TaskTest, MakeTask) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto ret = co_await folly::coro::makeTask(42);
+    EXPECT_EQ(ret, 42);
+
+    co_await folly::coro::makeTask();
+    co_await folly::coro::makeTask(folly::unit);
+
+    auto err = co_await co_awaitTry(folly::coro::makeErrorTask<int>(
+        folly::make_exception_wrapper<std::runtime_error>("")));
+    EXPECT_TRUE(err.hasException());
+
+    err = co_await co_awaitTry(folly::coro::makeResultTask(folly::Try<int>(
+        folly::make_exception_wrapper<std::runtime_error>(""))));
+    EXPECT_TRUE(err.hasException());
+
+    auto try1 = co_await co_awaitTry(
+        folly::coro::makeResultTask(folly::Try<folly::Unit>(
+            folly::make_exception_wrapper<std::runtime_error>(""))));
+    EXPECT_TRUE(try1.hasException());
+    try1 = co_await co_awaitTry(
+        folly::coro::makeResultTask(folly::Try<folly::Unit>(folly::unit)));
+    EXPECT_TRUE(try1.hasValue());
+
+    // test move happens immediately (i.e. no dangling reference)
+    struct {
+      int i{0};
+    } s;
+    auto t = folly::coro::makeTask(std::move(s));
+    s.i = 1;
+    auto s2 = co_await std::move(t);
+    EXPECT_EQ(s2.i, 0);
+  }());
+}
+
+TEST_F(TaskTest, ScheduleOnRestoresExecutor) {
+  folly::ScopedEventBaseThread ebt;
+  folly::coro::blockingWait([&]() -> folly::coro::Task<void> {
+    co_await [&]() -> folly::coro::Task<void> {
+      EXPECT_TRUE(ebt.getEventBase()->inRunningEventBaseThread());
+      co_return;
+    }()
+                          .scheduleOn(&ebt);
+    EXPECT_FALSE(ebt.getEventBase()->inRunningEventBaseThread());
+    try {
+      co_await [&]() -> folly::coro::Task<void> {
+        EXPECT_TRUE(ebt.getEventBase()->inRunningEventBaseThread());
+        throw std::runtime_error("");
+        co_return;
+      }()
+                            .scheduleOn(&ebt);
+    } catch (...) {
+    }
+    EXPECT_FALSE(ebt.getEventBase()->inRunningEventBaseThread());
+  }());
+}
+
+TEST_F(TaskTest, CoAwaitTryWithScheduleOn) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto t = []() -> folly::coro::Task<int> { co_return 42; }();
+
+    folly::Try<int> result = co_await folly::coro::co_awaitTry(
+        std::move(t).scheduleOn(folly::getGlobalCPUExecutor()));
+    EXPECT_EQ(42, result.value());
+  }());
+}
+
+TEST_F(TaskTest, CoAwaitTryWithScheduleOnAndCancellation) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    folly::CancellationSource cancelSrc;
+
+    auto makeTask = [&]() -> folly::coro::Task<int> {
+      auto ct = co_await folly::coro::co_current_cancellation_token;
+      EXPECT_FALSE(ct.isCancellationRequested());
+      cancelSrc.requestCancellation();
+      EXPECT_TRUE(ct.isCancellationRequested());
+      co_return 42;
+    };
+
+    {
+      folly::Try<int> result = co_await folly::coro::co_withCancellation(
+          cancelSrc.getToken(),
+          folly::coro::co_awaitTry(
+              makeTask().scheduleOn(folly::getGlobalCPUExecutor())));
+      EXPECT_EQ(42, result.value());
+    }
+
+    cancelSrc = {};
+
+    {
+      folly::Try<int> result =
+          co_await folly::coro::co_awaitTry(folly::coro::co_withCancellation(
+              cancelSrc.getToken(),
+              makeTask().scheduleOn(folly::getGlobalCPUExecutor())));
+      EXPECT_EQ(42, result.value());
+    }
+  }());
+}
+
+TEST_F(TaskTest, Moved) {
+  if (folly::kIsDebug) {
+    ASSERT_DEATH_IF_SUPPORTED(
+        folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+          folly::coro::Task<int> task = folly::coro::makeTask(1);
+          co_await std::move(task);
+          co_await std::move(task);
+        }()),
+        "task\\.coro_");
+  }
+}
+
+TEST_F(TaskTest, SafePoint) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    enum class step_type {
+      init,
+      before_continue_sp,
+      after_continue_sp,
+      before_cancel_sp,
+      after_cancel_sp,
+    };
+    step_type step = step_type::init;
+
+    folly::CancellationSource cancelSrc;
+    auto makeTask = [&]() -> folly::coro::Task<void> {
+      step = step_type::before_continue_sp;
+      co_await folly::coro::co_safe_point;
+      step = step_type::after_continue_sp;
+
+      cancelSrc.requestCancellation();
+
+      step = step_type::before_cancel_sp;
+      co_await folly::coro::co_safe_point;
+      step = step_type::after_cancel_sp;
+    };
+
+    auto result = co_await folly::coro::co_awaitTry( //
+        folly::coro::co_withCancellation(cancelSrc.getToken(), makeTask()));
+    EXPECT_THROW(result.value(), folly::OperationCancelled);
+    EXPECT_EQ(step_type::before_cancel_sp, step);
+  }());
+}
+
+TEST_F(TaskTest, CoAwaitNothrow) {
+  auto res =
+      folly::coro::blockingWait(co_awaitTry([]() -> folly::coro::Task<void> {
+        auto t = []() -> folly::coro::Task<int> { co_return 42; }();
+
+        int result = co_await folly::coro::co_nothrow(std::move(t));
+        EXPECT_EQ(42, result);
+
+        t = []() -> folly::coro::Task<int> {
+          co_yield folly::coro::co_error(std::runtime_error(""));
+        }();
+
+        try {
+          result = co_await folly::coro::co_nothrow(std::move(t));
+        } catch (...) {
+          ADD_FAILURE();
+        }
+        ADD_FAILURE();
+      }()));
+  EXPECT_TRUE(res.hasException<std::runtime_error>());
+}
+
+TEST_F(TaskTest, CoAwaitNothrowWithScheduleOn) {
+  auto res =
+      folly::coro::blockingWait(co_awaitTry([]() -> folly::coro::Task<void> {
+        auto t = []() -> folly::coro::Task<int> { co_return 42; }();
+
+        int result = co_await folly::coro::co_nothrow(
+            std::move(t).scheduleOn(folly::getGlobalCPUExecutor()));
+        EXPECT_EQ(42, result);
+
+        t = []() -> folly::coro::Task<int> {
+          co_yield folly::coro::co_error(std::runtime_error(""));
+        }();
+
+        try {
+          result = co_await folly::coro::co_nothrow(
+              std::move(t).scheduleOn(folly::getGlobalCPUExecutor()));
+        } catch (...) {
+          ADD_FAILURE();
+        }
+        ADD_FAILURE();
+      }()));
+  EXPECT_TRUE(res.hasException<std::runtime_error>());
+}
+
+TEST_F(TaskTest, CoAwaitThrowAfterNothrow) {
+  auto res =
+      folly::coro::blockingWait(co_awaitTry([]() -> folly::coro::Task<void> {
+        auto t = []() -> folly::coro::Task<int> { co_return 42; }();
+
+        int result = co_await folly::coro::co_nothrow(std::move(t));
+        EXPECT_EQ(42, result);
+
+        t = []() -> folly::coro::Task<int> {
+          co_yield folly::coro::co_error(std::runtime_error(""));
+        }();
+
+        try {
+          result = co_await std::move(t);
+          ADD_FAILURE();
+        } catch (...) {
+          throw std::logic_error("translated");
+        }
+      }()));
+  EXPECT_TRUE(res.hasException<std::logic_error>());
+}
+
+TEST_F(TaskTest, CoAwaitNothrowDestructorOrdering) {
+  int i = 0;
+  folly::coro::blockingWait(co_awaitTry([&]() -> folly::coro::Task<> {
+    co_await folly::coro::co_nothrow([&]() -> folly::coro::Task<> {
+      SCOPE_EXIT { i *= i; };
+      co_await folly::coro::co_nothrow([&]() -> folly::coro::Task<> {
+        SCOPE_EXIT { i *= 3; };
+        co_await folly::coro::co_nothrow([&]() -> folly::coro::Task<> {
+          SCOPE_EXIT { i += 1; };
+          co_return;
+        }());
+      }());
+    }());
+  }()));
+  EXPECT_EQ(i, 9);
+}
+
+struct ExpectedException : public std::runtime_error {
+  ExpectedException() : std::runtime_error("expected") {}
+};
+
+TEST_F(TaskTest, CoYieldCoErrorSameExecutor) {
+  folly::ScopedEventBaseThread ebThread;
+
+  auto scopeAndThrow = [&]() -> folly::coro::Task<void> {
+    auto eb = dynamic_cast<folly::EventBase*>(
+        co_await folly::coro::co_current_executor);
+    CHECK(eb);
+    SCOPE_EXIT { CHECK(eb->inRunningEventBaseThread()); };
+    co_yield folly::coro::co_error(ExpectedException());
+  };
+  auto scopeAndThrowWrapper = [&]() -> folly::coro::Task<void> {
+    co_await scopeAndThrow().scheduleOn(ebThread.getEventBase());
+  };
+
+  EXPECT_THROW(
+      folly::coro::blockingWait(scopeAndThrowWrapper()), ExpectedException);
+}
 #endif

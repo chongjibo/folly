@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 
 #include <folly/experimental/flat_combining/test/FlatCombiningTestHelpers.h>
 
-#include <folly/portability/GTest.h>
-#include <glog/logging.h>
-
 #include <mutex>
+
+#include <folly/portability/GTest.h>
+
+#include <glog/logging.h>
 
 using namespace folly::test;
 
@@ -36,7 +37,7 @@ struct Params {
 
 class FlatCombiningTest : public ::testing::TestWithParam<Params> {};
 
-TEST(FlatCombiningTest, lock_holder) {
+TEST(FlatCombiningTest, lockHolder) {
   folly::FcSimpleExample<> ex(10);
   {
     std::unique_lock<std::mutex> l;
@@ -117,4 +118,4 @@ constexpr Params params[] = {
     {true, false, false, true, false}, // tc async
 };
 
-INSTANTIATE_TEST_CASE_P(Foo, FlatCombiningTest, ::testing::ValuesIn(params));
+INSTANTIATE_TEST_SUITE_P(Foo, FlatCombiningTest, ::testing::ValuesIn(params));

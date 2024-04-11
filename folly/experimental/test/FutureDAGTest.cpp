@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/experimental/FutureDAG.h>
+
 #include <boost/thread/barrier.hpp>
 #include <folly/executors/GlobalExecutor.h>
 #include <folly/portability/GTest.h>
@@ -85,6 +86,7 @@ struct FutureDAGTest : public testing::Test {
   struct TestNode {
     explicit TestNode(FutureDAGTest* test)
         : func([this, test] {
+            std::lock_guard<std::mutex> lock(test->orderMutex);
             test->order.push_back(handle);
             return Future<Unit>();
           }),
@@ -98,6 +100,7 @@ struct FutureDAGTest : public testing::Test {
   const std::shared_ptr<FutureDAG> dag =
       FutureDAG::create(getGlobalCPUExecutor());
   std::map<Handle, std::unique_ptr<TestNode>> nodes;
+  std::mutex orderMutex;
   std::vector<Handle> order;
 };
 

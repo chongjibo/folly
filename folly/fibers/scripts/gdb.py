@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -161,7 +161,7 @@ class FiberXMethodMatcher(gdb.xmethod.XMethodMatcher):
 #
 
 
-class FrameId(object):
+class FrameId:
     def __init__(self, sp, pc):
         self.sp = sp
         self.pc = pc
@@ -266,7 +266,7 @@ class FiberUnwinder(gdb.unwinder.Unwinder):
         return unwind_info
 
 
-class FiberFrameFilter(object):
+class FiberFrameFilter:
     """Frame filter for fiber stacks
 
     This class is used to "skip" past the innermost frame when parsing backtraces,
@@ -619,7 +619,7 @@ class Shortcut(gdb.Function):
 # This class is responsible for maintaining the name/address:fiberinfo mapping.
 # Creating a FiberInfo object adds it to the cache, and trying to create one
 # for a cached fiber will just return the same cached FiberInfo.
-class FiberInfo(object):
+class FiberInfo:
 
     NAMES = {}
 
@@ -736,7 +736,7 @@ def get_fiber_info(only=None, managers=False):
 
         # first check if pre-cached
         if mid in get_fiber_info.cache:
-            for (fid, info) in get_fiber_info.cache[mid].items():
+            for fid, info in get_fiber_info.cache[mid].items():
                 fiber_id = "{}.{}".format(mid, fid)
                 if not only or str(mid) in only or fiber_id in only:
                     yield ((mid, fid), info)
@@ -773,7 +773,7 @@ def get_fiber_managers(only=None):
     """
     # first check if pre-cached
     if get_fiber_managers.cache:
-        for (mid, manager) in get_fiber_managers.cache.items():
+        for mid, manager in get_fiber_managers.cache.items():
             # output only if matching filter
             if not only or str(mid) in only:
                 yield (mid, manager)
@@ -806,22 +806,31 @@ def get_fiber_managers(only=None):
 
             # we have a value, make sure we have a unique key
             assert mid not in managers
-            value = entry
+            value = gdb.default_visualizer(entry)
 
-            # unfortunately the stl gdb libs don't expose the unique_ptr target address
-            # except through the pretty printer, as the last space-delimited word.
-            # We extract that address using the pretty printer, then create a new
-            # gdb.Value of that address cast to the fibermanager type.
-            address = int(gdb.default_visualizer(value).to_string().split(" ")[-1], 16)
-            manager = (
-                gdb.Value(address)
-                .cast(gdb.lookup_type("folly::fibers::FiberManager").pointer())
-                .dereference()
-            )
+            # Before GCC9, the stl gdb libs don't expose the unique_ptr target
+            # address except through the pretty printer, as the last
+            # space-delimited word. From GCC9 forward, the unique_ptr visualizer
+            # exposes a children iterator with the target address. We extract
+            # that address whicever way we can, then create a new gdb.Value of
+            # that address cast to the fibermanager type.
+            address = None
+            if callable(getattr(value, "children", None)):
+                for _, pointer in value.children():
+                    address = pointer
+            else:
+                address = int(value.to_string().split(" ")[-1], 16)
 
-            # output only if matching filter
-            if not only or str(mid) in only:
-                yield (mid, manager)
+            if address is not None:
+                manager = (
+                    gdb.Value(address)
+                    .cast(gdb.lookup_type("folly::fibers::FiberManager").pointer())
+                    .dereference()
+                )
+
+                # output only if matching filter
+                if not only or str(mid) in only:
+                    yield (mid, manager)
 
         # set cache
         get_fiber_managers.cache = managers
@@ -896,7 +905,7 @@ def get_fiber_manager_map_vevb():
 # reset the caches when we continue; the current fibers will almost certainly change
 def clear_fiber_caches(*args):
     # default to only clearing manager and info caches
-    caches = set(arg.string() for arg in args) or {"managers", "info"}
+    caches = {arg.string() for arg in args} or {"managers", "info"}
     cleared = set()
     if "managers" in caches:
         cleared.add("manager")

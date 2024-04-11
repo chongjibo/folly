@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,13 @@ settings_get_bench                                           1.73ns  577.36M
 ============================================================================
 */
 
-FOLLY_SETTING_DEFINE(follytest, benchmarked, int, 100, "desc");
+FOLLY_SETTING_DEFINE(
+    follytest,
+    benchmarked,
+    int,
+    100,
+    folly::settings::Mutability::Mutable,
+    "desc");
 
 BENCHMARK(settings_get_bench, iters) {
   for (unsigned int i = 0; i < iters; ++i) {
@@ -37,7 +43,7 @@ BENCHMARK(settings_get_bench, iters) {
 }
 
 int main(int argc, char** argv) {
-  folly::init(&argc, &argv);
+  folly::Init init(&argc, &argv);
   folly::runBenchmarks();
 
   return 0;

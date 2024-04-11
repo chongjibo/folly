@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,6 +49,9 @@
 #include <bzlib.h>
 #endif
 
+#include <algorithm>
+#include <unordered_set>
+
 #include <folly/Conv.h>
 #include <folly/Memory.h>
 #include <folly/Portability.h>
@@ -59,8 +62,6 @@
 #include <folly/io/Cursor.h>
 #include <folly/lang/Bits.h>
 #include <folly/stop_watch.h>
-#include <algorithm>
-#include <unordered_set>
 
 using folly::io::compression::detail::dataStartsWithLE;
 using folly::io::compression::detail::prefixToStringLE;
@@ -92,8 +93,7 @@ std::string Codec::compress(const StringPiece data) {
 }
 
 std::unique_ptr<IOBuf> Codec::uncompress(
-    const IOBuf* data,
-    Optional<uint64_t> uncompressedLength) {
+    const IOBuf* data, Optional<uint64_t> uncompressedLength) {
   if (data == nullptr) {
     throw std::invalid_argument("Codec: data must not be nullptr");
   }
@@ -116,8 +116,7 @@ std::unique_ptr<IOBuf> Codec::uncompress(
 }
 
 std::string Codec::uncompress(
-    const StringPiece data,
-    Optional<uint64_t> uncompressedLength) {
+    const StringPiece data, Optional<uint64_t> uncompressedLength) {
   if (!uncompressedLength) {
     if (needsUncompressedLength()) {
       throw std::invalid_argument("Codec: uncompressed length required");
@@ -161,8 +160,7 @@ bool Codec::canUncompress(const IOBuf*, Optional<uint64_t>) const {
 }
 
 bool Codec::canUncompress(
-    StringPiece data,
-    Optional<uint64_t> uncompressedLength) const {
+    StringPiece data, Optional<uint64_t> uncompressedLength) const {
   auto buf = IOBuf::wrapBufferAsValue(data.data(), data.size());
   return canUncompress(&buf, uncompressedLength);
 }
@@ -170,17 +168,11 @@ bool Codec::canUncompress(
 std::string Codec::doCompressString(const StringPiece data) {
   const IOBuf inputBuffer{IOBuf::WRAP_BUFFER, data};
   auto outputBuffer = doCompress(&inputBuffer);
-  std::string output;
-  output.reserve(outputBuffer->computeChainDataLength());
-  for (auto range : *outputBuffer) {
-    output.append(reinterpret_cast<const char*>(range.data()), range.size());
-  }
-  return output;
+  return outputBuffer->to<std::string>();
 }
 
 std::string Codec::doUncompressString(
-    const StringPiece data,
-    Optional<uint64_t> uncompressedLength) {
+    const StringPiece data, Optional<uint64_t> uncompressedLength) {
   const IOBuf inputBuffer{IOBuf::WRAP_BUFFER, data};
   auto outputBuffer = doUncompress(&inputBuffer, uncompressedLength);
   std::string output;
@@ -196,8 +188,7 @@ uint64_t Codec::maxCompressedLength(uint64_t uncompressedLength) const {
 }
 
 Optional<uint64_t> Codec::getUncompressedLength(
-    const folly::IOBuf* data,
-    Optional<uint64_t> uncompressedLength) const {
+    const folly::IOBuf* data, Optional<uint64_t> uncompressedLength) const {
   auto const compressedLength = data->computeChainDataLength();
   if (compressedLength == 0) {
     if (uncompressedLength.value_or(0) != 0) {
@@ -209,15 +200,13 @@ Optional<uint64_t> Codec::getUncompressedLength(
 }
 
 Optional<uint64_t> Codec::getUncompressedLength(
-    StringPiece data,
-    Optional<uint64_t> uncompressedLength) const {
+    StringPiece data, Optional<uint64_t> uncompressedLength) const {
   auto buf = IOBuf::wrapBufferAsValue(data.data(), data.size());
   return getUncompressedLength(&buf, uncompressedLength);
 }
 
 Optional<uint64_t> Codec::doGetUncompressedLength(
-    const folly::IOBuf*,
-    Optional<uint64_t> uncompressedLength) const {
+    const folly::IOBuf*, Optional<uint64_t> uncompressedLength) const {
   return uncompressedLength;
 }
 
@@ -244,9 +233,7 @@ void StreamCodec::resetStream(Optional<uint64_t> uncompressedLength) {
 }
 
 bool StreamCodec::compressStream(
-    ByteRange& input,
-    MutableByteRange& output,
-    StreamCodec::FlushOp flushOp) {
+    ByteRange& input, MutableByteRange& output, StreamCodec::FlushOp flushOp) {
   if (state_ == State::RESET && input.empty() &&
       flushOp == StreamCodec::FlushOp::END &&
       uncompressedLength().value_or(0) != 0) {
@@ -308,9 +295,7 @@ bool StreamCodec::compressStream(
 }
 
 bool StreamCodec::uncompressStream(
-    ByteRange& input,
-    MutableByteRange& output,
-    StreamCodec::FlushOp flushOp) {
+    ByteRange& input, MutableByteRange& output, StreamCodec::FlushOp flushOp) {
   if (state_ == State::RESET && input.empty()) {
     return uncompressedLength().value_or(0) == 0;
   }
@@ -339,8 +324,7 @@ bool StreamCodec::uncompressStream(
 }
 
 static std::unique_ptr<IOBuf> addOutputBuffer(
-    MutableByteRange& output,
-    uint64_t size) {
+    MutableByteRange& output, uint64_t size) {
   DCHECK(output.empty());
   auto buffer = IOBuf::create(size);
   buffer->append(buffer->capacity());
@@ -391,16 +375,14 @@ std::unique_ptr<IOBuf> StreamCodec::doCompress(IOBuf const* data) {
 }
 
 static uint64_t computeBufferLength(
-    uint64_t const compressedLength,
-    uint64_t const blockSize) {
+    uint64_t const compressedLength, uint64_t const blockSize) {
   uint64_t constexpr kMaxBufferLength = uint64_t(4) << 20; // 4 MiB
   uint64_t const goodBufferSize = 4 * std::max(blockSize, compressedLength);
   return std::min(goodBufferSize, kMaxBufferLength);
 }
 
 std::unique_ptr<IOBuf> StreamCodec::doUncompress(
-    IOBuf const* data,
-    Optional<uint64_t> uncompressedLength) {
+    IOBuf const* data, Optional<uint64_t> uncompressedLength) {
   auto constexpr kMaxSingleStepLength = uint64_t(64) << 20; // 64 MB
   auto constexpr kBlockSize = uint64_t(128) << 10;
   auto const defaultBufferLength =
@@ -462,8 +444,7 @@ class NoCompressionCodec final : public Codec {
   uint64_t doMaxCompressedLength(uint64_t uncompressedLength) const override;
   std::unique_ptr<IOBuf> doCompress(const IOBuf* data) override;
   std::unique_ptr<IOBuf> doUncompress(
-      const IOBuf* data,
-      Optional<uint64_t> uncompressedLength) override;
+      const IOBuf* data, Optional<uint64_t> uncompressedLength) override;
 };
 
 std::unique_ptr<Codec> NoCompressionCodec::create(int level, CodecType type) {
@@ -495,8 +476,7 @@ std::unique_ptr<IOBuf> NoCompressionCodec::doCompress(const IOBuf* data) {
 }
 
 std::unique_ptr<IOBuf> NoCompressionCodec::doUncompress(
-    const IOBuf* data,
-    Optional<uint64_t> uncompressedLength) {
+    const IOBuf* data, Optional<uint64_t> uncompressedLength) {
   if (uncompressedLength &&
       data->computeChainDataLength() != *uncompressedLength) {
     throw std::runtime_error(
@@ -560,14 +540,11 @@ class LZ4Codec final : public Codec {
   uint64_t doMaxUncompressedLength() const override;
   uint64_t doMaxCompressedLength(uint64_t uncompressedLength) const override;
 
-  bool encodeSize() const {
-    return type() == CodecType::LZ4_VARINT_SIZE;
-  }
+  bool encodeSize() const { return type() == CodecType::LZ4_VARINT_SIZE; }
 
   std::unique_ptr<IOBuf> doCompress(const IOBuf* data) override;
   std::unique_ptr<IOBuf> doUncompress(
-      const IOBuf* data,
-      Optional<uint64_t> uncompressedLength) override;
+      const IOBuf* data, Optional<uint64_t> uncompressedLength) override;
 
 #ifdef FOLLY_USE_LZ4_FAST_RESET
   std::unique_ptr<
@@ -682,8 +659,7 @@ std::unique_ptr<IOBuf> LZ4Codec::doCompress(const IOBuf* data) {
 }
 
 std::unique_ptr<IOBuf> LZ4Codec::doUncompress(
-    const IOBuf* data,
-    Optional<uint64_t> uncompressedLength) {
+    const IOBuf* data, Optional<uint64_t> uncompressedLength) {
   IOBuf clone;
   if (data->isChained()) {
     // LZ4 doesn't support streaming, so we have to coalesce
@@ -730,16 +706,15 @@ class LZ4FrameCodec final : public Codec {
   ~LZ4FrameCodec() override;
 
   std::vector<std::string> validPrefixes() const override;
-  bool canUncompress(const IOBuf* data, Optional<uint64_t> uncompressedLength)
-      const override;
+  bool canUncompress(
+      const IOBuf* data, Optional<uint64_t> uncompressedLength) const override;
 
  private:
   uint64_t doMaxCompressedLength(uint64_t uncompressedLength) const override;
 
   std::unique_ptr<IOBuf> doCompress(const IOBuf* data) override;
   std::unique_ptr<IOBuf> doUncompress(
-      const IOBuf* data,
-      Optional<uint64_t> uncompressedLength) override;
+      const IOBuf* data, Optional<uint64_t> uncompressedLength) override;
 
   // Reset the dctx_ if it is dirty or null.
   void resetDCtx();
@@ -753,8 +728,7 @@ class LZ4FrameCodec final : public Codec {
 };
 
 /* static */ std::unique_ptr<Codec> LZ4FrameCodec::create(
-    int level,
-    CodecType type) {
+    int level, CodecType type) {
   return std::make_unique<LZ4FrameCodec>(level, type);
 }
 
@@ -867,8 +841,7 @@ std::unique_ptr<IOBuf> LZ4FrameCodec::doCompress(const IOBuf* data) {
 }
 
 std::unique_ptr<IOBuf> LZ4FrameCodec::doUncompress(
-    const IOBuf* data,
-    Optional<uint64_t> uncompressedLength) {
+    const IOBuf* data, Optional<uint64_t> uncompressedLength) {
   // Reset the dctx if any errors have occurred
   resetDCtx();
   // Coalesce the data
@@ -880,7 +853,7 @@ std::unique_ptr<IOBuf> LZ4FrameCodec::doUncompress(
   }
   data = nullptr;
   // Select decompression options
-  LZ4F_decompressOptions_t options;
+  LZ4F_decompressOptions_t options{};
   options.stableDst = 1;
   // Select blockSize and growthSize for the IOBufQueue
   IOBufQueue queue(IOBufQueue::cacheChainLength());
@@ -981,8 +954,10 @@ class SnappyCodec final : public Codec {
   uint64_t doMaxCompressedLength(uint64_t uncompressedLength) const override;
   std::unique_ptr<IOBuf> doCompress(const IOBuf* data) override;
   std::unique_ptr<IOBuf> doUncompress(
-      const IOBuf* data,
-      Optional<uint64_t> uncompressedLength) override;
+      const IOBuf* data, Optional<uint64_t> uncompressedLength) override;
+  folly::Optional<uint64_t> doGetUncompressedLength(
+      const folly::IOBuf* data,
+      folly::Optional<uint64_t> uncompressedLength) const override;
 };
 
 std::unique_ptr<Codec> SnappyCodec::create(int level, CodecType type) {
@@ -1027,8 +1002,7 @@ std::unique_ptr<IOBuf> SnappyCodec::doCompress(const IOBuf* data) {
 }
 
 std::unique_ptr<IOBuf> SnappyCodec::doUncompress(
-    const IOBuf* data,
-    Optional<uint64_t> uncompressedLength) {
+    const IOBuf* data, Optional<uint64_t> uncompressedLength) {
   uint32_t actualUncompressedLength = 0;
 
   {
@@ -1055,6 +1029,21 @@ std::unique_ptr<IOBuf> SnappyCodec::doUncompress(
   return out;
 }
 
+folly::Optional<uint64_t> SnappyCodec::doGetUncompressedLength(
+    const folly::IOBuf* data,
+    folly::Optional<uint64_t> uncompressedLength) const {
+  uint32_t actualUncompressedLength = 0;
+  IOBufSnappySource source(data);
+  if (!snappy::GetUncompressedLength(&source, &actualUncompressedLength)) {
+    throw std::runtime_error("snappy::GetUncompressedLength failed");
+  }
+  if (uncompressedLength && *uncompressedLength != actualUncompressedLength) {
+    throw std::runtime_error("snappy: invalid uncompressed length");
+  }
+
+  return actualUncompressedLength;
+}
+
 #endif // FOLLY_HAVE_LIBSNAPPY
 
 #if FOLLY_HAVE_LIBLZMA
@@ -1070,17 +1059,15 @@ class LZMA2StreamCodec final : public StreamCodec {
   ~LZMA2StreamCodec() override;
 
   std::vector<std::string> validPrefixes() const override;
-  bool canUncompress(const IOBuf* data, Optional<uint64_t> uncompressedLength)
-      const override;
+  bool canUncompress(
+      const IOBuf* data, Optional<uint64_t> uncompressedLength) const override;
 
  private:
   bool doNeedsDataLength() const override;
   uint64_t doMaxUncompressedLength() const override;
   uint64_t doMaxCompressedLength(uint64_t uncompressedLength) const override;
 
-  bool encodeSize() const {
-    return type() == CodecType::LZMA2_VARINT_SIZE;
-  }
+  bool encodeSize() const { return type() == CodecType::LZMA2_VARINT_SIZE; }
 
   void doResetStream() override;
   bool doCompressStream(
@@ -1125,8 +1112,8 @@ bool LZMA2StreamCodec::doNeedsDataLength() const {
   return encodeSize();
 }
 
-bool LZMA2StreamCodec::canUncompress(const IOBuf* data, Optional<uint64_t>)
-    const {
+bool LZMA2StreamCodec::canUncompress(
+    const IOBuf* data, Optional<uint64_t>) const {
   if (type() == CodecType::LZMA2_VARINT_SIZE) {
     return false;
   }
@@ -1136,15 +1123,13 @@ bool LZMA2StreamCodec::canUncompress(const IOBuf* data, Optional<uint64_t>)
 }
 
 std::unique_ptr<Codec> LZMA2StreamCodec::createCodec(
-    int level,
-    CodecType type) {
-  return make_unique<LZMA2StreamCodec>(level, type);
+    int level, CodecType type) {
+  return std::make_unique<LZMA2StreamCodec>(level, type);
 }
 
 std::unique_ptr<StreamCodec> LZMA2StreamCodec::createStream(
-    int level,
-    CodecType type) {
-  return make_unique<LZMA2StreamCodec>(level, type);
+    int level, CodecType type) {
+  return std::make_unique<LZMA2StreamCodec>(level, type);
 }
 
 LZMA2StreamCodec::LZMA2StreamCodec(int level, CodecType type)
@@ -1271,9 +1256,7 @@ bool LZMA2StreamCodec::flushVarintBuffer(MutableByteRange& output) {
 }
 
 bool LZMA2StreamCodec::doCompressStream(
-    ByteRange& input,
-    MutableByteRange& output,
-    StreamCodec::FlushOp flushOp) {
+    ByteRange& input, MutableByteRange& output, StreamCodec::FlushOp flushOp) {
   if (needReset_) {
     resetCStream();
     if (encodeSize()) {
@@ -1354,9 +1337,7 @@ bool LZMA2StreamCodec::decodeAndCheckVarint(ByteRange& input) {
 }
 
 bool LZMA2StreamCodec::doUncompressStream(
-    ByteRange& input,
-    MutableByteRange& output,
-    StreamCodec::FlushOp flushOp) {
+    ByteRange& input, MutableByteRange& output, StreamCodec::FlushOp flushOp) {
   if (needReset_) {
     resetDStream();
     needReset_ = false;
@@ -1468,8 +1449,8 @@ class Bzip2StreamCodec final : public StreamCodec {
   ~Bzip2StreamCodec() override;
 
   std::vector<std::string> validPrefixes() const override;
-  bool canUncompress(IOBuf const* data, Optional<uint64_t> uncompressedLength)
-      const override;
+  bool canUncompress(
+      IOBuf const* data, Optional<uint64_t> uncompressedLength) const override;
 
  private:
   uint64_t doMaxCompressedLength(uint64_t uncompressedLength) const override;
@@ -1495,14 +1476,12 @@ class Bzip2StreamCodec final : public StreamCodec {
 };
 
 /* static */ std::unique_ptr<Codec> Bzip2StreamCodec::createCodec(
-    int level,
-    CodecType type) {
+    int level, CodecType type) {
   return createStream(level, type);
 }
 
 /* static */ std::unique_ptr<StreamCodec> Bzip2StreamCodec::createStream(
-    int level,
-    CodecType type) {
+    int level, CodecType type) {
   return std::make_unique<Bzip2StreamCodec>(level, type);
 }
 
@@ -1534,8 +1513,8 @@ std::vector<std::string> Bzip2StreamCodec::validPrefixes() const {
   return {prefixToStringLE(kBzip2MagicLE, kBzip2MagicBytes)};
 }
 
-bool Bzip2StreamCodec::canUncompress(IOBuf const* data, Optional<uint64_t>)
-    const {
+bool Bzip2StreamCodec::canUncompress(
+    IOBuf const* data, Optional<uint64_t>) const {
   return dataStartsWithLE(data, kBzip2MagicLE, kBzip2MagicBytes);
 }
 
@@ -1613,9 +1592,7 @@ int bzip2TranslateFlush(StreamCodec::FlushOp flushOp) {
 }
 
 bool Bzip2StreamCodec::doCompressStream(
-    ByteRange& input,
-    MutableByteRange& output,
-    StreamCodec::FlushOp flushOp) {
+    ByteRange& input, MutableByteRange& output, StreamCodec::FlushOp flushOp) {
   if (needReset_) {
     resetCStream();
     needReset_ = false;
@@ -1662,9 +1639,7 @@ void Bzip2StreamCodec::resetDStream() {
 }
 
 bool Bzip2StreamCodec::doUncompressStream(
-    ByteRange& input,
-    MutableByteRange& output,
-    StreamCodec::FlushOp flushOp) {
+    ByteRange& input, MutableByteRange& output, StreamCodec::FlushOp flushOp) {
   if (flushOp == StreamCodec::FlushOp::FLUSH) {
     throw std::invalid_argument(
         "Bzip2StreamCodec: FlushOp::FLUSH not supported");
@@ -1720,8 +1695,8 @@ class AutomaticCodec final : public Codec {
       std::unique_ptr<Codec> terminalCodec);
 
   std::vector<std::string> validPrefixes() const override;
-  bool canUncompress(const IOBuf* data, Optional<uint64_t> uncompressedLength)
-      const override;
+  bool canUncompress(
+      const IOBuf* data, Optional<uint64_t> uncompressedLength) const override;
 
  private:
   bool doNeedsUncompressedLength() const override;
@@ -1735,8 +1710,7 @@ class AutomaticCodec final : public Codec {
     throw std::runtime_error("AutomaticCodec error: compress() not supported.");
   }
   std::unique_ptr<IOBuf> doUncompress(
-      const IOBuf* data,
-      Optional<uint64_t> uncompressedLength) override;
+      const IOBuf* data, Optional<uint64_t> uncompressedLength) override;
 
   void addCodecIfSupported(CodecType type);
 
@@ -1759,8 +1733,7 @@ std::vector<std::string> AutomaticCodec::validPrefixes() const {
 }
 
 bool AutomaticCodec::canUncompress(
-    const IOBuf* data,
-    Optional<uint64_t> uncompressedLength) const {
+    const IOBuf* data, Optional<uint64_t> uncompressedLength) const {
   return std::any_of(
       codecs_.begin(),
       codecs_.end(),
@@ -1900,8 +1873,7 @@ uint64_t AutomaticCodec::doMaxUncompressedLength() const {
 }
 
 std::unique_ptr<IOBuf> AutomaticCodec::doUncompress(
-    const IOBuf* data,
-    Optional<uint64_t> uncompressedLength) {
+    const IOBuf* data, Optional<uint64_t> uncompressedLength) {
   try {
     for (auto&& codec : codecs_) {
       if (codec->canUncompress(data, uncompressedLength)) {

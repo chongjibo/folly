@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
+#include <iostream>
+
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 #include <folly/portability/Stdlib.h>
-#include <iostream>
 
 DEFINE_string(
     category,
@@ -115,6 +116,12 @@ int runHelper() {
 std::string fbLogFatalCheck() {
   folly::Logger logger("some.category");
   FB_LOG(logger, FATAL) << "we always crash";
+  // This function mostly exists to make sure the compiler does not warn
+  // about a missing return statement here.
+}
+
+std::string xcheckFatalCheck() {
+  XCHECK(false);
   // This function mostly exists to make sure the compiler does not warn
   // about a missing return statement here.
 }

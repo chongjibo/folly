@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
 
 #pragma once
 
-#include <list>
-#include <set>
+#include <memory>
 
+#include <folly/Optional.h>
 #include <folly/ThreadLocal.h>
 #include <folly/io/async/EventBase.h>
 
@@ -35,14 +35,18 @@ namespace folly {
  */
 class EventBaseManager {
  public:
-  // XXX Constructing a EventBaseManager directly is DEPRECATED and not
-  // encouraged. You should instead use the global singleton if possible.
-  EventBaseManager() {}
+  /**
+   * Constructing a EventBaseManager directly is DEPRECATED and not
+   * encouraged. You should instead use the global singleton if possible.
+   */
+  EventBaseManager() = default;
 
-  explicit EventBaseManager(folly::EventBaseBackendBase::FactoryFunc func)
-      : func_(func) {}
+  explicit EventBaseManager(
+      folly::EventBase::Options options,
+      std::shared_ptr<EventBaseObserver> observer = nullptr)
+      : options_(std::move(options)), observer_(std::move(observer)) {}
 
-  ~EventBaseManager() {}
+  ~EventBaseManager() = default;
 
   explicit EventBaseManager(const std::shared_ptr<EventBaseObserver>& observer)
       : observer_(observer) {}
@@ -68,11 +72,10 @@ class EventBaseManager {
    * Returns nullptr if no EventBase has been created for this thread yet.
    */
   EventBase* getExistingEventBase() const {
-    EventBaseInfo* info = localStore_.get();
-    if (info == nullptr) {
-      return nullptr;
+    if (const auto& info = *localStore_.get()) {
+      return info->eventBase;
     }
-    return info->eventBase;
+    return nullptr;
   }
 
   /**
@@ -97,62 +100,26 @@ class EventBaseManager {
    */
   void clearEventBase();
 
-  /**
-   * Gives the caller all references to all assigned EventBase instances at
-   * this moment in time.  Locks a mutex so that these EventBase set cannot
-   * be changed, and also the caller can rely on no instances being destructed.
-   */
-  template <typename FunctionType>
-  void withEventBaseSet(const FunctionType& runnable) {
-    // grab the mutex for the caller
-    std::lock_guard<std::mutex> g(*&eventBaseSetMutex_);
-    // give them only a const set to work with
-    const std::set<EventBase*>& constSet = eventBaseSet_;
-    runnable(constSet);
-  }
-
  private:
   struct EventBaseInfo {
-    EventBaseInfo(EventBase* evb, bool owned) : eventBase(evb), owned_(owned) {}
-    explicit EventBaseInfo(std::unique_ptr<EventBaseBackendBase>&& evb)
-        : eventBase(new EventBase(std::move(evb))), owned_(true) {}
-    EventBaseInfo() : eventBase(new EventBase), owned_(true) {}
+    EventBaseInfo(EventBase* evb, bool owned)
+        : eventBase(evb), isOwned(owned) {}
 
-    EventBase* eventBase;
-    bool owned_;
     ~EventBaseInfo() {
-      if (owned_) {
+      if (isOwned) {
         delete eventBase;
       }
     }
+
+    EventBase* eventBase;
+    bool isOwned;
   };
 
-  // Forbidden copy constructor and assignment opererator
-  EventBaseManager(EventBaseManager const&);
-  EventBaseManager& operator=(EventBaseManager const&);
+  EventBaseManager(EventBaseManager const&) = delete;
+  EventBaseManager& operator=(EventBaseManager const&) = delete;
 
-  void trackEventBase(EventBase* evb) {
-    std::lock_guard<std::mutex> g(*&eventBaseSetMutex_);
-    eventBaseSet_.insert(evb);
-  }
-
-  void untrackEventBase(EventBase* evb) {
-    std::lock_guard<std::mutex> g(*&eventBaseSetMutex_);
-    eventBaseSet_.erase(evb);
-  }
-
-  folly::EventBaseBackendBase::FactoryFunc func_;
-
-  mutable folly::ThreadLocalPtr<EventBaseInfo> localStore_;
-
-  // set of "active" EventBase instances
-  // (also see the mutex "eventBaseSetMutex_" below
-  // which governs access to this).
-  mutable std::set<EventBase*> eventBaseSet_;
-
-  // a mutex to use as a guard for the above set
-  std::mutex eventBaseSetMutex_;
-
+  folly::EventBase::Options options_;
+  mutable folly::ThreadLocal<folly::Optional<EventBaseInfo>> localStore_;
   std::shared_ptr<folly::EventBaseObserver> observer_;
 };
 

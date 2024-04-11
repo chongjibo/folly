@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/Conv.h>
+
 #include <array>
 
 namespace folly {
@@ -237,7 +238,7 @@ constexpr const std::array<
 
 // Check if ASCII is really ASCII
 using IsAscii =
-    bool_constant<'A' == 65 && 'Z' == 90 && 'a' == 97 && 'z' == 122>;
+    std::bool_constant<'A' == 65 && 'Z' == 90 && 'a' == 97 && 'z' == 122>;
 
 // The code in this file that uses tolower() really only cares about
 // 7-bit ASCII characters, so we can take a nice shortcut here.
@@ -270,7 +271,7 @@ Expected<bool, ConversionCode> str_to_bool(StringPiece* src) noexcept {
     if (b >= e) {
       return makeUnexpected(ConversionCode::EMPTY_INPUT_STRING);
     }
-    if (!std::isspace(*b)) {
+    if ((*b < '\t' || *b > '\r') && *b != ' ') {
       break;
     }
   }
@@ -348,7 +349,7 @@ Expected<Tgt, ConversionCode> str_to_floating(StringPiece* src) noexcept {
           StringToDoubleConverter::ALLOW_LEADING_SPACES,
       0.0,
       // return this for junk input string
-      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<Tgt>::quiet_NaN(),
       nullptr,
       nullptr);
 
@@ -356,11 +357,11 @@ Expected<Tgt, ConversionCode> str_to_floating(StringPiece* src) noexcept {
     return makeUnexpected(ConversionCode::EMPTY_INPUT_STRING);
   }
 
-  int length;
-  auto result = conv.StringToDouble(
-      src->data(),
-      static_cast<int>(src->size()),
-      &length); // processed char count
+  int length; // processed char count
+  auto result = std::is_same<Tgt, float>::value
+      ? conv.StringToFloat(src->data(), static_cast<int>(src->size()), &length)
+      : static_cast<Tgt>(conv.StringToDouble(
+            src->data(), static_cast<int>(src->size()), &length));
 
   if (!std::isnan(result)) {
     // If we get here with length = 0, the input string is empty.
@@ -395,11 +396,12 @@ Expected<Tgt, ConversionCode> str_to_floating(StringPiece* src) noexcept {
   }
 
   auto* e = src->end();
-  auto* b =
-      std::find_if_not(src->begin(), e, [](char c) { return std::isspace(c); });
-
-  // There must be non-whitespace, otherwise we would have caught this above
-  assert(b < e);
+  auto* b = std::find_if_not(src->begin(), e, [](char c) {
+    return (c >= '\t' && c <= '\r') || c == ' ';
+  });
+  if (b == e) {
+    return makeUnexpected(ConversionCode::EMPTY_INPUT_STRING);
+  }
   auto size = size_t(e - b);
 
   bool negative = false;
@@ -407,7 +409,11 @@ Expected<Tgt, ConversionCode> str_to_floating(StringPiece* src) noexcept {
     negative = true;
     ++b;
     --size;
+    if (size == 0) {
+      return makeUnexpected(ConversionCode::STRING_TO_FLOAT_ERROR);
+    }
   }
+  assert(size > 0);
 
   result = 0.0;
 
@@ -457,11 +463,13 @@ template Expected<float, ConversionCode> str_to_floating<float>(
 template Expected<double, ConversionCode> str_to_floating<double>(
     StringPiece* src) noexcept;
 
+namespace {
+
 /**
  * This class takes care of additional processing needed for signed values,
  * like leading sign character and overflow checks.
  */
-template <typename T, bool IsSigned = std::is_signed<T>::value>
+template <typename T, bool IsSigned = is_signed_v<T>>
 class SignedValueHandler;
 
 template <typename T>
@@ -472,7 +480,7 @@ class SignedValueHandler<T, true> {
     if (!std::isdigit(*b)) {
       if (*b == '-') {
         negative_ = true;
-      } else if (UNLIKELY(*b != '+')) {
+      } else if (FOLLY_UNLIKELY(*b != '+')) {
         return ConversionCode::INVALID_LEADING_CHAR;
       }
       ++b;
@@ -497,12 +505,12 @@ class SignedValueHandler<T, true> {
 
       FOLLY_POP_WARNING
 
-      if (UNLIKELY(rv > 0)) {
+      if (FOLLY_UNLIKELY(rv > 0)) {
         return makeUnexpected(ConversionCode::NEGATIVE_OVERFLOW);
       }
     } else {
       rv = T(value);
-      if (UNLIKELY(rv < 0)) {
+      if (FOLLY_UNLIKELY(rv < 0)) {
         return makeUnexpected(ConversionCode::POSITIVE_OVERFLOW);
       }
     }
@@ -517,18 +525,14 @@ class SignedValueHandler<T, true> {
 template <typename T>
 class SignedValueHandler<T, false> {
  public:
-  ConversionCode init(const char*&) {
-    return ConversionCode::SUCCESS;
-  }
+  ConversionCode init(const char*&) { return ConversionCode::SUCCESS; }
 
-  ConversionCode overflow() {
-    return ConversionCode::POSITIVE_OVERFLOW;
-  }
+  ConversionCode overflow() { return ConversionCode::POSITIVE_OVERFLOW; }
 
-  Expected<T, ConversionCode> finalize(T value) {
-    return value;
-  }
+  Expected<T, ConversionCode> finalize(T value) { return value; }
 };
+
+} // namespace
 
 /**
  * String represented as a pair of pointers to char to signed/unsigned
@@ -539,15 +543,14 @@ class SignedValueHandler<T, false> {
  */
 template <class Tgt>
 inline Expected<Tgt, ConversionCode> digits_to(
-    const char* b,
-    const char* const e) noexcept {
-  using UT = typename std::make_unsigned<Tgt>::type;
+    const char* b, const char* const e) noexcept {
+  using UT = make_unsigned_t<Tgt>;
   assert(b <= e);
 
   SignedValueHandler<Tgt> sgn;
 
   auto err = sgn.init(b);
-  if (UNLIKELY(err != ConversionCode::SUCCESS)) {
+  if (FOLLY_UNLIKELY(err != ConversionCode::SUCCESS)) {
     return makeUnexpected(err);
   }
 
@@ -639,46 +642,35 @@ outOfRange:
 }
 
 template Expected<char, ConversionCode> digits_to<char>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 template Expected<signed char, ConversionCode> digits_to<signed char>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 template Expected<unsigned char, ConversionCode> digits_to<unsigned char>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 
 template Expected<short, ConversionCode> digits_to<short>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 template Expected<unsigned short, ConversionCode> digits_to<unsigned short>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 
 template Expected<int, ConversionCode> digits_to<int>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 template Expected<unsigned int, ConversionCode> digits_to<unsigned int>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 
 template Expected<long, ConversionCode> digits_to<long>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 template Expected<unsigned long, ConversionCode> digits_to<unsigned long>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 
 template Expected<long long, ConversionCode> digits_to<long long>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 template Expected<unsigned long long, ConversionCode>
 digits_to<unsigned long long>(const char*, const char*) noexcept;
 
 #if FOLLY_HAVE_INT128_T
 template Expected<__int128, ConversionCode> digits_to<__int128>(
-    const char*,
-    const char*) noexcept;
+    const char*, const char*) noexcept;
 template Expected<unsigned __int128, ConversionCode>
 digits_to<unsigned __int128>(const char*, const char*) noexcept;
 #endif
@@ -689,15 +681,15 @@ digits_to<unsigned __int128>(const char*, const char*) noexcept;
  */
 template <class Tgt>
 Expected<Tgt, ConversionCode> str_to_integral(StringPiece* src) noexcept {
-  using UT = typename std::make_unsigned<Tgt>::type;
+  using UT = make_unsigned_t<Tgt>;
 
   auto b = src->data(), past = src->data() + src->size();
 
   for (;; ++b) {
-    if (UNLIKELY(b >= past)) {
+    if (FOLLY_UNLIKELY(b >= past)) {
       return makeUnexpected(ConversionCode::EMPTY_INPUT_STRING);
     }
-    if (!std::isspace(*b)) {
+    if ((*b < '\t' || *b > '\r') && *b != ' ') {
       break;
     }
   }
@@ -705,13 +697,13 @@ Expected<Tgt, ConversionCode> str_to_integral(StringPiece* src) noexcept {
   SignedValueHandler<Tgt> sgn;
   auto err = sgn.init(b);
 
-  if (UNLIKELY(err != ConversionCode::SUCCESS)) {
+  if (FOLLY_UNLIKELY(err != ConversionCode::SUCCESS)) {
     return makeUnexpected(err);
   }
-  if (std::is_signed<Tgt>::value && UNLIKELY(b >= past)) {
+  if (is_signed_v<Tgt> && FOLLY_UNLIKELY(b >= past)) {
     return makeUnexpected(ConversionCode::NO_DIGITS);
   }
-  if (UNLIKELY(!isdigit(*b))) {
+  if (FOLLY_UNLIKELY(!isdigit(*b))) {
     return makeUnexpected(ConversionCode::NON_DIGIT_CHAR);
   }
 
@@ -719,7 +711,7 @@ Expected<Tgt, ConversionCode> str_to_integral(StringPiece* src) noexcept {
 
   auto tmp = digits_to<UT>(b, m);
 
-  if (UNLIKELY(!tmp.hasValue())) {
+  if (FOLLY_UNLIKELY(!tmp.hasValue())) {
     return makeUnexpected(
         tmp.error() == ConversionCode::POSITIVE_OVERFLOW ? sgn.overflow()
                                                          : tmp.error());

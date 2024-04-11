@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,12 +27,14 @@
 #include <folly/SingletonThreadLocal.h>
 #include <folly/String.h>
 #include <folly/Synchronized.h>
+#include <folly/experimental/TestUtil.h>
 #include <folly/experimental/io/FsUtil.h>
+#include <folly/lang/Keep.h>
 #include <folly/portability/GTest.h>
 
 using namespace folly;
 
-extern "C" int* check() {
+extern "C" FOLLY_KEEP int* check() {
   return &SingletonThreadLocal<int>::get();
 }
 
@@ -40,15 +42,20 @@ namespace {
 static std::atomic<std::size_t> fooCreatedCount{0};
 static std::atomic<std::size_t> fooDeletedCount{0};
 struct Foo {
-  Foo() {
-    ++fooCreatedCount;
-  }
-  ~Foo() {
-    ++fooDeletedCount;
-  }
+  Foo() { ++fooCreatedCount; }
+  ~Foo() { ++fooDeletedCount; }
 };
 using FooSingletonTL = SingletonThreadLocal<Foo>;
 } // namespace
+
+TEST(SingletonThreadLocalTest, TryGet) {
+  struct Foo {};
+  using FooTL = SingletonThreadLocal<Foo>;
+  EXPECT_EQ(nullptr, FooTL::try_get());
+  FooTL::get();
+  EXPECT_NE(nullptr, FooTL::try_get());
+  EXPECT_EQ(&FooTL::get(), FooTL::try_get());
+}
 
 TEST(SingletonThreadLocalTest, OneSingletonPerThread) {
   static constexpr std::size_t targetThreadCount{64};
@@ -76,29 +83,13 @@ TEST(SingletonThreadLocalTest, OneSingletonPerThread) {
   EXPECT_EQ(threads.size(), fooDeletedCount);
 }
 
-TEST(SingletonThreadLocalTest, DefaultMakeMoveConstructible) {
-  struct Foo {
-    int a = 4;
-    Foo() = default;
-    Foo(Foo&&) = default;
-    Foo& operator=(Foo&&) = default;
-  };
-  using Real = detail::DefaultMake<Foo>::type;
-  EXPECT_TRUE((std::is_same<Real, Foo>::value));
-  struct Tag {};
-  auto& single = SingletonThreadLocal<Foo, Tag>::get();
-  EXPECT_EQ(4, single.a);
-}
-
-TEST(SingletonThreadLocalTest, DefaultMakeNotMoveConstructible) {
+TEST(SingletonThreadLocalTest, DefaultMake) {
   struct Foo {
     int a = 4;
     Foo() = default;
     Foo(Foo&&) = delete;
     Foo& operator=(Foo&&) = delete;
   };
-  using Real = detail::DefaultMake<Foo>::type;
-  EXPECT_TRUE(((__cplusplus >= 201703ULL) == std::is_same<Real, Foo>::value));
   struct Tag {};
   auto& single = SingletonThreadLocal<Foo, Tag>::get();
   EXPECT_EQ(4, single.a);
@@ -113,9 +104,7 @@ TEST(SingletonThreadLocalTest, SameTypeMake) {
   };
   struct Tag {};
   struct Make {
-    Foo operator()() const {
-      return Foo(3, 4);
-    }
+    Foo operator()() const { return Foo(3, 4); }
   };
   auto& single = SingletonThreadLocal<Foo, Tag, Make>::get();
   EXPECT_EQ(4, single.b);
@@ -146,9 +135,7 @@ TEST(SingletonThreadLocalTest, AccessAfterFastPathDestruction) {
     int i = 3;
   };
   struct Bar {
-    ~Bar() {
-      counter += SingletonThreadLocal<Foo>::get().i;
-    }
+    ~Bar() { counter += SingletonThreadLocal<Foo>::get().i; }
   };
   auto th = std::thread([] {
     SingletonThreadLocal<Bar>::get();
@@ -178,8 +165,7 @@ TEST(ThreadLocal, DependencyTest) {
     data.reset(new int(0));
     SingletonInt::get();
     BarSingleton::get();
-  })
-      .join();
+  }).join();
 }
 
 TEST(SingletonThreadLocalTest, Reused) {
@@ -230,12 +216,13 @@ TEST(SingletonThreadLocalTest, AccessAllThreads) {
 
 #ifndef _WIN32
 TEST(SingletonThreadLocalDeathTest, Overload) {
-  auto exe = fs::executable_path();
-  auto lib = exe.parent_path() / "singleton_thread_local_overload.so";
+  auto const lib = folly::test::find_resource(
+      "folly/test/singleton_thread_local_overload.so");
+
   auto message = stripLeftMargin(R"MESSAGE(
     Overloaded unique instance over <int, DeathTag, ...> with differing trailing arguments:
-      folly::SingletonThreadLocal<int, DeathTag, Make1, DeathTag>
-      folly::SingletonThreadLocal<int, DeathTag, Make2, DeathTag>
+      folly::SingletonThreadLocal<int, DeathTag, folly::detail::DefaultMake<int>, TLTag1>
+      folly::SingletonThreadLocal<int, DeathTag, folly::detail::DefaultMake<int>, TLTag2>
   )MESSAGE");
   EXPECT_DEATH(dlopen(lib.string().c_str(), RTLD_LAZY), message);
 }

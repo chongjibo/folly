@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,27 +15,22 @@
  */
 
 #include <folly/python/fibers.h>
-#include <folly/fibers/CallOnce.h>
+
+#include <stdexcept>
+
 #include <folly/python/fiber_manager_api.h>
+#include <folly/python/import.h>
 
 namespace folly {
 namespace python {
 
+FOLLY_CONSTINIT static import_cache import_folly__fiber_manager_{
+    import_folly__fiber_manager, "import_folly__fiber_manager"};
+
 folly::fibers::FiberManager* getFiberManager(
     const folly::fibers::FiberManager::Options& opts) {
-  static folly::fibers::once_flag flag;
-  // Use call_once because Python performance is really poor,
-  // just to check if a module was already imported
-  folly::call_once(flag, [&]() {
-    // Use main context, because import can load arbitrary number of files,
-    // which is incompatible with fiber stack size restrictions
-    folly::fibers::runInMainContext([&]() {
-      import_folly__fiber_manager();
-      if (PyErr_Occurred() != nullptr) {
-        throw std::logic_error("Fail to import cython fiber_manager");
-      }
-    });
-  });
+  DCHECK(!folly::fibers::onFiber());
+  import_folly__fiber_manager_();
   return get_fiber_manager(opts);
 }
 

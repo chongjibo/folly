@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,16 +54,12 @@ class ImmediateFileWriter : public LogWriter {
   /**
    * Returns true if the output steam is a tty.
    */
-  bool ttyOutput() const override {
-    return isatty(file_.fd());
-  }
+  bool ttyOutput() const override { return isatty(file_.fd()); }
 
   /**
    * Get the output file.
    */
-  const folly::File& getFile() const {
-    return file_;
-  }
+  const folly::File& getFile() const { return file_; }
 
  private:
   ImmediateFileWriter(ImmediateFileWriter const&) = delete;

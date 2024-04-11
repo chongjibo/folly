@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
  */
 
 #include <folly/experimental/TimerFD.h>
-#ifdef FOLLY_HAVE_TIMERFD
+
 #include <folly/FileUtil.h>
+
+#ifdef FOLLY_HAVE_TIMERFD
 #include <sys/timerfd.h>
 #endif
 
@@ -28,6 +30,7 @@ TimerFD::TimerFD(folly::EventBase* eventBase)
 
 TimerFD::TimerFD(folly::EventBase* eventBase, int fd)
     : folly::EventHandler(eventBase, NetworkSocket::fromFd(fd)), fd_(fd) {
+  setEventCallback(this);
   if (fd_ > 0) {
     registerHandler(folly::EventHandler::READ | folly::EventHandler::PERSIST);
   }
@@ -88,6 +91,18 @@ void TimerFD::handlerReady(uint16_t events) noexcept {
   }
 }
 
+void TimerFD::eventReadCallback(IoVec* ioVec, int res) {
+  // reset it
+  ioVec->timerData_ = 0;
+  // save it for future use
+  ioVecPtr_.reset(ioVec);
+
+  if (res == sizeof(ioVec->timerData_)) {
+    DestructorGuard dg(this);
+    onTimeout();
+  }
+}
+
 int TimerFD::createTimerFd() {
   return ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 }
@@ -107,8 +122,7 @@ void TimerFD::cancel() {
 }
 
 TimerFD::TimerFDAsyncTimeout::TimerFDAsyncTimeout(
-    folly::EventBase* eventBase,
-    TimerFD* timerFd)
+    folly::EventBase* eventBase, TimerFD* timerFd)
     : folly::AsyncTimeout(eventBase), timerFd_(timerFd) {}
 
 void TimerFD::TimerFDAsyncTimeout::timeoutExpired() noexcept {

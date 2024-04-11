@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,7 @@
 
 namespace folly {
 
-FOLLY_STATIC_CTOR_PRIORITY_MAX folly::Indestructible<rcu_domain<RcuTag>*>
-    rcu_default_domain_(
-        &folly::detail::createGlobal<rcu_domain<RcuTag>, RcuTag>());
+FOLLY_STATIC_CTOR_PRIORITY_MAX folly::Indestructible<rcu_domain*>
+    rcu_default_domain_(&folly::detail::createGlobal<rcu_domain, void>());
 
 } // namespace folly

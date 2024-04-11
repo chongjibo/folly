@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -153,9 +153,7 @@ class PolicySemaphore {
     }
   }
 
-  void wait() {
-    wait(EmptyCallable{}, EmptyCallable{});
-  }
+  void wait() { wait(EmptyCallable{}, EmptyCallable{}); }
 
   template <typename PrePost>
   void post(PrePost pre_post) {
@@ -220,9 +218,7 @@ class PolicySemaphore {
   std::false_type is_empty_callable(Callable const&) {
     return {};
   }
-  std::true_type is_empty_callable(EmptyCallable const&) {
-    return {};
-  }
+  std::true_type is_empty_callable(EmptyCallable const&) { return {}; }
 
   Waiter& pull() {
     switch (WakePolicy) {

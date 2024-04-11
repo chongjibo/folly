@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,25 +16,31 @@
 
 #pragma once
 
+#include <folly/BenchmarkUtil.h>
 #include <folly/Portability.h>
 #include <folly/Preprocessor.h> // for FB_ANONYMOUS_VARIABLE
 #include <folly/Range.h>
 #include <folly/ScopeGuard.h>
 #include <folly/Traits.h>
 #include <folly/functional/Invoke.h>
+#include <folly/lang/Hint.h>
 #include <folly/portability/GFlags.h>
 
 #include <cassert>
 #include <chrono>
 #include <functional>
+#include <iosfwd>
 #include <limits>
+#include <mutex>
+#include <set>
 #include <type_traits>
 #include <unordered_map>
 
 #include <boost/function_types/function_arity.hpp>
 #include <glog/logging.h>
 
-DECLARE_bool(benchmark);
+FOLLY_GFLAGS_DECLARE_bool(benchmark);
+FOLLY_GFLAGS_DECLARE_uint32(bm_result_width_chars);
 
 namespace folly {
 
@@ -64,6 +70,13 @@ class UserMetric {
   UserMetric() = default;
   /* implicit */ UserMetric(int64_t val, Type typ = Type::CUSTOM)
       : value(val), type(typ) {}
+
+  friend bool operator==(const UserMetric& x, const UserMetric& y) {
+    return x.value == y.value && x.type == y.type;
+  }
+  friend bool operator!=(const UserMetric& x, const UserMetric& y) {
+    return !(x == y);
+  }
 };
 
 using UserCounters = std::unordered_map<std::string, UserMetric>;
@@ -89,31 +102,33 @@ struct BenchmarkResult {
   std::string name;
   double timeInNs;
   UserCounters counters;
+
+  friend std::ostream& operator<<(std::ostream&, const BenchmarkResult&);
+
+  friend bool operator==(const BenchmarkResult&, const BenchmarkResult&);
+  friend bool operator!=(const BenchmarkResult& x, const BenchmarkResult& y) {
+    return !(x == y);
+  }
 };
 
-/**
- * Adds a benchmark wrapped in a std::function. Only used
- * internally. Pass by value is intentional.
- */
-void addBenchmarkImpl(
-    const char* file,
-    StringPiece name,
-    BenchmarkFun,
-    bool useCounter);
+struct BenchmarkSuspenderBase {
+  /**
+   * Accumulates time spent outside benchmark.
+   */
+  static std::chrono::high_resolution_clock::duration timeSpent;
+};
 
-} // namespace detail
+template <typename Clock>
+struct BenchmarkSuspender : BenchmarkSuspenderBase {
+  using TimePoint = std::chrono::high_resolution_clock::time_point;
+  using Duration = std::chrono::high_resolution_clock::duration;
 
-/**
- * Supporting type for BENCHMARK_SUSPEND defined below.
- */
-struct BenchmarkSuspender {
-  using Clock = std::chrono::high_resolution_clock;
-  using TimePoint = Clock::time_point;
-  using Duration = Clock::duration;
+  struct DismissedTag {};
+  static inline constexpr DismissedTag Dismissed{};
 
-  BenchmarkSuspender() {
-    start = Clock::now();
-  }
+  BenchmarkSuspender() : start(Clock::now()) {}
+
+  explicit BenchmarkSuspender(DismissedTag) : start(TimePoint{}) {}
 
   BenchmarkSuspender(const BenchmarkSuspender&) = delete;
   BenchmarkSuspender(BenchmarkSuspender&& rhs) noexcept {
@@ -150,9 +165,7 @@ struct BenchmarkSuspender {
 
   template <class F>
   auto dismissing(F f) -> invoke_result_t<F> {
-    SCOPE_EXIT {
-      rehire();
-    };
+    SCOPE_EXIT { rehire(); };
     dismiss();
     return f();
   }
@@ -161,14 +174,7 @@ struct BenchmarkSuspender {
    * This is for use inside of if-conditions, used in BENCHMARK macros.
    * If-conditions bypass the explicit on operator bool.
    */
-  explicit operator bool() const {
-    return false;
-  }
-
-  /**
-   * Accumulates time spent outside benchmark.
-   */
-  static Duration timeSpent;
+  explicit operator bool() const { return false; }
 
  private:
   void tally() {
@@ -180,187 +186,165 @@ struct BenchmarkSuspender {
   TimePoint start;
 };
 
-/**
- * Adds a benchmark. Usually not called directly but instead through
- * the macro BENCHMARK defined below. The lambda function involved
- * must take exactly one parameter of type unsigned, and the benchmark
- * uses it with counter semantics (iteration occurs inside the
- * function).
- */
-template <typename Lambda>
-typename std::enable_if<folly::is_invocable_v<Lambda, unsigned>>::type
-addBenchmark(const char* file, StringPiece name, Lambda&& lambda) {
-  auto execute = [=](unsigned int times) {
-    BenchmarkSuspender::timeSpent = {};
-    unsigned int niter;
+class PerfScoped;
 
-    // CORE MEASUREMENT STARTS
-    auto start = std::chrono::high_resolution_clock::now();
-    niter = lambda(times);
-    auto end = std::chrono::high_resolution_clock::now();
-    // CORE MEASUREMENT ENDS
-    return detail::TimeIterData{
-        (end - start) - BenchmarkSuspender::timeSpent, niter, UserCounters{}};
-  };
+class BenchmarkingStateBase {
+ public:
+  template <typename Printer>
+  std::pair<std::set<std::string>, std::vector<BenchmarkResult>>
+  runBenchmarksWithPrinter(Printer* printer) const;
 
-  detail::addBenchmarkImpl(file, name, detail::BenchmarkFun(execute), false);
-}
+  std::vector<BenchmarkResult> runBenchmarksWithResults() const;
 
-/**
- * Adds a benchmark. Usually not called directly but instead through
- * the macro BENCHMARK defined below. The lambda function involved
- * must take zero parameters, and the benchmark calls it repeatedly
- * (iteration occurs outside the function).
- */
-template <typename Lambda>
-typename std::enable_if<folly::is_invocable_v<Lambda>>::type
-addBenchmark(const char* file, StringPiece name, Lambda&& lambda) {
-  addBenchmark(file, name, [=](unsigned int times) {
-    unsigned int niter = 0;
-    while (times-- > 0) {
-      niter += lambda();
-    }
-    return niter;
-  });
-}
+  static folly::StringPiece getGlobalBaselineNameForTests();
 
-/**
- * similar as previous two template specialization, but lambda will also take
- * customized counters in the following two cases
- */
-template <typename Lambda>
-typename std::enable_if<
-    folly::is_invocable_v<Lambda, UserCounters&, unsigned>>::type
-addBenchmark(const char* file, StringPiece name, Lambda&& lambda) {
-  auto execute = [=](unsigned int times) {
-    BenchmarkSuspender::timeSpent = {};
-    unsigned int niter;
+  bool useCounters() const;
 
-    // CORE MEASUREMENT STARTS
-    auto start = std::chrono::high_resolution_clock::now();
-    UserCounters counters;
-    niter = lambda(counters, times);
-    auto end = std::chrono::high_resolution_clock::now();
-    // CORE MEASUREMENT ENDS
-    return detail::TimeIterData{
-        (end - start) - BenchmarkSuspender::timeSpent, niter, counters};
-  };
+  void addBenchmarkImpl(
+      const char* file, StringPiece name, BenchmarkFun, bool useCounter);
 
-  detail::addBenchmarkImpl(
-      file,
-      name,
-      std::function<detail::TimeIterData(unsigned int)>(execute),
-      true);
-}
+ protected:
+  // There is no need for this virtual but we overcome a check
+  virtual ~BenchmarkingStateBase() = default;
 
-template <typename Lambda>
-typename std::enable_if<folly::is_invocable_v<Lambda, UserCounters&>>::type
-addBenchmark(const char* file, StringPiece name, Lambda&& lambda) {
-  addBenchmark(file, name, [=](UserCounters& counters, unsigned int times) {
-    unsigned int niter = 0;
-    while (times-- > 0) {
-      niter += lambda(counters);
-    }
-    return niter;
-  });
-}
+  PerfScoped setUpPerfScoped() const;
 
-/**
- * Call doNotOptimizeAway(var) to ensure that var will be computed even
- * post-optimization.  Use it for variables that are computed during
- * benchmarking but otherwise are useless. The compiler tends to do a
- * good job at eliminating unused variables, and this function fools it
- * into thinking var is in fact needed.
- *
- * Call makeUnpredictable(var) when you don't want the optimizer to use
- * its knowledge of var to shape the following code.  This is useful
- * when constant propagation or power reduction is possible during your
- * benchmark but not in real use cases.
- */
+  // virtual for purely testing purposes.
+  virtual PerfScoped doSetUpPerfScoped(
+      const std::vector<std::string>& args) const;
 
-#if defined(_MSC_VER) && !defined(__clang__)
-
-#pragma optimize("", off)
-
-inline void doNotOptimizeDependencySink(const void*) {}
-
-#pragma optimize("", on)
-
-template <class T>
-void doNotOptimizeAway(const T& datum) {
-  doNotOptimizeDependencySink(&datum);
-}
-
-template <typename T>
-void makeUnpredictable(T& datum) {
-  doNotOptimizeDependencySink(&datum);
-}
-
-#else
-
-namespace detail {
-template <typename T>
-struct DoNotOptimizeAwayNeedsIndirect {
-  using Decayed = typename std::decay<T>::type;
-
-  // First two constraints ensure it can be an "r" operand.
-  // std::is_pointer check is because callers seem to expect that
-  // doNotOptimizeAway(&x) is equivalent to doNotOptimizeAway(x).
-  constexpr static bool value = !folly::is_trivially_copyable<Decayed>::value ||
-      sizeof(Decayed) > sizeof(long) || std::is_pointer<Decayed>::value;
+  mutable std::mutex mutex_;
+  std::vector<BenchmarkRegistration> benchmarks_;
 };
+
+template <typename Clock>
+class BenchmarkingState : public BenchmarkingStateBase {
+ public:
+  template <typename Lambda>
+  typename std::enable_if<folly::is_invocable_v<Lambda, unsigned>>::type
+  addBenchmark(const char* file, StringPiece name, Lambda&& lambda) {
+    auto execute = [=](unsigned int times) {
+      BenchmarkSuspender<Clock>::timeSpent = {};
+      unsigned int niter;
+
+      // CORE MEASUREMENT STARTS
+      auto start = Clock::now();
+      niter = lambda(times);
+      auto end = Clock::now();
+      // CORE MEASUREMENT ENDS
+      return detail::TimeIterData{
+          (end - start) - BenchmarkSuspender<Clock>::timeSpent,
+          niter,
+          UserCounters{}};
+    };
+
+    this->addBenchmarkImpl(file, name, detail::BenchmarkFun(execute), false);
+  }
+
+  template <typename Lambda>
+  typename std::enable_if<folly::is_invocable_v<Lambda>>::type addBenchmark(
+      const char* file, StringPiece name, Lambda&& lambda) {
+    addBenchmark(file, name, [=](unsigned int times) {
+      unsigned int niter = 0;
+      while (times-- > 0) {
+        niter += lambda();
+      }
+      return niter;
+    });
+  }
+
+  template <typename Lambda>
+  typename std::enable_if<
+      folly::is_invocable_v<Lambda, UserCounters&, unsigned>>::type
+  addBenchmark(const char* file, StringPiece name, Lambda&& lambda) {
+    auto execute = [=](unsigned int times) {
+      BenchmarkSuspender<Clock>::timeSpent = {};
+      unsigned int niter;
+
+      // CORE MEASUREMENT STARTS
+      auto start = std::chrono::high_resolution_clock::now();
+      UserCounters counters;
+      niter = lambda(counters, times);
+      auto end = std::chrono::high_resolution_clock::now();
+      // CORE MEASUREMENT ENDS
+      return detail::TimeIterData{
+          (end - start) - BenchmarkSuspender<Clock>::timeSpent,
+          niter,
+          counters};
+    };
+
+    this->addBenchmarkImpl(
+        file,
+        name,
+        std::function<detail::TimeIterData(unsigned int)>(execute),
+        true);
+  }
+
+  template <typename Lambda>
+  typename std::enable_if<folly::is_invocable_v<Lambda, UserCounters&>>::type
+  addBenchmark(const char* file, StringPiece name, Lambda&& lambda) {
+    addBenchmark(file, name, [=](UserCounters& counters, unsigned int times) {
+      unsigned int niter = 0;
+      while (times-- > 0) {
+        niter += lambda(counters);
+      }
+      return niter;
+    });
+  }
+};
+
+BenchmarkingState<std::chrono::high_resolution_clock>& globalBenchmarkState();
+
+/**
+ * Runs all benchmarks defined in the program, doesn't print by default.
+ * Usually used when customized printing of results is desired.
+ */
+std::vector<BenchmarkResult> runBenchmarksWithResults();
+
+/**
+ * Adds a benchmark wrapped in a std::function.
+ * Was designed to only be used internally but, unfortunately,
+ * is not.
+ */
+inline void addBenchmarkImpl(
+    const char* file, StringPiece name, BenchmarkFun f, bool useCounter) {
+  globalBenchmarkState().addBenchmarkImpl(file, name, std::move(f), useCounter);
+}
+
 } // namespace detail
 
-template <typename T>
-auto doNotOptimizeAway(const T& datum) -> typename std::enable_if<
-    !detail::DoNotOptimizeAwayNeedsIndirect<T>::value>::type {
-  // The "r" constraint forces the compiler to make datum available
-  // in a register to the asm block, which means that it must have
-  // computed/loaded it.  We use this path for things that are <=
-  // sizeof(long) (they have to fit), trivial (otherwise the compiler
-  // doesn't want to put them in a register), and not a pointer (because
-  // doNotOptimizeAway(&foo) would otherwise be a foot gun that didn't
-  // necessarily compute foo).
-  //
-  // An earlier version of this method had a more permissive input operand
-  // constraint, but that caused unnecessary variation between clang and
-  // gcc benchmarks.
-  asm volatile("" ::"r"(datum));
-}
+/**
+ * Supporting type for BENCHMARK_SUSPEND defined below.
+ */
+struct BenchmarkSuspender
+    : detail::BenchmarkSuspender<std::chrono::high_resolution_clock> {
+  using Impl = detail::BenchmarkSuspender<std::chrono::high_resolution_clock>;
+  using Impl::Impl;
+};
 
-template <typename T>
-auto doNotOptimizeAway(const T& datum) -> typename std::enable_if<
-    detail::DoNotOptimizeAwayNeedsIndirect<T>::value>::type {
-  // This version of doNotOptimizeAway tells the compiler that the asm
-  // block will read datum from memory, and that in addition it might read
-  // or write from any memory location.  If the memory clobber could be
-  // separated into input and output that would be preferrable.
-  asm volatile("" ::"m"(datum) : "memory");
+/**
+ * Adds a benchmark. Usually not called directly but instead through
+ * the macro BENCHMARK defined below.
+ * The lambda function involved can have one of the following forms:
+ *  * take zero parameters, and the benchmark calls it repeatedly
+ *  * take exactly one parameter of type unsigned, and the benchmark
+ *    uses it with counter semantics (iteration occurs inside the
+ *    function).
+ *  * 2 versions of the above cases but also accept UserCounters& as
+ *    as their first parameter.
+ */
+template <typename Lambda>
+void addBenchmark(const char* file, StringPiece name, Lambda&& lambda) {
+  detail::globalBenchmarkState().addBenchmark(file, name, lambda);
 }
-
-template <typename T>
-auto makeUnpredictable(T& datum) -> typename std::enable_if<
-    !detail::DoNotOptimizeAwayNeedsIndirect<T>::value>::type {
-  asm volatile("" : "+r"(datum));
-}
-
-template <typename T>
-auto makeUnpredictable(T& datum) -> typename std::enable_if<
-    detail::DoNotOptimizeAwayNeedsIndirect<T>::value>::type {
-  asm volatile("" ::"m"(datum) : "memory");
-}
-
-#endif
 
 struct dynamic;
 
 void benchmarkResultsToDynamic(
-    const std::vector<detail::BenchmarkResult>& data,
-    dynamic&);
+    const std::vector<detail::BenchmarkResult>& data, dynamic&);
 
 void benchmarkResultsFromDynamic(
-    const dynamic&,
-    std::vector<detail::BenchmarkResult>&);
+    const dynamic&, std::vector<detail::BenchmarkResult>&);
 
 void printResultComparison(
     const std::vector<detail::BenchmarkResult>& base,
@@ -373,34 +357,34 @@ void printResultComparison(
  * friends below.
  */
 
-#define BENCHMARK_IMPL(funName, stringName, rv, paramType, paramName)          \
-  static void funName(paramType);                                              \
-  FOLLY_MAYBE_UNUSED static bool FB_ANONYMOUS_VARIABLE(follyBenchmarkUnused) = \
-      (::folly::addBenchmark(                                                  \
-           __FILE__,                                                           \
-           stringName,                                                         \
-           [](paramType paramName) -> unsigned {                               \
-             funName(paramName);                                               \
-             return rv;                                                        \
-           }),                                                                 \
-       true);                                                                  \
+#define BENCHMARK_IMPL(funName, stringName, rv, paramType, paramName)        \
+  static void funName(paramType);                                            \
+  [[maybe_unused]] static bool FB_ANONYMOUS_VARIABLE(follyBenchmarkUnused) = \
+      (::folly::addBenchmark(                                                \
+           __FILE__,                                                         \
+           stringName,                                                       \
+           [](paramType paramName) -> unsigned {                             \
+             funName(paramName);                                             \
+             return rv;                                                      \
+           }),                                                               \
+       true);                                                                \
   static void funName(paramType paramName)
 
-#define BENCHMARK_IMPL_COUNTERS(                                               \
-    funName, stringName, counters, rv, paramType, paramName)                   \
-  static void funName(                                                         \
-      ::folly::UserCounters& FOLLY_PP_DETAIL_APPEND_VA_ARG(paramType));        \
-  FOLLY_MAYBE_UNUSED static bool FB_ANONYMOUS_VARIABLE(follyBenchmarkUnused) = \
-      (::folly::addBenchmark(                                                  \
-           __FILE__,                                                           \
-           stringName,                                                         \
-           [](::folly::UserCounters& counters FOLLY_PP_DETAIL_APPEND_VA_ARG(   \
-               paramType paramName)) -> unsigned {                             \
-             funName(counters FOLLY_PP_DETAIL_APPEND_VA_ARG(paramName));       \
-             return rv;                                                        \
-           }),                                                                 \
-       true);                                                                  \
-  static void funName(::folly::UserCounters& counters                          \
+#define BENCHMARK_IMPL_COUNTERS(                                             \
+    funName, stringName, counters, rv, paramType, paramName)                 \
+  static void funName(                                                       \
+      ::folly::UserCounters& FOLLY_PP_DETAIL_APPEND_VA_ARG(paramType));      \
+  [[maybe_unused]] static bool FB_ANONYMOUS_VARIABLE(follyBenchmarkUnused) = \
+      (::folly::addBenchmark(                                                \
+           __FILE__,                                                         \
+           stringName,                                                       \
+           [](::folly::UserCounters& counters FOLLY_PP_DETAIL_APPEND_VA_ARG( \
+               paramType paramName)) -> unsigned {                           \
+             funName(counters FOLLY_PP_DETAIL_APPEND_VA_ARG(paramName));     \
+             return rv;                                                      \
+           }),                                                               \
+       true);                                                                \
+  static void funName([[maybe_unused]] ::folly::UserCounters& counters       \
                           FOLLY_PP_DETAIL_APPEND_VA_ARG(paramType paramName))
 
 /**
@@ -408,14 +392,14 @@ void printResultComparison(
  * number of iterations. Used internally, see BENCHMARK_MULTI and friends
  * below.
  */
-#define BENCHMARK_MULTI_IMPL(funName, stringName, paramType, paramName)        \
-  static unsigned funName(paramType);                                          \
-  FOLLY_MAYBE_UNUSED static bool FB_ANONYMOUS_VARIABLE(follyBenchmarkUnused) = \
-      (::folly::addBenchmark(                                                  \
-           __FILE__,                                                           \
-           stringName,                                                         \
-           [](paramType paramName) { return funName(paramName); }),            \
-       true);                                                                  \
+#define BENCHMARK_MULTI_IMPL(funName, stringName, paramType, paramName)      \
+  static unsigned funName(paramType);                                        \
+  [[maybe_unused]] static bool FB_ANONYMOUS_VARIABLE(follyBenchmarkUnused) = \
+      (::folly::addBenchmark(                                                \
+           __FILE__,                                                         \
+           stringName,                                                       \
+           [](paramType paramName) { return funName(paramName); }),          \
+       true);                                                                \
   static unsigned funName(paramType paramName)
 
 /**
@@ -432,7 +416,7 @@ void printResultComparison(
  *
  * BENCHMARK(insertVectorBegin, iters) {
  *   vector<int> v;
- *   FOR_EACH_RANGE (i, 0, iters) {
+ *   for (unsigned int i = 0; i < iters; ++i) {
  *     v.insert(v.begin(), 42);
  *   }
  * }
@@ -449,9 +433,9 @@ void printResultComparison(
  * Allow users to record customized counter during benchmarking,
  * there will be one extra column showing in the output result for each counter
  *
- * BENCHMARK_COUNTERS(insertVectorBegin, couters, iters) {
+ * BENCHMARK_COUNTERS(insertVectorBegin, counters, iters) {
  *   vector<int> v;
- *   FOR_EACH_RANGE (i, 0, iters) {
+ *   for (unsigned int i = 0; i < iters; ++i) {
  *     v.insert(v.begin(), 42);
  *   }
  *   BENCHMARK_SUSPEND {
@@ -499,7 +483,7 @@ void printResultComparison(
  *   BENCHMARK_SUSPEND {
  *     v.resize(initialSize);
  *   }
- *   FOR_EACH_RANGE (i, 0, n) {
+ *   for (uint32_t i = 0; i < n; ++i) {
  *    v.push_back(i);
  *   }
  * }
@@ -532,7 +516,7 @@ void printResultComparison(
  * void addValue(uint32_t n, int64_t bucketSize, int64_t min, int64_t max) {
  *   Histogram<int64_t> hist(bucketSize, min, max);
  *   int64_t num = min;
- *   FOR_EACH_RANGE (i, 0, n) {
+ *   for (uint32_t i = 0; i < n; ++i) {
  *     hist.addValue(num);
  *     ++num;
  *     if (num > max) { num = min; }
@@ -574,14 +558,14 @@ void printResultComparison(
  * // This is the baseline
  * BENCHMARK(insertVectorBegin, n) {
  *   vector<int> v;
- *   FOR_EACH_RANGE (i, 0, n) {
+ *   for (unsigned int i = 0; i < n; ++i) {
  *     v.insert(v.begin(), 42);
  *   }
  * }
  *
  * BENCHMARK_RELATIVE(insertListBegin, n) {
  *   list<int> s;
- *   FOR_EACH_RANGE (i, 0, n) {
+ *   for (unsigned int i = 0; i < n; ++i) {
  *     s.insert(s.begin(), 42);
  *   }
  * }
@@ -659,9 +643,9 @@ void printResultComparison(
 /**
  * Draws a line of dashes.
  */
-#define BENCHMARK_DRAW_LINE()                                                  \
-  FOLLY_MAYBE_UNUSED static bool FB_ANONYMOUS_VARIABLE(follyBenchmarkUnused) = \
-      (::folly::addBenchmark(__FILE__, "-", []() -> unsigned { return 0; }),   \
+#define BENCHMARK_DRAW_LINE()                                                \
+  [[maybe_unused]] static bool FB_ANONYMOUS_VARIABLE(follyBenchmarkUnused) = \
+      (::folly::addBenchmark(__FILE__, "-", []() -> unsigned { return 0; }), \
        true)
 
 /**
@@ -673,7 +657,7 @@ void printResultComparison(
  *   BENCHMARK_SUSPEND {
  *     v.reserve(n);
  *   }
- *   FOR_EACH_RANGE (i, 0, n) {
+ *   for (unsigned int i = 0; i < n; ++i) {
  *     v.insert(v.begin(), 42);
  *   }
  * }

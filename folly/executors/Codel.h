@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,6 @@
 
 #include <atomic>
 #include <chrono>
-
-#include <folly/portability/GFlags.h>
-
-DECLARE_int32(codel_interval);
-DECLARE_int32(codel_target_delay);
 
 namespace folly {
 
@@ -58,18 +53,14 @@ class Codel {
  public:
   class Options {
    public:
-    std::chrono::milliseconds interval() const {
-      return interval_;
-    }
+    std::chrono::milliseconds interval() const { return interval_; }
 
     Options& setInterval(std::chrono::milliseconds value) {
       interval_ = value;
       return *this;
     }
 
-    std::chrono::milliseconds targetDelay() const {
-      return targetDelay_;
-    }
+    std::chrono::milliseconds targetDelay() const { return targetDelay_; }
 
     Options& setTargetDelay(std::chrono::milliseconds value) {
       targetDelay_ = value;
@@ -92,7 +83,12 @@ class Codel {
   ///
   /// As you may guess, we observe the clock so this is time sensitive. Call
   /// it promptly after calculating queueing delay.
-  bool overloaded(std::chrono::nanoseconds delay);
+  bool overloaded(std::chrono::nanoseconds delay) {
+    return overloaded_explicit_now(delay, std::chrono::steady_clock::now());
+  }
+  bool overloaded_explicit_now(
+      std::chrono::nanoseconds delay,
+      std::chrono::steady_clock::time_point now);
 
   /// Get the queue load, as seen by the codel algorithm
   /// Gives a rough guess at how bad the queue delay is.
@@ -124,6 +120,7 @@ class Codel {
   const Options getOptions() const;
 
   std::chrono::nanoseconds getMinDelay();
+  std::chrono::steady_clock::time_point getIntervalTime();
 
   /// Returns the timeout condition for overload given a target delay period.
   std::chrono::milliseconds getSloughTimeout(

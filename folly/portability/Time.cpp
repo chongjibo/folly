@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 
 #include <folly/CPortability.h>
 #include <folly/Likely.h>
+#include <folly/Utility.h>
 
 #include <cassert>
 
@@ -25,8 +26,7 @@
 
 template <typename _Rep, typename _Period>
 static void duration_to_ts(
-    std::chrono::duration<_Rep, _Period> d,
-    struct timespec* ts) {
+    std::chrono::duration<_Rep, _Period> d, struct timespec* ts) {
   ts->tv_sec =
       time_t(std::chrono::duration_cast<std::chrono::seconds>(d).count());
   ts->tv_nsec = long(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -59,7 +59,7 @@ static int clock_process_cputime(struct timespec* ts) {
       TASK_THREAD_TIMES_INFO,
       (thread_info_t)&thread_times_info,
       &thread_times_info_count);
-  if (UNLIKELY(kern_result != KERN_SUCCESS)) {
+  if (FOLLY_UNLIKELY(kern_result != KERN_SUCCESS)) {
     return -1;
   }
 
@@ -71,7 +71,7 @@ static int clock_process_cputime(struct timespec* ts) {
       MACH_TASK_BASIC_INFO,
       (thread_info_t)&task_basic_info,
       &task_basic_info_count);
-  if (UNLIKELY(kern_result != KERN_SUCCESS)) {
+  if (FOLLY_UNLIKELY(kern_result != KERN_SUCCESS)) {
     return -1;
   }
 
@@ -90,7 +90,7 @@ static int clock_thread_cputime(struct timespec* ts) {
   kern_return_t kern_result = thread_info(
       thread, THREAD_BASIC_INFO, (thread_info_t)&thread_info_data, &count);
   mach_port_deallocate(mach_task_self(), thread);
-  if (UNLIKELY(kern_result != KERN_SUCCESS)) {
+  if (FOLLY_UNLIKELY(kern_result != KERN_SUCCESS)) {
     return -1;
   }
   auto cputime = time_value_to_ns(thread_info_data.system_time) +
@@ -100,7 +100,7 @@ static int clock_thread_cputime(struct timespec* ts) {
 }
 
 FOLLY_ATTR_WEAK int clock_gettime(clockid_t clk_id, struct timespec* ts) {
-  switch (clk_id) {
+  switch (folly::to_underlying(clk_id)) {
     case CLOCK_REALTIME: {
       auto now = std::chrono::system_clock::now().time_since_epoch();
       duration_to_ts(now, ts);

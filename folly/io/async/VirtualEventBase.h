@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ namespace folly {
  * VirtualEventBase implements a light-weight view onto existing EventBase.
  *
  * Multiple VirtualEventBases can be backed by a single EventBase. Similarly
- * to EventBase, VirtualEventBase implements loopKeepAlive() functionality,
+ * to EventBase, VirtualEventBase implements KeepAlive functionality,
  * which allows callbacks holding KeepAlive token to keep EventBase looping
  * until they are complete.
  *
@@ -49,9 +49,7 @@ class VirtualEventBase : public folly::TimeoutManager,
 
   ~VirtualEventBase() override;
 
-  EventBase& getEventBase() {
-    return *evb_;
-  }
+  EventBase& getEventBase() { return *evb_; }
 
   /**
    * Adds the given callback to a queue of things run before destruction
@@ -81,13 +79,10 @@ class VirtualEventBase : public folly::TimeoutManager,
                                 f = std::forward<F>(f)]() mutable { f(); });
   }
 
-  HHWheelTimer& timer() {
-    return evb_->timer();
-  }
+  HHWheelTimer& timer() { return evb_->timer(); }
 
   void attachTimeoutManager(
-      AsyncTimeout* obj,
-      TimeoutManager::InternalEnum internal) override {
+      AsyncTimeout* obj, TimeoutManager::InternalEnum internal) override {
     evb_->attachTimeoutManager(obj, internal);
   }
 
@@ -95,18 +90,14 @@ class VirtualEventBase : public folly::TimeoutManager,
     evb_->detachTimeoutManager(obj);
   }
 
-  bool scheduleTimeout(AsyncTimeout* obj, TimeoutManager::timeout_type timeout)
-      override {
+  bool scheduleTimeout(
+      AsyncTimeout* obj, TimeoutManager::timeout_type timeout) override {
     return evb_->scheduleTimeout(obj, timeout);
   }
 
-  void cancelTimeout(AsyncTimeout* obj) override {
-    evb_->cancelTimeout(obj);
-  }
+  void cancelTimeout(AsyncTimeout* obj) override { evb_->cancelTimeout(obj); }
 
-  void bumpHandlingTime() override {
-    evb_->bumpHandlingTime();
-  }
+  void bumpHandlingTime() override { evb_->bumpHandlingTime(); }
 
   bool isInTimeoutManagerThread() override {
     return evb_->isInTimeoutManagerThread();
@@ -115,64 +106,47 @@ class VirtualEventBase : public folly::TimeoutManager,
   /**
    * @see runInEventBaseThread
    */
-  void add(folly::Func f) override {
-    runInEventBaseThread(std::move(f));
-  }
+  void add(folly::Func f) override { runInEventBaseThread(std::move(f)); }
 
   bool inRunningEventBaseThread() const {
     return evb_->inRunningEventBaseThread();
   }
 
  protected:
-  bool keepAliveAcquire() override {
-    if (evb_->inRunningEventBaseThread()) {
-      DCHECK(loopKeepAliveCount_ + loopKeepAliveCountAtomic_.load() > 0);
-
-      ++loopKeepAliveCount_;
-    } else {
-      ++loopKeepAliveCountAtomic_;
-    }
+  bool keepAliveAcquire() noexcept override {
+    auto oldCount = keepAliveCount_.fetch_add(1, std::memory_order_relaxed);
+    DCHECK_NE(oldCount, 0);
     return true;
   }
 
-  void keepAliveReleaseEvb() {
-    if (loopKeepAliveCountAtomic_.load()) {
-      loopKeepAliveCount_ += loopKeepAliveCountAtomic_.exchange(0);
-    }
-    DCHECK(loopKeepAliveCount_ > 0);
-    if (--loopKeepAliveCount_ == 0) {
-      destroyImpl();
-    }
-  }
-
-  void keepAliveRelease() override {
-    if (!evb_->inRunningEventBaseThread()) {
-      evb_->add([=] { keepAliveReleaseEvb(); });
+  void keepAliveRelease() noexcept override {
+    auto oldCount = keepAliveCount_.fetch_sub(1, std::memory_order_acq_rel);
+    if (oldCount != 1) {
+      DCHECK_NE(oldCount, 0);
       return;
     }
-
-    keepAliveReleaseEvb();
+    if (!evb_->inRunningEventBaseThread()) {
+      evb_->runInEventBaseThreadAlwaysEnqueue([this] { destroyImpl(); });
+    } else {
+      destroyImpl();
+    }
   }
 
  private:
   friend class EventBase;
 
-  ssize_t keepAliveCount() {
-    if (loopKeepAliveCountAtomic_.load()) {
-      loopKeepAliveCount_ += loopKeepAliveCountAtomic_.exchange(0);
-    }
-    return loopKeepAliveCount_;
+  size_t keepAliveCount() {
+    return keepAliveCount_.load(std::memory_order_acquire);
   }
 
   std::future<void> destroy();
-  void destroyImpl();
+  void destroyImpl() noexcept;
 
   using LoopCallbackList = EventBase::LoopCallback::List;
 
   KeepAlive<EventBase> evb_;
 
-  ssize_t loopKeepAliveCount_{1};
-  std::atomic<ssize_t> loopKeepAliveCountAtomic_{0};
+  std::atomic<size_t> keepAliveCount_{1};
   std::promise<void> destroyPromise_;
   std::future<void> destroyFuture_{destroyPromise_.get_future()};
   KeepAlive<VirtualEventBase> loopKeepAlive_{

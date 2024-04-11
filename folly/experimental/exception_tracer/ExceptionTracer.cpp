@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,6 @@
 #include <exception>
 #include <iostream>
 
-#include <dlfcn.h>
-
 #include <glog/logging.h>
 
 #include <folly/CppAttributes.h>
@@ -30,6 +28,12 @@
 #include <folly/experimental/exception_tracer/ExceptionAbi.h>
 #include <folly/experimental/exception_tracer/StackTrace.h>
 #include <folly/experimental/symbolizer/Symbolizer.h>
+
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+
+#if defined(__GLIBCXX__)
+
+#include <dlfcn.h>
 
 namespace {
 
@@ -55,38 +59,38 @@ std::ostream& operator<<(std::ostream& out, const ExceptionInfo& info) {
 }
 
 void printExceptionInfo(
-    std::ostream& out,
-    const ExceptionInfo& info,
-    int options) {
+    std::ostream& out, const ExceptionInfo& info, int options) {
   out << "Exception type: ";
   if (info.type) {
     out << folly::demangle(*info.type);
   } else {
     out << "(unknown type)";
   }
-  out << " (" << info.frames.size()
-      << (info.frames.size() == 1 ? " frame" : " frames") << ")\n";
+  static constexpr size_t kInternalFramesNumber = 3;
+
+  // Skip our own internal frames.
+  size_t frameCount = info.frames.size();
+  if (frameCount <= kInternalFramesNumber) {
+    out << "\n";
+    return;
+  }
+  auto addresses = info.frames.data() + kInternalFramesNumber;
+  frameCount -= kInternalFramesNumber;
+
+  out << " (" << frameCount << (frameCount == 1 ? " frame" : " frames")
+      << ")\n";
   try {
-    size_t frameCount = info.frames.size();
+    std::vector<SymbolizedFrame> frames;
+    frames.resize(frameCount);
 
-    // Skip our own internal frames
-    static constexpr size_t kInternalFramesNumber = 3;
-    if (frameCount > kInternalFramesNumber) {
-      auto addresses = info.frames.data() + kInternalFramesNumber;
-      frameCount -= kInternalFramesNumber;
+    Symbolizer symbolizer(
+        (options & SymbolizePrinter::NO_FILE_AND_LINE)
+            ? LocationInfoMode::DISABLED
+            : Symbolizer::kDefaultLocationInfoMode);
+    symbolizer.symbolize(addresses, frames.data(), frameCount);
 
-      std::vector<SymbolizedFrame> frames;
-      frames.resize(frameCount);
-
-      Symbolizer symbolizer(
-          (options & SymbolizePrinter::NO_FILE_AND_LINE)
-              ? LocationInfoMode::DISABLED
-              : Symbolizer::kDefaultLocationInfoMode);
-      symbolizer.symbolize(addresses, frames.data(), frameCount);
-
-      OStreamSymbolizePrinter osp(out, options);
-      osp.println(frames.data(), frameCount);
-    }
+    OStreamSymbolizePrinter osp(out, options);
+    osp.println(frames.data(), frameCount);
   } catch (const std::exception& e) {
     out << "\n !! caught " << folly::exceptionStr(e) << "\n";
   } catch (...) {
@@ -110,12 +114,12 @@ namespace {
 struct ArmAbiTag {};
 struct AnyAbiTag {};
 
-FOLLY_MAYBE_UNUSED bool isAbiCppException(ArmAbiTag, const char (&klazz)[8]) {
+[[maybe_unused]] bool isAbiCppException(ArmAbiTag, const char (&klazz)[8]) {
   return klazz[4] == 'C' && klazz[5] == '+' && klazz[6] == '+' &&
       klazz[7] == '\0';
 }
 
-FOLLY_MAYBE_UNUSED bool isAbiCppException(AnyAbiTag, const uint64_t& klazz) {
+[[maybe_unused]] bool isAbiCppException(AnyAbiTag, const uint64_t& klazz) {
   // The least significant four bytes must be "C++\0"
   static const uint64_t cppClass =
       ((uint64_t)'C' << 24) | ((uint64_t)'+' << 16) | ((uint64_t)'+' << 8);
@@ -201,7 +205,6 @@ std::vector<ExceptionInfo> getCurrentExceptions() {
   return exceptions;
 }
 
-#if FOLLY_USE_LIBSTDCPP
 namespace {
 
 std::terminate_handler origTerminate = abort;
@@ -240,7 +243,10 @@ void installHandlers() {
   };
   static Once once;
 }
-#endif
 
 } // namespace exception_tracer
 } // namespace folly
+
+#endif // defined(__GLIBCXX__)
+
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF

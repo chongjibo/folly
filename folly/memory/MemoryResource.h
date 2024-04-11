@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 
 #pragma once
+
+#ifndef FOLLY_HAS_MEMORY_RESOURCE
 
 #if defined(__has_include) && __cplusplus >= 201703L
 
@@ -51,3 +53,5 @@ namespace std_pmr = ::std::experimental::pmr;
 #define FOLLY_HAS_MEMORY_RESOURCE 0
 
 #endif // __has_include
+
+#endif // FOLLY_HAS_MEMORY_RESOURCE

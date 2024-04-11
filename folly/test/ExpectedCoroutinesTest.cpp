@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,22 +41,12 @@ class Err {
   Err& operator=(Err const&) = default;
   Err& operator=(Err&&) = default;
 
-  friend bool operator==(Err a, Err b) {
-    return a.type_ == b.type_;
-  }
-  friend bool operator!=(Err a, Err b) {
-    return a.type_ != b.type_;
-  }
+  friend bool operator==(Err a, Err b) { return a.type_ == b.type_; }
+  friend bool operator!=(Err a, Err b) { return a.type_ != b.type_; }
 
-  static constexpr Err bad() {
-    return Type::Bad;
-  }
-  static constexpr Err badder() {
-    return Type::Badder;
-  }
-  static constexpr Err baddest() {
-    return Type::Baddest;
-  }
+  static constexpr Err bad() { return Type::Bad; }
+  static constexpr Err badder() { return Type::Badder; }
+  static constexpr Err baddest() { return Type::Baddest; }
 };
 
 Expected<int, Err> f1() {
@@ -94,7 +84,7 @@ TEST(Expected, CoroutineSuccess) {
     EXPECT_EQ(2.0 * 7, y);
     auto z = co_await f3(x, y);
     EXPECT_EQ(int(2.0 * 7 + 7), *z);
-    co_return* z;
+    co_return *z;
   }();
   EXPECT_TRUE(r0.hasValue());
   EXPECT_EQ(21, *r0);
@@ -114,6 +104,23 @@ TEST(Expected, CoroutineFailure) {
   EXPECT_NE(Err::baddest(), r1.error());
 }
 
+TEST(Expected, CoroutineAwaitUnexpected) {
+  auto r1 = []() -> Expected<int, Err> {
+    co_await makeUnexpected(Err::badder());
+    throw std::logic_error("should have been unreachable");
+  }();
+  EXPECT_TRUE(r1.hasError());
+  EXPECT_EQ(Err::badder(), r1.error());
+}
+
+TEST(Expected, CoroutineReturnUnexpected) {
+  auto r1 = []() -> Expected<int, Err> {
+    co_return makeUnexpected(Err::badder());
+  }();
+  EXPECT_TRUE(r1.hasError());
+  EXPECT_EQ(Err::badder(), r1.error());
+}
+
 TEST(Expected, CoroutineException) {
   EXPECT_THROW(
       ([]() -> Expected<int, Err> {
@@ -128,9 +135,7 @@ TEST(Expected, CoroutineException) {
 TEST(Expected, CoroutineCleanedUp) {
   int count_dest = 0;
   auto r = [&]() -> Expected<int, Err> {
-    SCOPE_EXIT {
-      ++count_dest;
-    };
+    SCOPE_EXIT { ++count_dest; };
     auto x = co_await Expected<int, Err>(makeUnexpected(Err::badder()));
     ADD_FAILURE() << "Should not be resuming";
     co_return x;

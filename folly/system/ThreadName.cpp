@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,14 @@
 #include <type_traits>
 
 #include <folly/Portability.h>
+#include <folly/ScopeGuard.h>
 #include <folly/Traits.h>
 #include <folly/portability/PThread.h>
 #include <folly/portability/Windows.h>
+
+#ifdef _WIN32
+#include <strsafe.h> // @manual
+#endif
 
 // Android only, prctl is only used when pthread_setname_np
 // and pthread_getname_np are not avilable.
@@ -38,12 +43,8 @@
 // This looks a bit weird, but it's necessary to avoid
 // having an undefined compiler function called.
 #if defined(__GLIBC__) && !defined(__APPLE__) && !defined(__ANDROID__)
-#if __GLIBC_PREREQ(2, 12)
 // has pthread_setname_np(pthread_t, const char*) (2 params)
 #define FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME 1
-#else
-#define FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME 0
-#endif
 // pthread_setname_np was introduced in Android NDK version 9
 #elif defined(__ANDROID__) && __ANDROID_API__ >= 9
 #define FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME 1
@@ -102,7 +103,7 @@ bool canSetCurrentThreadName() {
 }
 
 bool canSetOtherThreadName() {
-#if FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME || defined(_WIN32)
+#if (FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME) || defined(_WIN32)
   return true;
 #else
   return false;
@@ -111,16 +112,29 @@ bool canSetOtherThreadName() {
 
 static constexpr size_t kMaxThreadNameLength = 16;
 
-Optional<std::string> getThreadName(std::thread::id id) {
+static Optional<std::string> getPThreadName(pthread_t pid) {
 #if (                                           \
     FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME || \
     FOLLY_HAS_PTHREAD_SETNAME_NP_NAME) &&       \
     !defined(__ANDROID__)
   // Android NDK does not yet support pthread_getname_np.
   std::array<char, kMaxThreadNameLength> buf;
-  if (id != std::thread::id() &&
-      pthread_getname_np(stdTidToPthreadId(id), buf.data(), buf.size()) == 0) {
+  if (pthread_getname_np(pid, buf.data(), buf.size()) == 0) {
     return std::string(buf.data());
+  }
+#endif
+  (void)pid;
+  return none;
+}
+
+Optional<std::string> getThreadName(std::thread::id id) {
+#if (                                           \
+    FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME || \
+    FOLLY_HAS_PTHREAD_SETNAME_NP_NAME) &&       \
+    !defined(__ANDROID__)
+  // Android NDK does not yet support pthread_getname_np.
+  if (id != std::thread::id()) {
+    return getPThreadName(stdTidToPthreadId(id));
   }
 #elif FOLLY_DETAIL_HAS_PRCTL_PR_SET_NAME
   std::array<char, kMaxThreadNameLength> buf;
@@ -134,16 +148,77 @@ Optional<std::string> getThreadName(std::thread::id id) {
 } // namespace folly
 
 Optional<std::string> getCurrentThreadName() {
+#if FOLLY_HAVE_PTHREAD
+  return getPThreadName(pthread_self());
+#else
   return getThreadName(std::this_thread::get_id());
+#endif
 }
 
-bool setThreadName(std::thread::id tid, StringPiece name) {
+namespace {
 #ifdef _WIN32
-  static_assert(
-      sizeof(unsigned int) == sizeof(std::thread::id),
-      "This assumes std::thread::id is a thin wrapper around "
-      "the thread id as an unsigned int, but that doesn't appear to be true.");
 
+typedef HRESULT(__stdcall* SetThreadDescriptionFn)(HANDLE, PCWSTR);
+
+SetThreadDescriptionFn getSetThreadDescription() {
+  // GetModuleHandle does not increment the module's reference count,
+  // but kernelbase.dll won't be unloaded.
+  auto proc = GetProcAddress(
+      GetModuleHandleW(L"kernelbase.dll"), "SetThreadDescription");
+  return reinterpret_cast<SetThreadDescriptionFn>(proc);
+}
+
+bool setThreadNameWindowsViaDescription(DWORD id, StringPiece name) noexcept {
+  // This whole function is noexcept.
+
+  static const auto setThreadDescription = getSetThreadDescription();
+  if (!setThreadDescription) {
+    return false;
+  }
+
+  HANDLE thread = id == GetCurrentThreadId()
+      ? GetCurrentThread()
+      : OpenThread(THREAD_SET_LIMITED_INFORMATION, FALSE, id);
+  if (!thread) {
+    return false;
+  }
+
+  SCOPE_EXIT {
+    if (id != GetCurrentThreadId()) {
+      CloseHandle(thread);
+    }
+  };
+
+  // Limit thread name length so the UTF-16 output buffer can be fixed-length.
+  // Pthreads limits thread names to 15, but that's pretty tight in practice. 64
+  // should be plenty.
+  constexpr size_t kMaximumThreadNameLength = 64;
+  if (name.size() > kMaximumThreadNameLength) {
+    name = name.subpiece(0, kMaximumThreadNameLength);
+  }
+
+  // For valid UTF-8, code points in [0, 0xFFFF] fit in one UTF-16 code unit.
+  // Code points that require two UTF-16 code units are always encoded with four
+  // UTF-8 bytes. Therefore, the fixed output buffer can be the maximum name
+  // length in WCHARs, plus one for the terminating zero. That said, who knows
+  // what MultiByteToWideChar does with invalid UTF-8 or if it attempts to
+  // compose or decompose forms, so double-check the output anyway.
+  WCHAR wname[kMaximumThreadNameLength + 1];
+  int written = MultiByteToWideChar(
+      CP_UTF8, 0, name.data(), name.size(), wname, kMaximumThreadNameLength);
+  if (written <= 0 || static_cast<size_t>(written) >= std::size(wname)) {
+    // Conversion failed or somehow it didn't fit.
+    return false;
+  }
+  wname[written] = 0;
+
+  if (FAILED(setThreadDescription(thread, wname))) {
+    return false;
+  }
+
+  return true;
+}
+bool setThreadNameWindowsViaDebugger(DWORD id, StringPiece name) noexcept {
 // http://msdn.microsoft.com/en-us/library/xcb2z8hs.aspx
 #pragma pack(push, 8)
   struct THREADNAME_INFO {
@@ -160,50 +235,57 @@ bool setThreadName(std::thread::id tid, StringPiece name) {
 
   static constexpr DWORD kMSVCException = 0x406D1388;
 
-  // std::thread::id is a thin wrapper around an integral thread id,
-  // so just extract the ID.
-  unsigned int id;
+  char trimmed[kMaxThreadNameLength];
+  if (STRSAFE_E_INVALID_PARAMETER ==
+      StringCchCopyNA(trimmed, sizeof(trimmed), name.data(), name.size())) {
+    return false;
+  }
+  // Intentionally ignore STRSAFE_E_INSUFFICIENT_BUFFER: the buffer now contains
+  // a truncated, zero-terminated string, and that's desirable here.
+
+  TNIUnion tniUnion = {0x1000, trimmed, id, 0};
+
+  // SEH requires no use of C++ object destruction semantics in this stack
+  // frame.
+  __try {
+    RaiseException(kMSVCException, 0, 4, tniUnion.upArray);
+  } __except (
+      GetExceptionCode() == kMSVCException ? EXCEPTION_CONTINUE_EXECUTION
+                                           : EXCEPTION_EXECUTE_HANDLER) {
+    // Swallow the exception when a debugger isn't attached.
+  }
+  return true;
+}
+
+bool setThreadNameWindows(std::thread::id tid, StringPiece name) {
+  static_assert(
+      sizeof(DWORD) == sizeof(std::thread::id),
+      "This assumes std::thread::id is a thin wrapper around "
+      "the Win32 thread id, but that doesn't appear to be true.");
+
+  // std::thread::id is a thin wrapper around the Windows thread ID,
+  // so just extract it.
+  DWORD id;
   std::memcpy(&id, &tid, sizeof(id));
 
-  auto trimmedName = name.subpiece(0, kMaxThreadNameLength - 1).str();
-
-  TNIUnion tniUnion = {0x1000, trimmedName.data(), id, 0};
-  // This has to be in a separate stack frame from trimmedName, which requires
-  // C++ object destruction semantics.
-  return [&]() {
-    __try {
-      RaiseException(kMSVCException, 0, 4, tniUnion.upArray);
-    } __except (
-        GetExceptionCode() == kMSVCException ? EXCEPTION_CONTINUE_EXECUTION
-                                             : EXCEPTION_EXECUTE_HANDLER) {
-      // Swallow the exception when a debugger isn't attached.
-    }
+  // First, try the Windows 10 1607 SetThreadDescription call.
+  if (setThreadNameWindowsViaDescription(id, name)) {
     return true;
-  }();
-#else
-  name = name.subpiece(0, kMaxThreadNameLength - 1);
-  char buf[kMaxThreadNameLength] = {};
-  std::memcpy(buf, name.data(), name.size());
-  auto id = stdTidToPthreadId(tid);
-#if FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME
-  return 0 == pthread_setname_np(id, buf);
-#elif FOLLY_HAS_PTHREAD_SETNAME_NP_NAME
-  // Since macOS 10.6 and iOS 3.2 it is possible for a thread
-  // to set its own name using pthread, but
-  // not that of some other thread.
-  if (pthread_equal(pthread_self(), id)) {
-    return 0 == pthread_setname_np(buf);
   }
-#elif FOLLY_DETAIL_HAS_PRCTL_PR_SET_NAME
-  // for Android prctl is used instead of pthread_setname_np
-  // if Android NDK version is older than API level 9.
-  if (pthread_equal(pthread_self(), id)) {
-    return 0 == prctl(PR_SET_NAME, buf, 0L, 0L, 0L);
-  }
-#endif
 
-  (void)id;
-  return false;
+  // Otherwise, fall back to the older SEH approach, which is primarily
+  // useful in debuggers.
+  return setThreadNameWindowsViaDebugger(id, name);
+}
+
+#endif
+} // namespace
+
+bool setThreadName(std::thread::id tid, StringPiece name) {
+#ifdef _WIN32
+  return setThreadNameWindows(tid, name);
+#else
+  return setThreadName(stdTidToPthreadId(tid), name);
 #endif
 }
 
@@ -221,23 +303,38 @@ bool setThreadName(pthread_t pid, StringPiece name) {
   std::memcpy(&id, &tid, sizeof(id));
   return setThreadName(id, name);
 #else
-  static_assert(
-      std::is_same<pthread_t, std::thread::native_handle_type>::value,
-      "This assumes that the native handle type is pthread_t");
-  static_assert(
-      sizeof(std::thread::native_handle_type) == sizeof(std::thread::id),
-      "This assumes std::thread::id is a thin wrapper around "
-      "std::thread::native_handle_type, but that doesn't appear to be true.");
-  // In most implementations, std::thread::id is a thin wrapper around
-  // std::thread::native_handle_type, which means we can do unsafe things to
-  // extract it.
-  std::thread::id id;
-  std::memcpy(static_cast<void*>(&id), &pid, sizeof(id));
-  return setThreadName(id, name);
+  name = name.subpiece(0, kMaxThreadNameLength - 1);
+  char buf[kMaxThreadNameLength] = {};
+  std::memcpy(buf, name.data(), name.size());
+#if FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME
+  return 0 == pthread_setname_np(pid, buf);
+#else
+#if FOLLY_HAS_PTHREAD_SETNAME_NP_NAME
+  // Since macOS 10.6 and iOS 3.2 it is possible for a thread
+  // to set its own name using pthread, but
+  // not that of some other thread.
+  if (pthread_equal(pthread_self(), pid)) {
+    return 0 == pthread_setname_np(buf);
+  }
+#elif FOLLY_DETAIL_HAS_PRCTL_PR_SET_NAME
+  // for Android prctl is used instead of pthread_setname_np
+  // if Android NDK version is older than API level 9.
+  if (pthread_equal(pthread_self(), pid)) {
+    return 0 == prctl(PR_SET_NAME, buf, 0L, 0L, 0L);
+  }
+#else
+  (void)pid;
 #endif
+  return false;
+#endif // !FOLLY_HAS_PTHREAD_SETNAME_NP_THREAD_NAME
+#endif // !_WIN32
 }
 
 bool setThreadName(StringPiece name) {
+#if FOLLY_HAVE_PTHREAD
+  return setThreadName(pthread_self(), name);
+#else
   return setThreadName(std::this_thread::get_id(), name);
+#endif
 }
 } // namespace folly

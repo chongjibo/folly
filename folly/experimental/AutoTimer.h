@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,11 +20,12 @@
 #include <string>
 #include <type_traits>
 
+#include <glog/logging.h>
+
 #include <folly/Conv.h>
 #include <folly/Format.h>
 #include <folly/Optional.h>
 #include <folly/String.h>
-#include <glog/logging.h>
 
 namespace folly {
 
@@ -86,9 +87,7 @@ class AutoTimer final {
     }
   }
 
-  DoubleSeconds log(StringPiece msg = "") {
-    return logImpl(Clock::now(), msg);
-  }
+  DoubleSeconds log(StringPiece msg = "") { return logImpl(Clock::now(), msg); }
 
   template <typename... Args>
   DoubleSeconds log(Args&&... args) {
@@ -97,9 +96,9 @@ class AutoTimer final {
   }
 
   template <typename... Args>
-  DoubleSeconds logFormat(Args&&... args) {
+  DoubleSeconds logFormat(fmt::format_string<Args...> fmt, Args&&... args) {
     auto now = Clock::now();
-    return logImpl(now, format(std::forward<Args>(args)...).str());
+    return logImpl(now, fmt::format(fmt, std::forward<Args>(args)...));
   }
 
  private:
@@ -134,8 +133,8 @@ auto makeAutoTimer(
 
 template <GoogleLoggerStyle Style>
 struct GoogleLogger final {
-  void operator()(StringPiece msg, const std::chrono::duration<double>& sec)
-      const {
+  void operator()(
+      StringPiece msg, const std::chrono::duration<double>& sec) const {
     if (msg.empty()) {
       return;
     }

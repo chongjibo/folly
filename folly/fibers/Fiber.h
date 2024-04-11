@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,12 +27,30 @@
 #include <folly/Portability.h>
 #include <folly/fibers/BoostContextCompatibility.h>
 #include <folly/io/async/Request.h>
+#include <folly/lang/Thunk.h>
+#include <folly/portability/PThread.h>
+
+// include after CPortability.h defines this
+#ifdef FOLLY_SANITIZE_THREAD
+#include <sanitizer/tsan_interface.h>
+#endif
 
 namespace folly {
+struct AsyncStackRoot;
+
 namespace fibers {
 
 class Baton;
 class FiberManager;
+
+struct TaskOptions {
+  TaskOptions() {}
+  /**
+   * Should log the running time of the task? Refer to
+   * getCurrentTaskRunningTime() for details.
+   */
+  bool logRunningTime = false;
+};
 
 /**
  * @class Fiber
@@ -64,8 +82,12 @@ class Fiber {
     return {fiberStackLimit_, fiberStackSize_};
   }
 
+  size_t stackHighWatermark() const { return fiberStackHighWatermark_; }
+
+  folly::Optional<std::chrono::nanoseconds> getRunningTime() const;
+
  private:
-  enum State {
+  enum State : char {
     INVALID, /**< Does't have task function */
     NOT_STARTED, /**< Has task function, not started */
     READY_TO_RUN, /**< Was started, blocked, then unblocked */
@@ -86,7 +108,7 @@ class Fiber {
   void init(bool recordStackUsed);
 
   template <typename F>
-  void setFunction(F&& func);
+  void setFunction(F&& func, TaskOptions taskOptions);
 
   template <typename F, typename G>
   void setFunctionFinally(F&& func, G&& finally);
@@ -107,14 +129,22 @@ class Fiber {
    */
   void recordStackPosition();
 
+  TaskOptions taskOptions_;
+  bool recordStackUsed_{false};
+  bool stackFilledWithMagic_{false};
   FiberManager& fiberManager_; /**< Associated FiberManager */
   size_t fiberStackSize_;
+  size_t fiberStackHighWatermark_;
   unsigned char* fiberStackLimit_;
   FiberImpl fiberImpl_; /**< underlying fiber implementation */
   std::shared_ptr<RequestContext> rcontext_; /**< current RequestContext */
+  folly::AsyncStackRoot* asyncRoot_ = nullptr;
   folly::Function<void()> func_; /**< task function */
-  bool recordStackUsed_{false};
-  bool stackFilledWithMagic_{false};
+  std::chrono::steady_clock::time_point currStartTime_;
+  std::chrono::steady_clock::duration prevDuration_{0};
+#ifdef FOLLY_SANITIZE_THREAD
+  void* tsanCtx_{nullptr};
+#endif
 
   /**
    * Points to next fiber in remote ready list
@@ -139,7 +169,7 @@ class Fiber {
     template <typename T>
     T& get() {
       if (data_) {
-        assert(*dataType_ == typeid(T));
+        assert(*vtable_.type == typeid(T));
         return *reinterpret_cast<T*>(data_);
       }
       return getSlow<T>();
@@ -151,23 +181,31 @@ class Fiber {
     template <typename T>
     FOLLY_NOINLINE T& getSlow();
 
-    static void* allocateHeapBuffer(size_t size);
-    static void freeHeapBuffer(void* buffer);
-
-    template <typename T>
-    static void dataCopyConstructor(void*, const void*);
-    template <typename T>
-    static void dataBufferDestructor(void*);
-    template <typename T>
-    static void dataHeapDestructor(void*);
-
     static constexpr size_t kBufferSize = 128;
-    std::aligned_storage<kBufferSize>::type buffer_;
-    size_t dataSize_;
+    using Buffer = std::aligned_storage<kBufferSize, cacheline_align_v>::type;
+    struct VTable {
+      std::type_info const* type;
+      // on-heap
+      void* (*make_copy)(void const*);
+      void (*ruin)(void*);
+      // in-situ
+      void* (*ctor_copy)(void*, void const*);
+      void (*dtor)(void*);
 
-    const std::type_info* dataType_;
-    void (*dataDestructor_)(void*);
-    void (*dataCopyConstructor_)(void*, const void*);
+      template <typename T>
+      static constexpr VTable get() noexcept {
+        using t = folly::detail::thunk;
+        return {
+            &typeid(T),
+            t::make_copy<T>,
+            t::ruin<T>,
+            t::ctor_copy<T>,
+            t::dtor<T>};
+      }
+    };
+
+    Buffer buffer_;
+    VTable vtable_{};
     void* data_{nullptr};
   };
 
@@ -176,7 +214,6 @@ class Fiber {
   folly::IntrusiveListHook listHook_; /**< list hook for different FiberManager
                                            queues */
   folly::IntrusiveListHook globalListHook_; /**< list hook for global list */
-  std::thread::id threadId_{};
 
 #ifdef FOLLY_SANITIZE_ADDRESS
   void* asanFakeStack_{nullptr};

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,13 @@
  */
 
 #include <folly/Format.h>
+
+#include <string>
+
 #include <folly/Utility.h>
 #include <folly/portability/GTest.h>
 
-#include <string>
+FOLLY_GNU_DISABLE_WARNING("-Wdeprecated")
 
 using namespace folly;
 
@@ -481,17 +484,19 @@ class TestExtendingFormatter
             Args...>(str, std::forward<Args>(args)...) {}
 
   template <size_t K, class Callback>
-  void doFormatArg(FormatArg& arg, Callback& cb) const {
+  static void doFormatArg(
+      const detail::BaseFormatterBase& obj, FormatArg& arg, Callback& cb) {
     std::string result;
     auto appender = [&result](StringPiece s) {
       result.append(s.data(), s.size());
     };
-    this->template getFormatValue<K>().format(arg, appender);
+    auto& self = static_cast<const TestExtendingFormatter&>(obj);
+    self.template getFormatValue<K>().format(arg, appender);
     result = sformat("{{{}}}", result);
     cb(StringPiece(result));
   }
 
-  friend class BaseFormatter<
+  friend BaseFormatter<
       TestExtendingFormatter<containerMode, Args...>,
       containerMode,
       Args...>;

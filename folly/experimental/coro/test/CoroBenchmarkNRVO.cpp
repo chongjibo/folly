@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,10 @@
  */
 
 #include <folly/Benchmark.h>
+
+#include <folly/experimental/coro/Coroutine.h>
+
+#include <future>
 #include <thread>
 
 struct ExpensiveCopy {
@@ -23,31 +27,23 @@ struct ExpensiveCopy {
   ExpensiveCopy(const ExpensiveCopy&) {
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
   }
+
+  ExpensiveCopy& operator=(const ExpensiveCopy&) = default;
 };
 
 #if FOLLY_HAS_COROUTINES
-#include <experimental/coroutine>
-#include <future>
 
 class Wait {
  public:
   class promise_type {
    public:
-    Wait get_return_object() {
-      return Wait(promise_.get_future());
-    }
+    Wait get_return_object() { return Wait(promise_.get_future()); }
 
-    std::experimental::suspend_never initial_suspend() noexcept {
-      return {};
-    }
+    folly::coro::suspend_never initial_suspend() noexcept { return {}; }
 
-    std::experimental::suspend_never final_suspend() noexcept {
-      return {};
-    }
+    folly::coro::suspend_never final_suspend() noexcept { return {}; }
 
-    void return_void() {
-      promise_.set_value();
-    }
+    void return_void() { promise_.set_value(); }
 
     void unhandled_exception() {
       promise_.set_exception(std::current_exception());
@@ -61,9 +57,7 @@ class Wait {
 
   Wait(Wait&&) = default;
 
-  void detach() {
-    future_ = {};
-  }
+  void detach() { future_ = {}; }
 
   ~Wait() {
     if (future_.valid()) {
@@ -82,24 +76,19 @@ class InlineTask {
   InlineTask(InlineTask&& other)
       : promise_(std::exchange(other.promise_, nullptr)) {}
 
-  ~InlineTask() {
-    DCHECK(!promise_);
-  }
+  ~InlineTask() { DCHECK(!promise_); }
 
-  bool await_ready() const {
-    return false;
-  }
+  bool await_ready() const { return false; }
 
-  std::experimental::coroutine_handle<> await_suspend(
-      std::experimental::coroutine_handle<> awaiter) {
+  folly::coro::coroutine_handle<> await_suspend(
+      folly::coro::coroutine_handle<> awaiter) {
     promise_->valuePtr_ = &value_;
     promise_->awaiter_ = std::move(awaiter);
-    return std::experimental::coroutine_handle<promise_type>::from_promise(
-        *promise_);
+    return folly::coro::coroutine_handle<promise_type>::from_promise(*promise_);
   }
 
   T await_resume() {
-    std::experimental::coroutine_handle<promise_type>::from_promise(
+    folly::coro::coroutine_handle<promise_type>::from_promise(
         *std::exchange(promise_, nullptr))
         .destroy();
     T value = std::move(value_);
@@ -108,41 +97,32 @@ class InlineTask {
 
   class promise_type {
    public:
-    InlineTask get_return_object() {
-      return InlineTask(this);
-    }
+    InlineTask get_return_object() { return InlineTask(this); }
 
-    template <typename U>
+    template <typename U = T>
     void return_value(U&& value) {
       *valuePtr_ = std::forward<U>(value);
     }
 
-    void unhandled_exception() {
-      std::terminate();
-    }
+    void unhandled_exception() { std::terminate(); }
 
-    std::experimental::suspend_always initial_suspend() {
-      return {};
-    }
+    folly::coro::suspend_always initial_suspend() { return {}; }
 
     class FinalSuspender {
      public:
-      explicit FinalSuspender(
-          std::experimental::coroutine_handle<> awaiter) noexcept
+      explicit FinalSuspender(folly::coro::coroutine_handle<> awaiter) noexcept
           : awaiter_(std::move(awaiter)) {}
 
-      bool await_ready() noexcept {
-        return false;
-      }
+      bool await_ready() noexcept { return false; }
 
-      auto await_suspend(std::experimental::coroutine_handle<>) noexcept {
+      auto await_suspend(folly::coro::coroutine_handle<>) noexcept {
         return awaiter_;
       }
 
       void await_resume() noexcept {}
 
      private:
-      std::experimental::coroutine_handle<> awaiter_;
+      folly::coro::coroutine_handle<> awaiter_;
     };
 
     FinalSuspender final_suspend() noexcept {
@@ -153,7 +133,7 @@ class InlineTask {
     friend class InlineTask;
 
     T* valuePtr_;
-    std::experimental::coroutine_handle<> awaiter_;
+    folly::coro::coroutine_handle<> awaiter_;
   };
 
  private:

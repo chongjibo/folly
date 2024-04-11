@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -98,17 +98,14 @@ uint64_t value(const typename LockFreeRingBuffer<T, Atom>::Cursor& rbcursor) {
 
   struct ExposedCursor : RBCursor {
     ExposedCursor(const RBCursor& cursor) : RBCursor(cursor) {}
-    uint64_t value() {
-      return this->ticket;
-    }
+    uint64_t value() { return this->ticket; }
   };
   return ExposedCursor(rbcursor).value();
 }
 
 template <template <typename> class Atom>
 void runReader(
-    LockFreeRingBuffer<int, Atom>& rb,
-    std::atomic<int32_t>& writes) {
+    LockFreeRingBuffer<int, Atom>& rb, std::atomic<int32_t>& writes) {
   int32_t idx;
   while ((idx = writes--) > 0) {
     rb.write(idx);
@@ -180,42 +177,6 @@ TEST(LockFreeRingBuffer, readerCanDetectSkips) {
   cursor = rb.currentTail();
   EXPECT_TRUE(rb.tryRead(result, cursor));
   EXPECT_EQ(capacity * (rounds - 1), result);
-
-  cursor = rb.currentTail(1.0);
-  EXPECT_TRUE(rb.tryRead(result, cursor));
-  EXPECT_EQ((capacity * rounds) - 1, result);
-}
-
-TEST(LockFreeRingBuffer, currentTailRange) {
-  const int capacity = 4;
-  LockFreeRingBuffer<int> rb(capacity);
-
-  // Workaround for template deduction failure
-  auto (&cursorValue)(value<int, std::atomic>);
-
-  // Empty buffer - everything points to 0
-  EXPECT_EQ(0, cursorValue(rb.currentTail(0)));
-  EXPECT_EQ(0, cursorValue(rb.currentTail(0.5)));
-  EXPECT_EQ(0, cursorValue(rb.currentTail(1)));
-
-  // Half-full
-  int val = 5;
-  rb.write(val);
-  rb.write(val);
-
-  EXPECT_EQ(0, cursorValue(rb.currentTail(0)));
-  EXPECT_EQ(1, cursorValue(rb.currentTail(1)));
-
-  // Full
-  rb.write(val);
-  rb.write(val);
-
-  EXPECT_EQ(0, cursorValue(rb.currentTail(0)));
-  EXPECT_EQ(3, cursorValue(rb.currentTail(1)));
-
-  auto midvalue = cursorValue(rb.currentTail(0.5));
-  // both rounding behaviours are acceptable
-  EXPECT_TRUE(midvalue == 1 || midvalue == 2);
 }
 
 TEST(LockFreeRingBuffer, cursorFromWrites) {
@@ -253,48 +214,63 @@ TEST(LockFreeRingBuffer, moveBackwardsCanFail) {
   EXPECT_FALSE(cursor.moveBackward()); // moving back does nothing
 }
 
-TEST(LockFreeRingBuffer, writeReadDifferentType) {
-  struct FixedBuffer {
-    char data_[1024];
+namespace {
 
-    FixedBuffer() noexcept {
-      data_[0] = '\0';
-    }
+struct S {
+  int x;
+  float y;
+  char c;
+};
 
-    FixedBuffer& operator=(std::string&& data) {
-      strncpy(data_, data.c_str(), sizeof(data_) - 1);
+} // namespace
 
-      return (*this);
-    }
-  };
+TEST(LockFreeRingBuffer, contendedReadsAndWrites) {
+  LockFreeRingBuffer<S> rb{2};
+  std::atomic<bool> done{false};
 
-  struct StringBuffer {
-    char data_[1024];
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; ++i) {
+    threads.emplace_back([&] {
+      while (!done.load(std::memory_order_relaxed)) {
+        S value{10, -5.5, 100};
+        rb.write(value);
+      }
+    });
+  }
+  for (int i = 0; i < 8; ++i) {
+    threads.emplace_back([&] {
+      S value;
+      while (!done.load(std::memory_order_relaxed)) {
+        if (rb.tryRead(value, rb.currentTail())) {
+          EXPECT_EQ(10, value.x);
+          EXPECT_EQ(-5.5, value.y);
+          EXPECT_EQ(100, value.c);
+        }
+      }
+    });
+  }
 
-    StringBuffer() noexcept {
-      data_[0] = '\0';
-    }
+  /* sleep override */ std::this_thread::sleep_for(std::chrono::seconds{1});
+  done.store(true, std::memory_order_relaxed);
+  for (auto& thread : threads) {
+    thread.join();
+  }
+}
 
-    StringBuffer& operator=(FixedBuffer& data) {
-      static_assert(
-          sizeof(data_) == sizeof(data.data_),
-          "FixedBuffer::data_ size must match StringBuffer::data_");
-      memcpy(data_, data.data_, sizeof(data.data_));
-      return (*this);
-    }
-  };
+TEST(LockFreeRingBuffer, cursorComparison) {
+  LockFreeRingBuffer<int> rb{2};
+  rb.write(5);
+  EXPECT_TRUE(rb.currentHead() == rb.currentHead());
+  EXPECT_FALSE(rb.currentHead() == rb.currentTail());
 
-  std::string str("Test");
+  EXPECT_TRUE(rb.currentHead() != rb.currentTail());
+  EXPECT_FALSE(rb.currentHead() != rb.currentHead());
 
-  const int capacity = 3;
-  LockFreeRingBuffer<FixedBuffer> rb(capacity);
-  rb.write(str);
+  EXPECT_TRUE(rb.currentHead() > rb.currentTail());
+  EXPECT_FALSE(rb.currentTail() > rb.currentHead());
 
-  auto cursor = rb.currentTail();
-  StringBuffer result;
-  EXPECT_TRUE(rb.tryRead(result, cursor));
-
-  EXPECT_EQ(str, result.data_);
+  EXPECT_TRUE(rb.currentTail() < rb.currentHead());
+  EXPECT_FALSE(rb.currentHead() < rb.currentTail());
 }
 
 } // namespace folly

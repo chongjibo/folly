@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,9 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-//
-// Author: andrei.alexandrescu@fb.com
 
 #include <folly/FBVector.h>
 
@@ -45,20 +42,20 @@ using FBStringFBVector = fbvector<fbstring>;
 #include <folly/test/FBVectorTests.cpp.h> // nolint
 #undef VECTOR
 
-TEST(fbvector, clause_23_3_6_1_3_ambiguity) {
+TEST(fbvector, clause233613Ambiguity) {
   fbvector<int> v(10, 20);
   EXPECT_EQ(v.size(), 10);
   FOR_EACH (i, v) { EXPECT_EQ(*i, 20); }
 }
 
-TEST(fbvector, clause_23_3_6_1_11_ambiguity) {
+TEST(fbvector, clause2336111Ambiguity) {
   fbvector<int> v;
   v.assign(10, 20);
   EXPECT_EQ(v.size(), 10);
   FOR_EACH (i, v) { EXPECT_EQ(*i, 20); }
 }
 
-TEST(fbvector, clause_23_3_6_2_6) {
+TEST(fbvector, clause233626) {
   fbvector<int> v;
   auto const n = random(0U, 10000U);
   v.reserve(n);
@@ -69,7 +66,7 @@ TEST(fbvector, clause_23_3_6_2_6) {
   // Nothing to verify except that the call made it through
 }
 
-TEST(fbvector, clause_23_3_6_4_ambiguity) {
+TEST(fbvector, clause23364Ambiguity) {
   fbvector<int> v;
   fbvector<int>::const_iterator it = v.end();
   v.insert(it, 10, 20);
@@ -83,7 +80,7 @@ TEST(fbvector, composition) {
   fbvector<fbvector<double>> matrix(100, fbvector<double>(100));
 }
 
-TEST(fbvector, works_with_std_string) {
+TEST(fbvector, worksWithStdString) {
   fbvector<std::string> v(10, "hello");
   EXPECT_EQ(v.size(), 10);
   v.push_back("world");
@@ -97,13 +94,13 @@ class UserDefinedType {
 
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE(UserDefinedType)
 
-TEST(fbvector, works_with_user_defined_type) {
+TEST(fbvector, worksWithUserDefinedType) {
   fbvector<UserDefinedType> v(10);
   EXPECT_EQ(v.size(), 10);
   v.push_back(UserDefinedType());
 }
 
-TEST(fbvector, move_construction) {
+TEST(fbvector, moveConstruction) {
   fbvector<int> v1(100, 100);
   fbvector<int> v2;
   EXPECT_EQ(v1.size(), 100);
@@ -131,7 +128,7 @@ TEST(fbvector, emplace) {
   EXPECT_EQ(std::addressof(emplaced), std::addressof(s.back()));
 }
 
-TEST(fbvector, initializer_lists) {
+TEST(fbvector, initializerLists) {
   fbvector<int> vec = {1, 2, 3};
   EXPECT_EQ(vec.size(), 3);
   EXPECT_EQ(vec[0], 1);
@@ -155,7 +152,7 @@ TEST(fbvector, initializer_lists) {
   EXPECT_EQ(vec[5], 16);
 }
 
-TEST(fbvector, unique_ptr) {
+TEST(fbvector, uniquePtr) {
   fbvector<std::unique_ptr<int>> v(12);
   std::unique_ptr<int> p(new int(12));
   v.push_back(std::move(p));
@@ -183,7 +180,7 @@ TEST(FBVector, task858056) {
   EXPECT_EQ("Cycle detected: [baz] [bar] [foo] ", message);
 }
 
-TEST(FBVector, move_iterator) {
+TEST(FBVector, moveIterator) {
   fbvector<int> base = {0, 1, 2};
 
   auto cp1 = base;
@@ -206,7 +203,7 @@ TEST(FBVector, move_iterator) {
   EXPECT_EQ(fbvi3, base);
 }
 
-TEST(FBVector, reserve_consistency) {
+TEST(FBVector, reserveConsistency) {
   struct S {
     int64_t a, b, c, d;
   };
@@ -219,7 +216,7 @@ TEST(FBVector, reserve_consistency) {
   }
 }
 
-TEST(FBVector, vector_of_maps) {
+TEST(FBVector, vectorOfMaps) {
   fbvector<std::map<std::string, std::string>> v;
 
   v.push_back(std::map<std::string, std::string>());
@@ -236,7 +233,7 @@ TEST(FBVector, vector_of_maps) {
   EXPECT_EQ(1, v[1].size());
 }
 
-TEST(FBVector, shrink_to_fit_after_clear) {
+TEST(FBVector, shrinkToFitAfterClear) {
   fbvector<int> fb1;
   fb1.push_back(42);
   fb1.push_back(1337);
@@ -246,7 +243,7 @@ TEST(FBVector, shrink_to_fit_after_clear) {
   EXPECT_EQ(fb1.capacity(), 0);
 }
 
-TEST(FBVector, zero_len) {
+TEST(FBVector, zeroLen) {
   fbvector<int> fb1(0);
   fbvector<int> fb2(0, 10);
   fbvector<int> fb3(std::move(fb1));
@@ -260,8 +257,7 @@ TEST(FBVector, zero_len) {
   fbvector<int> fb7(fb6.begin(), fb6.end());
 }
 
-#if __cpp_deduction_guides >= 201703
-TEST(FBVector, deduction_guides) {
+TEST(FBVector, deductionGuides) {
   fbvector<int> v(3);
 
   fbvector x(v.begin(), v.end());
@@ -270,7 +266,6 @@ TEST(FBVector, deduction_guides) {
   fbvector y{v.begin(), v.end()};
   EXPECT_TRUE((std::is_same_v<fbvector<fbvector<int>::iterator>, decltype(y)>));
 }
-#endif
 
 TEST(FBVector, erase) {
   fbvector<int> v(3);
@@ -282,7 +277,7 @@ TEST(FBVector, erase) {
   EXPECT_EQ(3u, v[1]);
 }
 
-TEST(FBVector, erase_if) {
+TEST(FBVector, eraseIf) {
   fbvector<int> v(6);
   std::iota(v.begin(), v.end(), 1);
   erase_if(v, [](const auto& x) { return x % 2 == 0; });
@@ -291,3 +286,37 @@ TEST(FBVector, erase_if) {
   EXPECT_EQ(3u, v[1]);
   EXPECT_EQ(5u, v[2]);
 }
+
+TEST(FBVector, overflowConstruct) {
+  EXPECT_THROW(
+      folly::fbvector<std::string>(SIZE_MAX / sizeof(std::string) + 1),
+      std::length_error);
+}
+
+TEST(FBVector, overflowResize) {
+  folly::fbvector<std::string> vec;
+  EXPECT_THROW(vec.resize(SIZE_MAX / sizeof(string) + 1), std::length_error);
+}
+
+TEST(FBVector, overflowAssign) {
+  folly::fbvector<std::string> vec;
+  EXPECT_THROW(
+      vec.assign(SIZE_MAX / sizeof(std::string) + 1, "hello"),
+      std::length_error);
+}
+
+#ifndef _MSC_VER
+TEST(FBVector, zeroInit) {
+  // This is a higher-level version of TEST(Traits, zeroInit).
+  struct S1 {
+    int i_;
+  };
+  struct S3 {
+    int S1::*mp_;
+  };
+  folly::fbvector<S3> vec(4);
+  vec.resize(10);
+  EXPECT_EQ(vec[0].mp_, nullptr);
+  EXPECT_EQ(vec[8].mp_, nullptr);
+}
+#endif

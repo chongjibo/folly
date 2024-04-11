@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
  */
 
 #include <folly/io/async/SSLOptions.h>
-#include <folly/Format.h>
+
 #include <glog/logging.h>
+
+#include <folly/Format.h>
 
 namespace folly {
 namespace ssl {
@@ -40,12 +42,7 @@ void SSLCommonOptions::setClientOptions(SSLContext& ctx) {
     LOG(DFATAL) << exceptionStr(e);
   }
 
-  try {
-    ctx.setClientECCurvesList({"P-256", "P-384"});
-  } catch (std::runtime_error const& e) {
-    LOG(DFATAL) << exceptionStr(e);
-  }
-
+  setGroups<SSLCommonOptions>(ctx);
   setCipherSuites<SSLCommonOptions>(ctx);
   setSignatureAlgorithms<SSLCommonOptions>(ctx);
 }

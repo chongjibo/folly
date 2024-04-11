@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,53 +16,40 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
 #include <folly/CancellationToken.h>
 #include <folly/Chrono.h>
 #include <folly/executors/ManualExecutor.h>
 #include <folly/experimental/coro/Baton.h>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/Collect.h>
+#include <folly/experimental/coro/Coroutine.h>
 #include <folly/experimental/coro/CurrentExecutor.h>
+#include <folly/experimental/coro/DetachOnCancel.h>
 #include <folly/experimental/coro/Invoke.h>
 #include <folly/experimental/coro/Sleep.h>
 #include <folly/experimental/coro/Task.h>
 #include <folly/experimental/coro/TimedWait.h>
-#include <folly/experimental/coro/Utils.h>
 #include <folly/experimental/coro/WithCancellation.h>
 #include <folly/fibers/Semaphore.h>
 #include <folly/futures/Future.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
+#include <folly/lang/Assume.h>
 #include <folly/portability/GTest.h>
 
+#if FOLLY_HAS_COROUTINES
+
 using namespace folly;
-
-struct S {
-  int x = 42;
-};
-
-coro::Task<S> taskS() {
-  co_return{};
-}
-
-coro::Task<int> task42() {
-  co_return 42;
-}
-
-SemiFuture<int> semifuture_task42() {
-  return task42().semi();
-}
 
 class CoroTest : public testing::Test {};
 
 TEST_F(CoroTest, Basic) {
   ManualExecutor executor;
+  auto task42 = []() -> coro::Task<int> { co_return 42; };
   auto future = task42().scheduleOn(&executor).start();
 
   EXPECT_FALSE(future.isReady());
 
-  executor.drive();
+  executor.drain();
 
   EXPECT_TRUE(future.isReady());
   EXPECT_EQ(42, std::move(future).get());
@@ -70,12 +57,12 @@ TEST_F(CoroTest, Basic) {
 
 TEST_F(CoroTest, BasicSemiFuture) {
   ManualExecutor executor;
-  auto future = semifuture_task42().via(&executor);
+  auto task42 = []() -> coro::Task<int> { co_return 42; };
+  auto future = task42().semi().via(&executor);
 
   EXPECT_FALSE(future.isReady());
 
-  executor.drive();
-  executor.drive();
+  executor.drain();
 
   EXPECT_TRUE(future.isReady());
   EXPECT_EQ(42, std::move(future).get());
@@ -84,6 +71,7 @@ TEST_F(CoroTest, BasicSemiFuture) {
 TEST_F(CoroTest, BasicFuture) {
   ManualExecutor executor;
 
+  auto task42 = []() -> coro::Task<int> { co_return 42; };
   auto future = task42().scheduleOn(&executor).start();
 
   EXPECT_FALSE(future.isReady());
@@ -92,6 +80,7 @@ TEST_F(CoroTest, BasicFuture) {
 }
 
 coro::Task<void> taskVoid() {
+  auto task42 = []() -> coro::Task<int> { co_return 42; };
   (void)co_await task42();
   co_return;
 }
@@ -102,7 +91,7 @@ TEST_F(CoroTest, Basic2) {
 
   EXPECT_FALSE(future.isReady());
 
-  executor.drive();
+  executor.drain();
 
   EXPECT_TRUE(future.isReady());
 }
@@ -147,52 +136,51 @@ TEST_F(CoroTest, ExecutorKeepAlive) {
   EXPECT_TRUE(future.isReady());
 }
 
-struct CountingExecutor : public ManualExecutor {
-  bool keepAliveAcquire() override {
-    ++keepAliveCounter;
-    return true;
-  }
-
-  void keepAliveRelease() override {
-    --keepAliveCounter;
-  }
-
-  size_t keepAliveCounter{0};
-};
-
-coro::Task<void> executorRec(int depth) {
-  if (depth == 0) {
-    co_return;
-  }
-
-  auto executor =
-      dynamic_cast<CountingExecutor*>(co_await coro::co_current_executor);
-  DCHECK(executor);
-
-  // Note, extra keep-alives are being kept by the Futures.
-  EXPECT_EQ(3, executor->keepAliveCounter);
-
-  co_await executorRec(depth - 1);
-}
-
 TEST_F(CoroTest, ExecutorKeepAliveDummy) {
+  struct CountingExecutor : public ManualExecutor {
+    bool keepAliveAcquire() noexcept override {
+      ++keepAliveCounter;
+      return true;
+    }
+    void keepAliveRelease() noexcept override { --keepAliveCounter; }
+
+    size_t keepAliveCounter{0};
+  };
+
+  struct ExecutorRec {
+    static coro::Task<void> go(int depth) {
+      if (depth == 0) {
+        co_return;
+      }
+
+      auto executor =
+          dynamic_cast<CountingExecutor*>(co_await coro::co_current_executor);
+      DCHECK(executor);
+
+      // Note, extra keep-alives are being kept by the Futures.
+      EXPECT_EQ(3, executor->keepAliveCounter);
+
+      co_await go(depth - 1);
+    }
+  };
+
   CountingExecutor executor;
-  executorRec(42).scheduleOn(&executor).start().via(&executor).getVia(
+  ExecutorRec::go(42).scheduleOn(&executor).start().via(&executor).getVia(
       &executor);
 }
 
-coro::Task<int> taskException() {
-  throw std::runtime_error("Test exception");
-  co_return 42;
-}
-
 TEST_F(CoroTest, FutureThrow) {
+  auto taskException = []() -> coro::Task<int> {
+    throw std::runtime_error("Test exception");
+    co_return 42;
+  };
+
   ManualExecutor executor;
   auto future = taskException().scheduleOn(&executor).start();
 
   EXPECT_FALSE(future.isReady());
 
-  executor.drive();
+  executor.drain();
 
   EXPECT_TRUE(future.isReady());
   EXPECT_THROW(std::move(future).get(), std::runtime_error);
@@ -210,138 +198,138 @@ coro::Task<int> taskRecursion(int depth) {
 
 TEST_F(CoroTest, LargeStack) {
   ScopedEventBaseThread evbThread;
-  auto task = taskRecursion(5000).scheduleOn(evbThread.getEventBase());
+  auto task = taskRecursion(50000).scheduleOn(evbThread.getEventBase());
 
-  EXPECT_EQ(5000, coro::blockingWait(std::move(task)));
-}
-
-coro::Task<void> taskThreadNested(std::thread::id threadId) {
-  EXPECT_EQ(threadId, std::this_thread::get_id());
-  (void)co_await coro::sleep(std::chrono::seconds{1});
-  EXPECT_EQ(threadId, std::this_thread::get_id());
-  co_return;
-}
-
-coro::Task<int> taskThread() {
-  auto threadId = std::this_thread::get_id();
-
-  // BUG: Under @mode/clang-opt builds this object is placed on the coroutine
-  // frame and the code for the constructor assumes that it is allocated on
-  // a 16-byte boundary. However, when placed in the coroutine frame it can
-  // end up at a location that is not 16-byte aligned. This causes a SIGSEGV
-  // when performing a store to members that uses SSE instructions.
-  folly::ScopedEventBaseThread evbThread;
-
-  co_await taskThreadNested(evbThread.getThreadId())
-      .scheduleOn(evbThread.getEventBase());
-
-  EXPECT_EQ(threadId, std::this_thread::get_id());
-
-  co_return 42;
+  EXPECT_EQ(50000, coro::blockingWait(std::move(task)));
 }
 
 TEST_F(CoroTest, NestedThreads) {
+  auto taskThreadNested = [](std::thread::id threadId) -> coro::Task<void> {
+    EXPECT_EQ(threadId, std::this_thread::get_id());
+    (void)co_await coro::sleep(std::chrono::seconds{1});
+    EXPECT_EQ(threadId, std::this_thread::get_id());
+    co_return;
+  };
+
+  auto taskThread = [&]() -> coro::Task<int> {
+    auto threadId = std::this_thread::get_id();
+
+    // BUG: Under @mode/clang-opt builds this object is placed on the coroutine
+    // frame and the code for the constructor assumes that it is allocated on
+    // a 16-byte boundary. However, when placed in the coroutine frame it can
+    // end up at a location that is not 16-byte aligned. This causes a SIGSEGV
+    // when performing a store to members that uses SSE instructions.
+    folly::ScopedEventBaseThread evbThread;
+
+    co_await taskThreadNested(evbThread.getThreadId())
+        .scheduleOn(evbThread.getEventBase());
+
+    EXPECT_EQ(threadId, std::this_thread::get_id());
+
+    co_return 42;
+  };
+
   ScopedEventBaseThread evbThread;
   auto task = taskThread().scheduleOn(evbThread.getEventBase());
   EXPECT_EQ(42, coro::blockingWait(std::move(task)));
 }
 
-coro::Task<int> taskGetCurrentExecutor(Executor* executor) {
-  auto current = co_await coro::co_current_executor;
-  EXPECT_EQ(executor, current);
-  co_return co_await task42().scheduleOn(current);
-}
-
 TEST_F(CoroTest, CurrentExecutor) {
+  auto taskGetCurrentExecutor = [](Executor* executor) -> coro::Task<int> {
+    auto current = co_await coro::co_current_executor;
+    EXPECT_EQ(executor, current);
+    auto task42 = []() -> coro::Task<int> { co_return 42; };
+    co_return co_await task42().scheduleOn(current);
+  };
+
   ScopedEventBaseThread evbThread;
   auto task = taskGetCurrentExecutor(evbThread.getEventBase())
                   .scheduleOn(evbThread.getEventBase());
   EXPECT_EQ(42, coro::blockingWait(std::move(task)));
 }
 
-coro::Task<void> taskTimedWaitFuture() {
-  auto ex = co_await coro::co_current_executor;
-  auto fastFuture =
-      futures::sleep(std::chrono::milliseconds{50}).via(ex).thenValue([](Unit) {
-        return 42;
-      });
-  auto fastResult = co_await coro::timed_wait(
-      std::move(fastFuture), std::chrono::milliseconds{100});
-  EXPECT_TRUE(fastResult);
-  EXPECT_EQ(42, *fastResult);
+TEST_F(CoroTest, TimedWaitFuture) {
+  auto taskTimedWaitFuture = []() -> coro::Task<void> {
+    auto ex = co_await coro::co_current_executor;
+    auto fastFuture = futures::sleep(std::chrono::milliseconds{50})
+                          .via(ex)
+                          .thenValue([](Unit) { return 42; });
+    auto fastResult = co_await coro::timed_wait(
+        std::move(fastFuture), std::chrono::milliseconds{100});
+    EXPECT_TRUE(fastResult);
+    EXPECT_EQ(42, *fastResult);
 
-  struct ExpectedException : public std::runtime_error {
-    ExpectedException() : std::runtime_error("ExpectedException") {}
+    struct ExpectedException : public std::runtime_error {
+      ExpectedException() : std::runtime_error("ExpectedException") {}
+    };
+
+    auto throwingFuture =
+        futures::sleep(std::chrono::milliseconds{50})
+            .via(ex)
+            .thenValue([](Unit) { throw ExpectedException(); });
+    EXPECT_THROW(
+        (void)co_await coro::timed_wait(
+            std::move(throwingFuture), std::chrono::milliseconds{100}),
+        ExpectedException);
+
+    auto promiseFuturePair = folly::makePromiseContract<folly::Unit>(ex);
+    auto lifetimeFuture = std::move(promiseFuturePair.second);
+    auto slowFuture =
+        futures::sleep(std::chrono::milliseconds{200})
+            .via(ex)
+            .thenValue([lifetimePromise =
+                            std::move(promiseFuturePair.first)](Unit) mutable {
+              lifetimePromise.setValue();
+              return 42;
+            });
+    auto slowResult = co_await coro::timed_wait(
+        std::move(slowFuture), std::chrono::milliseconds{100});
+    EXPECT_FALSE(slowResult);
+
+    // Ensure that task completes for safe executor lifetimes
+    (void)co_await std::move(lifetimeFuture);
+
+    co_return;
   };
 
-  auto throwingFuture =
-      futures::sleep(std::chrono::milliseconds{50}).via(ex).thenValue([](Unit) {
-        throw ExpectedException();
-      });
-  EXPECT_THROW(
-      (void)co_await coro::timed_wait(
-          std::move(throwingFuture), std::chrono::milliseconds{100}),
-      ExpectedException);
-
-  auto promiseFuturePair = folly::makePromiseContract<folly::Unit>(ex);
-  auto lifetimeFuture = std::move(promiseFuturePair.second);
-  auto slowFuture =
-      futures::sleep(std::chrono::milliseconds{200})
-          .via(ex)
-          .thenValue([lifetimePromise =
-                          std::move(promiseFuturePair.first)](Unit) mutable {
-            lifetimePromise.setValue();
-            return 42;
-          });
-  auto slowResult = co_await coro::timed_wait(
-      std::move(slowFuture), std::chrono::milliseconds{100});
-  EXPECT_FALSE(slowResult);
-
-  // Ensure that task completes for safe executor lifetimes
-  (void)co_await std::move(lifetimeFuture);
-
-  co_return;
-}
-
-TEST_F(CoroTest, TimedWaitFuture) {
   coro::blockingWait(taskTimedWaitFuture());
 }
 
-coro::Task<void> taskTimedWaitTask() {
-  auto fastTask = []() -> coro::Task<int> {
-    co_await coro::sleep(std::chrono::milliseconds{50});
-    co_return 42;
-  }();
-  auto fastResult = co_await coro::timed_wait(
-      std::move(fastTask), std::chrono::milliseconds{100});
-  EXPECT_TRUE(fastResult);
-  EXPECT_EQ(42, *fastResult);
+TEST_F(CoroTest, TimedWaitTask) {
+  auto taskTimedWaitTask = []() -> coro::Task<void> {
+    auto fastTask = []() -> coro::Task<int> {
+      co_await coro::sleep(std::chrono::milliseconds{50});
+      co_return 42;
+    }();
+    auto fastResult = co_await coro::timed_wait(
+        std::move(fastTask), std::chrono::milliseconds{100});
+    EXPECT_TRUE(fastResult);
+    EXPECT_EQ(42, *fastResult);
 
-  struct ExpectedException : public std::runtime_error {
-    ExpectedException() : std::runtime_error("ExpectedException") {}
+    struct ExpectedException : public std::runtime_error {
+      ExpectedException() : std::runtime_error("ExpectedException") {}
+    };
+
+    auto throwingTask = []() -> coro::Task<void> {
+      co_await coro::sleep(std::chrono::milliseconds{50});
+      throw ExpectedException();
+    }();
+    EXPECT_THROW(
+        (void)co_await coro::timed_wait(
+            std::move(throwingTask), std::chrono::milliseconds{100}),
+        ExpectedException);
+
+    auto slowTask = []() -> coro::Task<int> {
+      co_await futures::sleep(std::chrono::milliseconds{200});
+      co_return 42;
+    }();
+    auto slowResult = co_await coro::timed_wait(
+        std::move(slowTask), std::chrono::milliseconds{100});
+    EXPECT_FALSE(slowResult);
+
+    co_return;
   };
 
-  auto throwingTask = []() -> coro::Task<void> {
-    co_await coro::sleep(std::chrono::milliseconds{50});
-    throw ExpectedException();
-  }();
-  EXPECT_THROW(
-      (void)co_await coro::timed_wait(
-          std::move(throwingTask), std::chrono::milliseconds{100}),
-      ExpectedException);
-
-  auto slowTask = []() -> coro::Task<int> {
-    co_await futures::sleep(std::chrono::milliseconds{200});
-    co_return 42;
-  }();
-  auto slowResult = co_await coro::timed_wait(
-      std::move(slowTask), std::chrono::milliseconds{100});
-  EXPECT_FALSE(slowResult);
-
-  co_return;
-}
-
-TEST_F(CoroTest, TimedWaitTask) {
   coro::blockingWait(taskTimedWaitTask());
 }
 
@@ -356,19 +344,28 @@ TEST_F(CoroTest, TimedWaitKeepAlive) {
   EXPECT_LE(duration, std::chrono::seconds{30});
 }
 
+TEST_F(CoroTest, TimedWaitNonCopyable) {
+  auto task = []() -> coro::Task<std::unique_ptr<int>> {
+    co_return std::make_unique<int>(42);
+  }();
+  EXPECT_EQ(
+      42,
+      **coro::blockingWait(
+          [&]() -> coro::Task<folly::Optional<std::unique_ptr<int>>> {
+            co_return co_await coro::timed_wait(
+                std::move(task), std::chrono::seconds{60});
+          }()));
+}
+
+namespace {
+
 template <int value>
 struct AwaitableInt {
-  bool await_ready() const {
-    return true;
-  }
+  bool await_ready() const { return true; }
 
-  bool await_suspend(std::experimental::coroutine_handle<>) {
-    LOG(FATAL) << "Should never be called.";
-  }
+  bool await_suspend(coro::coroutine_handle<>) { assume_unreachable(); }
 
-  int await_resume() {
-    return value;
-  }
+  int await_resume() { return value; }
 };
 
 struct AwaitableWithOperator {};
@@ -377,65 +374,69 @@ AwaitableInt<42> operator co_await(const AwaitableWithOperator&) {
   return {};
 }
 
-coro::Task<int> taskAwaitableWithOperator() {
-  co_return co_await AwaitableWithOperator();
-}
-
-TEST_F(CoroTest, AwaitableWithOperator) {
-  EXPECT_EQ(42, coro::blockingWait(taskAwaitableWithOperator()));
-}
-
 struct AwaitableWithMemberOperator {
-  AwaitableInt<42> operator co_await() {
-    return {};
-  }
+  AwaitableInt<42> operator co_await() { return {}; }
 };
 
-AwaitableInt<24> operator co_await(const AwaitableWithMemberOperator&) {
+[[maybe_unused]] AwaitableInt<24> operator co_await(
+    const AwaitableWithMemberOperator&) {
   return {};
 }
 
-coro::Task<int> taskAwaitableWithMemberOperator() {
-  co_return co_await AwaitableWithMemberOperator();
+} // namespace
+
+TEST_F(CoroTest, AwaitableWithOperator) {
+  auto taskAwaitableWithOperator = []() -> coro::Task<int> {
+    co_return co_await AwaitableWithOperator();
+  };
+
+  EXPECT_EQ(42, coro::blockingWait(taskAwaitableWithOperator()));
 }
 
 TEST_F(CoroTest, AwaitableWithMemberOperator) {
+  auto taskAwaitableWithMemberOperator = []() -> coro::Task<int> {
+    co_return co_await AwaitableWithMemberOperator();
+  };
+
   EXPECT_EQ(42, coro::blockingWait(taskAwaitableWithMemberOperator()));
 }
 
-coro::Task<int> taskBaton(fibers::Baton& baton) {
-  co_await baton;
-  co_return 42;
-}
-
 TEST_F(CoroTest, Baton) {
+  auto taskBaton = [](fibers::Baton& baton) -> coro::Task<int> {
+    co_await baton;
+    co_return 42;
+  };
+
   ManualExecutor executor;
   fibers::Baton baton;
   auto future = taskBaton(baton).scheduleOn(&executor).start();
 
   EXPECT_FALSE(future.isReady());
 
-  executor.run();
+  executor.drain();
 
   EXPECT_FALSE(future.isReady());
 
   baton.post();
-  executor.run();
+  executor.drain();
 
   EXPECT_TRUE(future.isReady());
   EXPECT_EQ(42, std::move(future).get());
 }
 
-template <class Type>
-coro::Task<Type> taskFuture(Type value) {
-  co_return co_await folly::makeFuture<Type>(std::move(value));
-}
-
 TEST_F(CoroTest, FulfilledFuture) {
+  auto taskFuture = [](auto value) -> coro::Task<decltype(value)> {
+    co_return co_await folly::makeFuture(std::move(value));
+  };
+
   EXPECT_EQ(42, coro::blockingWait(taskFuture(42)));
 }
 
 TEST_F(CoroTest, MoveOnlyReturn) {
+  auto taskFuture = [](auto value) -> coro::Task<decltype(value)> {
+    co_return co_await folly::makeFuture(std::move(value));
+  };
+
   EXPECT_EQ(42, *coro::blockingWait(taskFuture(std::make_unique<int>(42))));
 }
 
@@ -449,12 +450,12 @@ TEST_F(CoroTest, co_invoke) {
       })
           .scheduleOn(&executor)
           .start();
-  executor.run();
+  executor.drain();
   EXPECT_FALSE(coroFuture.isReady());
 
   p.setValue(folly::unit);
 
-  executor.run();
+  executor.drain();
   EXPECT_TRUE(coroFuture.isReady());
 }
 
@@ -554,7 +555,7 @@ TEST_F(CoroTest, CancelOutstandingSemaphoreWait) {
             // whcih should reqeust cancellation of sem.co_wait().
             co_yield folly::coro::co_error(ExpectedError{});
           }());
-    } catch (ExpectedError) {
+    } catch (const ExpectedError&) {
     }
   }());
 }
@@ -583,6 +584,12 @@ TEST_F(CoroTest, CancelOneSemaphoreWaitDoesNotAffectOthers) {
 
 TEST_F(CoroTest, FutureTry) {
   folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto task42 = []() -> coro::Task<int> { co_return 42; };
+    auto taskException = []() -> coro::Task<int> {
+      throw std::runtime_error("Test exception");
+      co_return 42;
+    };
+
     {
       auto result = co_await folly::coro::co_awaitTry(task42().semi());
       EXPECT_TRUE(result.hasValue());
@@ -617,25 +624,33 @@ TEST_F(CoroTest, CancellableSleep) {
   CancellationSource cancelSrc;
 
   auto start = steady_clock::now();
-  coro::blockingWait([&]() -> coro::Task<void> {
-    co_await coro::collectAll(
-        [&]() -> coro::Task<void> {
-          co_await coro::co_withCancellation(
-              cancelSrc.getToken(), coro::sleep(10s));
-        }(),
-        [&]() -> coro::Task<void> {
-          co_await coro::co_reschedule_on_current_executor;
-          co_await coro::co_reschedule_on_current_executor;
-          co_await coro::co_reschedule_on_current_executor;
-          cancelSrc.requestCancellation();
-        }());
-  }());
+  EXPECT_THROW(
+      coro::blockingWait([&]() -> coro::Task<void> {
+        co_await coro::collectAll(
+            [&]() -> coro::Task<void> {
+              co_await coro::co_withCancellation(
+                  cancelSrc.getToken(), coro::sleep(10s));
+            }(),
+            [&]() -> coro::Task<void> {
+              co_await coro::co_reschedule_on_current_executor;
+              co_await coro::co_reschedule_on_current_executor;
+              co_await coro::co_reschedule_on_current_executor;
+              cancelSrc.requestCancellation();
+            }());
+      }()),
+      OperationCancelled);
   auto end = steady_clock::now();
   CHECK((end - start) < 1s);
 }
 
 TEST_F(CoroTest, DefaultConstructible) {
   coro::blockingWait([]() -> coro::Task<void> {
+    struct S {
+      int x = 42;
+    };
+
+    auto taskS = []() -> coro::Task<S> { co_return {}; };
+
     auto s = co_await taskS();
     EXPECT_EQ(42, s.x);
   }());
@@ -673,16 +688,102 @@ TEST(Coro, CoThrow) {
   EXPECT_THROW(
       folly::coro::blockingWait([]() -> folly::coro::Task<int> {
         co_yield folly::coro::co_error(ExpectedException());
-        EXPECT_TRUE(false) << "unreachable";
-        co_return 42;
+        ADD_FAILURE() << "unreachable";
+        // Intential lack of co_return statement to check
+        // that compiler treats code after co_yield co_error()
+        // as unreachable.
       }()),
       ExpectedException);
 
   EXPECT_THROW(
       folly::coro::blockingWait([]() -> folly::coro::Task<void> {
         co_yield folly::coro::co_error(ExpectedException());
-        EXPECT_TRUE(false) << "unreachable";
+        ADD_FAILURE() << "unreachable";
       }()),
       ExpectedException);
+}
+
+TEST_F(CoroTest, DetachOnCancel) {
+  folly::coro::blockingWait([&]() -> folly::coro::Task<> {
+    folly::CancellationSource cancelSource;
+    cancelSource.requestCancellation();
+
+    // Run some logic while in an already-cancelled state.
+    co_await folly::coro::co_withCancellation(
+        cancelSource.getToken(), []() -> folly::coro::Task<> {
+          EXPECT_THROW(
+              co_await folly::coro::detachOnCancel(
+                  folly::futures::sleep(std::chrono::seconds{1})
+                      .deferValue([](auto) { return 42; })),
+              folly::OperationCancelled);
+        }());
+  }());
+
+  folly::coro::blockingWait([&]() -> folly::coro::Task<> {
+    folly::CancellationSource cancelSource;
+
+    co_await folly::coro::co_withCancellation(
+        cancelSource.getToken(), []() -> folly::coro::Task<> {
+          EXPECT_EQ(
+              42,
+              co_await folly::coro::detachOnCancel(
+                  folly::futures::sleep(std::chrono::milliseconds{10})
+                      .deferValue([](auto) { return 42; })));
+        }());
+  }());
+
+  folly::coro::blockingWait([&]() -> folly::coro::Task<> {
+    folly::CancellationSource cancelSource;
+
+    co_await folly::coro::co_withCancellation(
+        cancelSource.getToken(), []() -> folly::coro::Task<> {
+          co_await folly::coro::detachOnCancel([]() -> folly::coro::Task<void> {
+            co_await folly::futures::sleep(std::chrono::milliseconds{10});
+          }());
+        }());
+  }());
+}
+
+struct CountingManualExecutor : public folly::ManualExecutor {
+  void add(Func func) override {
+    ++addCount_;
+    ManualExecutor::add(std::move(func));
+  }
+
+  ssize_t getAddCount() const { return addCount_.load(); }
+
+ private:
+  std::atomic<ssize_t> addCount_{0};
+};
+
+ssize_t runAndCountExecutorAdd(folly::coro::Task<void> task) {
+  CountingManualExecutor executor;
+  auto future = std::move(task).scheduleOn(&executor).start();
+
+  executor.drain();
+
+  EXPECT_TRUE(future.isReady());
+  return executor.getAddCount();
+}
+
+TEST_F(CoroTest, SemiNoReschedule) {
+  auto task42 = []() -> coro::Task<int> { co_return 42; };
+  auto semiFuture42 = []() {
+    return makeSemiFuture().deferValue([](auto) { return 42; });
+  };
+  EXPECT_EQ(
+      2, // One extra for keepAlive release logic of ManualExecutor
+      runAndCountExecutorAdd(folly::coro::co_invoke(
+          [&]() -> coro::Task<void> { EXPECT_EQ(42, co_await task42()); })));
+  EXPECT_EQ(
+      2, // One extra for keepAlive release logic of ManualExecutor
+      runAndCountExecutorAdd(folly::coro::co_invoke([&]() -> coro::Task<void> {
+        EXPECT_EQ(42, co_await task42().semi());
+      })));
+  EXPECT_EQ(
+      2, // One extra for keepAlive release logic of ManualExecutor
+      runAndCountExecutorAdd(folly::coro::co_invoke([&]() -> coro::Task<void> {
+        EXPECT_EQ(42, co_await semiFuture42());
+      })));
 }
 #endif

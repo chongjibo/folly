@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,8 +34,6 @@
  * There are two classes here - ThreadLocal and ThreadLocalPtr.  ThreadLocalPtr
  * has semantics similar to boost::thread_specific_ptr. ThreadLocal is a thin
  * wrapper around ThreadLocalPtr that manages allocation automatically.
- *
- * @author Spencer Ahrens (sahrens)
  */
 
 #pragma once
@@ -71,26 +69,16 @@ class ThreadLocal {
   }
 
   // may return null
-  FOLLY_ERASE T* getIfExist() const {
-    return tlp_.get();
-  }
+  FOLLY_ERASE T* get_existing() const { return tlp_.get(); }
 
-  T* operator->() const {
-    return get();
-  }
+  T* operator->() const { return get(); }
 
-  T& operator*() const {
-    return *get();
-  }
+  T& operator*() const { return *get(); }
 
-  void reset(T* newPtr = nullptr) {
-    tlp_.reset(newPtr);
-  }
+  void reset(T* newPtr = nullptr) { tlp_.reset(newPtr); }
 
   typedef typename ThreadLocalPtr<T, Tag, AccessMode>::Accessor Accessor;
-  Accessor accessAllThreads() const {
-    return tlp_.accessAllThreads();
-  }
+  Accessor accessAllThreads() const { return tlp_.accessAllThreads(); }
 
   // movable
   ThreadLocal(ThreadLocal&&) = default;
@@ -102,13 +90,13 @@ class ThreadLocal {
   ThreadLocal& operator=(const ThreadLocal&) = delete;
 
   FOLLY_NOINLINE T* makeTlp() const {
-    auto const ptr = constructor_();
+    auto const ptr = static_cast<T*>(constructor_());
     tlp_.reset(ptr);
     return ptr;
   }
 
   mutable ThreadLocalPtr<T, Tag, AccessMode> tlp_;
-  std::function<T*()> constructor_;
+  std::function<void*()> constructor_;
 };
 
 /*
@@ -156,22 +144,16 @@ class ThreadLocalPtr {
     return *this;
   }
 
-  ~ThreadLocalPtr() {
-    destroy();
-  }
+  ~ThreadLocalPtr() { destroy(); }
 
   T* get() const {
     threadlocal_detail::ElementWrapper& w = StaticMeta::get(&id_);
     return static_cast<T*>(w.ptr);
   }
 
-  T* operator->() const {
-    return get();
-  }
+  T* operator->() const { return get(); }
 
-  T& operator*() const {
-    return *get();
-  }
+  T& operator*() const { return *get(); }
 
   T* release() {
     auto rlock = getAccessAllThreadsLockReadHolderIfEnabled();
@@ -196,9 +178,7 @@ class ThreadLocalPtr {
     w->set(newPtr);
   }
 
-  explicit operator bool() const {
-    return get() != nullptr;
-  }
+  explicit operator bool() const { return get() != nullptr; }
 
   /**
    * reset() that transfers ownership from a smart pointer
@@ -271,8 +251,8 @@ class ThreadLocalPtr {
     // The iterators obtained from Accessor are bidirectional iterators.
     class Iterator {
       friend class Accessor;
-      const Accessor* accessor_;
-      threadlocal_detail::ThreadEntryNode* e_;
+      const Accessor* accessor_{nullptr};
+      threadlocal_detail::ThreadEntryNode* e_{nullptr};
 
       void increment() {
         e_ = e_->getNext();
@@ -329,6 +309,8 @@ class ThreadLocalPtr {
       using pointer = T const*;
       using iterator_category = std::bidirectional_iterator_tag;
 
+      Iterator() = default;
+
       Iterator& operator++() {
         increment();
         return *this;
@@ -351,50 +333,30 @@ class ThreadLocalPtr {
         return copy;
       }
 
-      T& operator*() {
-        return dereference();
-      }
+      T& operator*() { return dereference(); }
 
-      T const& operator*() const {
-        return dereference();
-      }
+      T const& operator*() const { return dereference(); }
 
-      T* operator->() {
-        return &dereference();
-      }
+      T* operator->() { return &dereference(); }
 
-      T const* operator->() const {
-        return &dereference();
-      }
+      T const* operator->() const { return &dereference(); }
 
-      bool operator==(Iterator const& rhs) const {
-        return equal(rhs);
-      }
+      bool operator==(Iterator const& rhs) const { return equal(rhs); }
 
-      bool operator!=(Iterator const& rhs) const {
-        return !equal(rhs);
-      }
+      bool operator!=(Iterator const& rhs) const { return !equal(rhs); }
 
       std::thread::id getThreadId() const {
         return e_->getThreadEntry()->tid();
       }
 
-      uint64_t getOSThreadId() const {
-        return e_->getThreadEntry()->tid_os;
-      }
+      uint64_t getOSThreadId() const { return e_->getThreadEntry()->tid_os; }
     };
 
-    ~Accessor() {
-      release();
-    }
+    ~Accessor() { release(); }
 
-    Iterator begin() const {
-      return ++Iterator(this);
-    }
+    Iterator begin() const { return ++Iterator(this); }
 
-    Iterator end() const {
-      return Iterator(this);
-    }
+    Iterator end() const { return Iterator(this); }
 
     Accessor(const Accessor&) = delete;
     Accessor& operator=(const Accessor&) = delete;
@@ -462,37 +424,20 @@ class ThreadLocalPtr {
   }
 
  private:
-  void destroy() {
-    StaticMeta::instance().destroy(&id_);
-  }
+  void destroy() { StaticMeta::instance().destroy(&id_); }
 
   // non-copyable
   ThreadLocalPtr(const ThreadLocalPtr&) = delete;
   ThreadLocalPtr& operator=(const ThreadLocalPtr&) = delete;
 
   static auto getAccessAllThreadsLockReadHolderIfEnabled() {
-    return SharedMutex::ReadHolder(
-        AccessAllThreadsEnabled::value
-            ? &StaticMeta::instance().accessAllThreadsLock_
-            : nullptr);
+    auto& mutex = StaticMeta::instance().accessAllThreadsLock_;
+    return AccessAllThreadsEnabled::value
+        ? std::shared_lock{mutex}
+        : std::shared_lock{mutex, std::defer_lock};
   }
 
   mutable typename StaticMeta::EntryID id_;
 };
 
-namespace threadlocal_detail {
-template <typename>
-struct static_meta_of;
-
-template <typename T, typename Tag, typename AccessMode>
-struct static_meta_of<ThreadLocalPtr<T, Tag, AccessMode>> {
-  using type = StaticMeta<Tag, AccessMode>;
-};
-
-template <typename T, typename Tag, typename AccessMode>
-struct static_meta_of<ThreadLocal<T, Tag, AccessMode>> {
-  using type = StaticMeta<Tag, AccessMode>;
-};
-
-} // namespace threadlocal_detail
 } // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,14 @@
 #pragma once
 
 #include <folly/Executor.h>
+#include <folly/experimental/coro/Coroutine.h>
 #include <folly/experimental/coro/ViaIfAsync.h>
 
 #include <atomic>
-#include <experimental/coroutine>
 #include <mutex>
+#include <type_traits>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace coro {
@@ -55,7 +58,7 @@ namespace coro {
 ///
 ///   folly::coro::Task<> asyncScopedLockExample()
 ///   {
-///     std::unique_lock<folly::coro::Mutex> lock{co_await m.co_scoped_lock()};
+///     std::unique_lock<folly::coro::Mutex> lock = co_await m.co_scoped_lock();
 ///     ...
 ///   }
 ///
@@ -155,16 +158,15 @@ class Mutex {
   void unlock() noexcept;
 
  private:
+  using folly_coro_aware_mutex = std::true_type;
+
   class LockAwaiter {
    public:
     explicit LockAwaiter(Mutex& mutex) noexcept : mutex_(mutex) {}
 
-    bool await_ready() noexcept {
-      return mutex_.try_lock();
-    }
+    bool await_ready() noexcept { return mutex_.try_lock(); }
 
-    bool await_suspend(
-        std::experimental::coroutine_handle<> awaitingCoroutine) noexcept {
+    bool await_suspend(coroutine_handle<> awaitingCoroutine) noexcept {
       awaitingCoroutine_ = awaitingCoroutine;
       return mutex_.lockAsyncImpl(this);
     }
@@ -177,7 +179,7 @@ class Mutex {
    private:
     friend Mutex;
 
-    std::experimental::coroutine_handle<> awaitingCoroutine_;
+    coroutine_handle<> awaitingCoroutine_;
     LockAwaiter* next_;
   };
 
@@ -204,9 +206,7 @@ class Mutex {
   };
 
   // Special value for state_ that indicates the mutex is not locked.
-  void* unlockedState() noexcept {
-    return this;
-  }
+  void* unlockedState() noexcept { return this; }
 
   // Try to lock the mutex.
   //
@@ -240,3 +240,5 @@ inline Mutex::LockOperation<Mutex::LockAwaiter> Mutex::co_lock() noexcept {
 
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

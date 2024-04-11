@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <type_traits>
 
 #include <folly/Chrono.h>
 
@@ -37,8 +38,7 @@ class IntervalRateLimiter {
   using clock = chrono::coarse_steady_clock;
 
   constexpr IntervalRateLimiter(
-      uint64_t maxPerInterval,
-      clock::duration interval)
+      uint64_t maxPerInterval, clock::duration interval)
       : maxPerInterval_{maxPerInterval}, interval_{interval} {}
 
   bool check() {
@@ -50,6 +50,14 @@ class IntervalRateLimiter {
   }
 
  private:
+  // First check should always succeed, so initial timestamp is at the beginning
+  // of time.
+  static_assert(
+      std::is_signed<clock::rep>::value,
+      "Need signed time point to represent initial time");
+  constexpr static auto kInitialTimestamp =
+      std::numeric_limits<clock::rep>::min();
+
   bool checkSlow();
 
   const uint64_t maxPerInterval_;
@@ -62,7 +70,7 @@ class IntervalRateLimiter {
   // Ideally timestamp_ would be a
   // std::atomic<clock::time_point>, but this does not
   // work since time_point's constructor is not noexcept
-  std::atomic<clock::rep> timestamp_{0};
+  std::atomic<clock::rep> timestamp_{kInitialTimestamp};
 };
 
 } // namespace logging

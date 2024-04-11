@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,6 +62,18 @@ class LogWriter {
    */
   virtual void writeMessage(std::string&& buffer, uint32_t flags = 0) {
     writeMessage(folly::StringPiece{buffer}, flags);
+  }
+
+  /**
+   * Write a message synchronously.
+   *
+   * By default, a synchronous message write is simply a message write followed
+   * by a flush(), but different async log handlers may override this to create
+   * different synchronous write behaviours.
+   */
+  virtual void writeMessageSync(std::string&& buffer, uint32_t flags = 0) {
+    writeMessage(buffer, flags);
+    flush();
   }
 
   /**

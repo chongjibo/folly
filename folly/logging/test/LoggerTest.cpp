@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/logging/Logger.h>
+
 #include <fmt/format.h>
 #include <folly/logging/LogCategory.h>
 #include <folly/logging/LogHandler.h>
@@ -114,7 +115,7 @@ TEST_F(LoggerTest, formatError) {
   EXPECT_THAT(
       messages[0].first.getMessage(),
       MatchesRegex(R"(error formatting log message: )"
-                   R"(.*invalid type specifier; )"
+                   R"(.*invalid .* specifier; )"
                    R"(format string: "param1: \{:06d\}, param2: \{:6.3f\}", )"
                    R"(arguments: 1234, hello world!)"));
   EXPECT_EQ("LoggerTest.cpp", pathBasename(messages[0].first.getFileName()));
@@ -150,9 +151,7 @@ class FormattableButNoToString {
 namespace fmt {
 template <>
 struct formatter<ToStringFailure> : formatter<std::string> {
-  auto format(ToStringFailure, format_context& ctx) {
-    return ctx.out();
-  }
+  auto format(ToStringFailure, format_context& ctx) { return ctx.out(); }
 };
 
 template <>
@@ -206,11 +205,10 @@ TEST_F(LoggerTest, formatFallbackError) {
   ASSERT_EQ(1, messages.size());
   EXPECT_THAT(
       messages[0].first.getMessage(),
-      MatchesRegex(
-          R"(error formatting log message: .*argument index out of range; )"
-          R"(format string: "param1: \{\}, param2: \{\}, \{\}", )"
-          R"(arguments: 1234, )"
-          R"(\[(.*ToStringFailure.*|object) of size (.*):.*\])"));
+      MatchesRegex(R"(error formatting log message: .*format_error.*; )"
+                   R"(format string: "param1: \{\}, param2: \{\}, \{\}", )"
+                   R"(arguments: 1234, )"
+                   R"(\[(.*ToStringFailure.*|object) of size (.*):.*\])"));
   EXPECT_EQ("LoggerTest.cpp", pathBasename(messages[0].first.getFileName()));
   EXPECT_EQ(LogLevel::WARN, messages[0].first.getLevel());
   EXPECT_FALSE(messages[0].first.containsNewlines());
@@ -345,9 +343,8 @@ TEST_F(LoggerTest, logMacros) {
   ASSERT_EQ(1, messages.size());
   EXPECT_THAT(
       messages[0].first.getMessage(),
-      MatchesRegex(
-          R"(error formatting log message: .*argument index out of range; )"
-          R"(format string: "whoops: \{\}, \{\}", arguments: 5)"));
+      MatchesRegex(R"(error formatting log message: .*format_error.*; )"
+                   R"(format string: "whoops: \{\}, \{\}", arguments: 5)"));
   messages.clear();
 }
 

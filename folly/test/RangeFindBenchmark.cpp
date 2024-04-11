@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-#include <folly/Range.h>
-
 #include <algorithm>
 #include <iostream>
 #include <random>
 #include <string>
 
 #include <folly/Benchmark.h>
+#include <folly/Range.h>
 #include <folly/container/Foreach.h>
 
 using namespace folly;
@@ -43,6 +42,9 @@ void initStr(int len) {
   str.reserve(len + 1);
   str.append(len, 'a');
   str.append(1, 'b');
+
+  vstr.reserve(kVstrSize);
+  vstrp.reserve(kVstrSize);
 
   // create 16 copies of str, each with a different 16byte alignment.
   // Useful because some implementations of find_first_of have different

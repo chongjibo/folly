@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,11 @@
  */
 
 #include <folly/futures/Barrier.h>
-#include <folly/lang/Exception.h>
 
 #include <glog/logging.h>
+
+#include <folly/ScopeGuard.h>
+#include <folly/lang/New.h>
 
 namespace folly {
 namespace futures {
@@ -41,24 +43,22 @@ Barrier::~Barrier() {
 }
 
 auto Barrier::allocateControlBlock() -> ControlBlock* {
-  auto storage = malloc(controlBlockSize(size_));
-  if (!storage) {
-    throw_exception<std::bad_alloc>();
-  }
+  auto storage = operator_new(
+      controlBlockSize(size_),
+      std::align_val_t(alignof(ControlBlockAndPromise)));
   auto block = ::new (storage) ControlBlock();
 
   auto p = promises(block);
   uint32_t i = 0;
-  try {
-    for (i = 0; i < size_; ++i) {
-      new (p + i) BoolPromise();
-    }
-  } catch (...) {
+  auto rollback = makeGuard([&] {
     for (; i != 0; --i) {
       p[i - 1].~BoolPromise();
     }
-    throw;
+  });
+  for (i = 0; i < size_; ++i) {
+    ::new (p + i) BoolPromise();
   }
+  rollback.dismiss();
 
   return block;
 }
@@ -68,7 +68,10 @@ void Barrier::freeControlBlock(ControlBlock* block) {
   for (uint32_t i = size_; i != 0; --i) {
     p[i - 1].~BoolPromise();
   }
-  free(block);
+  operator_delete(
+      block,
+      controlBlockSize(size_),
+      std::align_val_t(alignof(ControlBlockAndPromise)));
 }
 
 folly::Future<bool> Barrier::wait() {

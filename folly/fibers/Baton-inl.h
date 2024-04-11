@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <folly/detail/AsyncTrace.h>
 #include <folly/fibers/Fiber.h>
 #include <folly/fibers/FiberManagerInternal.h>
 
@@ -27,9 +28,7 @@ class Baton::FiberWaiter : public Baton::Waiter {
     fiber_ = &fiber;
   }
 
-  void post() override {
-    fiber_->resume();
-  }
+  void post() override { fiber_->resume(); }
 
  private:
   Fiber* fiber_{nullptr};
@@ -77,7 +76,11 @@ bool Baton::timedWaitThread(
     const std::chrono::time_point<Clock, Duration>& deadline) {
   auto waiter = waiter_.load();
 
-  if (LIKELY(
+  folly::async_tracing::logBlockingOperation(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - Clock::now()));
+
+  if (FOLLY_LIKELY(
           waiter == NO_WAITER &&
           waiter_.compare_exchange_strong(waiter, THREAD_WAITING))) {
     do {
@@ -87,11 +90,11 @@ bool Baton::timedWaitThread(
       if (wait_rv == folly::detail::FutexResult::TIMEDOUT) {
         return false;
       }
-      waiter = waiter_.load(std::memory_order_relaxed);
+      waiter = waiter_.load(std::memory_order_acquire);
     } while (waiter == THREAD_WAITING);
   }
 
-  if (LIKELY(waiter == POSTED)) {
+  if (FOLLY_LIKELY(waiter == POSTED)) {
     return true;
   }
 
@@ -107,8 +110,7 @@ bool Baton::timedWaitThread(
 
 template <typename Rep, typename Period, typename F>
 bool Baton::try_wait_for(
-    const std::chrono::duration<Rep, Period>& timeout,
-    F&& mainContextFunc) {
+    const std::chrono::duration<Rep, Period>& timeout, F&& mainContextFunc) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   return try_wait_until(deadline, static_cast<F&&>(mainContextFunc));
 }

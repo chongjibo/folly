@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,6 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
 #include <folly/CancellationToken.h>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/Collect.h>
@@ -28,16 +26,23 @@
 #include <string>
 #include <thread>
 
+#if FOLLY_HAS_COROUTINES
+
 TEST(UnboundedQueueTest, EnqueueDeque) {
   folly::coro::UnboundedQueue<std::string, true, true> queue;
+
   constexpr auto val = "a string";
   std::string val1 = val;
+
   EXPECT_TRUE(queue.empty());
   EXPECT_EQ(queue.size(), 0);
+
   queue.enqueue(val1);
   EXPECT_FALSE(queue.empty());
+
   queue.enqueue(std::move(val1));
   EXPECT_EQ(queue.size(), 2);
+
   folly::coro::blockingWait([&]() -> folly::coro::Task<void> {
     for (int i = 0; i < 2; ++i) {
       auto val2 = co_await queue.dequeue();
@@ -188,6 +193,47 @@ TEST(UnboundedQueueTest, CancelledDequeueCompletesNormallyIfAnItemIsAvailable) {
         cancelSource.getToken(), queue.dequeue());
     EXPECT_EQ(123, result);
   }());
+}
+
+TEST(UnboundedQueueTest, TryDequeue) {
+  folly::coro::UnboundedQueue<int> queue;
+
+  queue.enqueue(42);
+  EXPECT_EQ(42, queue.try_dequeue());
+
+  folly::ManualExecutor ex;
+
+  auto fut = queue.dequeue().scheduleOn(&ex).start();
+  ex.drain();
+  EXPECT_FALSE(fut.isReady());
+
+  queue.enqueue(13);
+  ex.drain();
+  EXPECT_TRUE(fut.isReady());
+  EXPECT_EQ(std::move(fut).get(), 13);
+}
+
+TEST(UnboundedQueueTest, TryPeekSingleConsumer) {
+  folly::coro::UnboundedQueue<int, false, true> queue;
+  EXPECT_EQ(nullptr, queue.try_peek());
+
+  queue.enqueue(42);
+  EXPECT_EQ(42, *queue.try_peek());
+
+  queue.enqueue(13);
+  EXPECT_EQ(42, *queue.try_peek());
+
+  queue.enqueue(63);
+  EXPECT_EQ(42, *queue.try_peek());
+
+  EXPECT_EQ(42, queue.try_dequeue());
+  EXPECT_EQ(13, *queue.try_peek());
+
+  EXPECT_EQ(13, queue.try_dequeue());
+  EXPECT_EQ(63, *queue.try_peek());
+
+  EXPECT_EQ(63, queue.try_dequeue());
+  EXPECT_EQ(nullptr, queue.try_peek());
 }
 
 #endif

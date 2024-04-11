@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,7 +61,7 @@ class FutureDAG : public std::enable_shared_from_this<FutureDAG> {
 
   void reset() {
     // Delete all but source node, and reset dependency properties
-    Handle source_node;
+    Handle source_node = 0;
     std::unordered_set<Handle> memo;
     for (auto& node : nodes) {
       for (Handle handle : node.dependencies) {
@@ -213,17 +213,13 @@ class FutureDAGFunctor {
   std::shared_ptr<FutureDAG> dag;
   T state;
   std::vector<T> dep_states;
-  T result() {
-    return state;
-  }
+  T result() { return state; }
   // execReset() runs DAG & clears all nodes except for source
   void execReset() {
     this->dag->go().get();
     this->dag->reset();
   }
-  void exec() {
-    this->dag->go().get();
-  }
+  void exec() { this->dag->go().get(); }
   virtual void operator()() {}
   explicit FutureDAGFunctor(T init_val, Executor::KeepAlive<> defaultExecutor)
       : dag(FutureDAG::create(std::move(defaultExecutor))), state(init_val) {}

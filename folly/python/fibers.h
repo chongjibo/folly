@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 namespace folly {
 namespace python {
 
+// Must be called from main context
 folly::fibers::FiberManager* getFiberManager(
     const folly::fibers::FiberManager::Options& opts = {});
 

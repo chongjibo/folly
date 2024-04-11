@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,29 @@
  */
 
 #include <folly/Chrono.h>
+
 #include <folly/portability/GTest.h>
 
 using namespace std::chrono;
 using namespace folly::chrono;
+
+static_assert( //
+    std::is_same_v<
+        clock_traits<steady_clock>::spec,
+        clock_traits<coarse_steady_clock>::spec>);
+static_assert( //
+    std::is_same_v<
+        steady_clock::time_point::duration,
+        coarse_steady_clock::time_point::duration>);
+
+static_assert( //
+    std::is_same_v<
+        clock_traits<system_clock>::spec,
+        clock_traits<coarse_system_clock>::spec>);
+static_assert( //
+    std::is_same_v<
+        system_clock::time_point::duration,
+        coarse_system_clock::time_point::duration>);
 
 namespace {
 

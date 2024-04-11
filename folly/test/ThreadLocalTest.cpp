@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,25 +39,39 @@
 #include <glog/logging.h>
 
 #include <folly/Memory.h>
+#include <folly/experimental/TestUtil.h>
 #include <folly/experimental/io/FsUtil.h>
+#include <folly/lang/Keep.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/Unistd.h>
 #include <folly/synchronization/Baton.h>
-#include <folly/synchronization/detail/ThreadCachedInts.h>
 #include <folly/system/ThreadId.h>
 
 using namespace folly;
+
+extern "C" FOLLY_KEEP int* check_thread_local_get(ThreadLocal<int>& o) {
+  return o.get();
+}
+
+extern "C" FOLLY_KEEP int* check_thread_local_get_existing(
+    ThreadLocal<int>& o) {
+  return o.get_existing();
+}
+
+template <typename>
+struct static_meta_of;
+
+template <template <typename...> class X, typename A0, typename... A>
+struct static_meta_of<X<A0, A...>> {
+  using type = folly::threadlocal_detail::StaticMeta<A...>;
+};
 
 struct Widget {
   static int totalVal_;
   static int totalMade_;
   int val_;
-  Widget() : val_(0) {
-    totalMade_++;
-  }
-  ~Widget() {
-    totalVal_ += val_;
-  }
+  Widget() : val_(0) { totalMade_++; }
+  ~Widget() { totalVal_ += val_; }
 
   static void customDeleter(Widget* w, TLPDestructionMode mode) {
     totalVal_ += (mode == TLPDestructionMode::ALL_THREADS) ? 1000 : 1;
@@ -75,7 +89,7 @@ struct MultiWidget {
     // allocating more than elementsCapacity
 
     using TL = ThreadLocal<size_t>;
-    using TLMeta = threadlocal_detail::static_meta_of<TL>::type;
+    using TLMeta = static_meta_of<TL>::type;
     auto const numElements = TLMeta::instance().elementsCapacity() + 1;
     std::vector<ThreadLocal<size_t>> elems(numElements);
     for (auto& t : elems) {
@@ -90,8 +104,7 @@ TEST(ThreadLocalPtr, BasicDestructor) {
   std::thread([&w]() {
     w.reset(new Widget());
     w.get()->val_ += 10;
-  })
-      .join();
+  }).join();
   EXPECT_EQ(10, Widget::totalVal_);
 }
 
@@ -102,8 +115,7 @@ TEST(ThreadLocalPtr, CustomDeleter1) {
     std::thread([&w]() {
       w.reset(new Widget(), Widget::customDeleter);
       w.get()->val_ += 10;
-    })
-        .join();
+    }).join();
     EXPECT_EQ(11, Widget::totalVal_);
   }
   EXPECT_EQ(11, Widget::totalVal_);
@@ -120,8 +132,7 @@ TEST(ThreadLocalPtr, CustomDeleterOwnershipTransfer) {
     std::thread([&w, &source]() {
       w.reset(std::move(source));
       w.get()->val_ += 10;
-    })
-        .join();
+    }).join();
     EXPECT_EQ(11, Widget::totalVal_);
   }
   EXPECT_EQ(11, Widget::totalVal_);
@@ -135,8 +146,7 @@ TEST(ThreadLocalPtr, DefaultDeleterOwnershipTransfer) {
     std::thread([&w, &source]() {
       w.reset(std::move(source));
       w.get()->val_ += 10;
-    })
-        .join();
+    }).join();
     EXPECT_EQ(10, Widget::totalVal_);
   }
   EXPECT_EQ(10, Widget::totalVal_);
@@ -161,8 +171,7 @@ TEST(ThreadLocalPtr, TestRelease) {
     w.get()->val_ += 10;
 
     wPtr.reset(w.release());
-  })
-      .join();
+  }).join();
   EXPECT_EQ(0, Widget::totalVal_);
   wPtr.reset();
   EXPECT_EQ(10, Widget::totalVal_);
@@ -181,8 +190,7 @@ TEST(ThreadLocalPtr, CreateOnThreadExit) {
       ThreadLocal<Widget> wl;
       ++wl.get()->val_;
     });
-  })
-      .join();
+  }).join();
   EXPECT_EQ(2, Widget::totalVal_);
 }
 
@@ -247,17 +255,27 @@ TEST(ThreadLocalPtr, CustomDeleter2) {
   EXPECT_EQ(1010, Widget::totalVal_);
 }
 
+TEST(ThreadLocal, NotDefaultConstructible) {
+  struct Object {
+    int value;
+    explicit Object(int v) : value{v} {}
+  };
+  std::atomic<int> a{};
+  ThreadLocal<Object> o{[&a] { return new Object(a++); }};
+  EXPECT_EQ(0, o->value);
+  std::thread([&] { EXPECT_EQ(1, o->value); }).join();
+}
+
 TEST(ThreadLocal, GetWithoutCreateUncreated) {
   Widget::totalVal_ = 0;
   Widget::totalMade_ = 0;
   ThreadLocal<Widget> w;
   std::thread([&w]() {
-    auto ptr = w.getIfExist();
+    auto ptr = w.get_existing();
     if (ptr) {
       ptr->val_++;
     }
-  })
-      .join();
+  }).join();
   EXPECT_EQ(0, Widget::totalMade_);
 }
 
@@ -267,12 +285,11 @@ TEST(ThreadLocal, GetWithoutCreateGets) {
   ThreadLocal<Widget> w;
   std::thread([&w]() {
     w->val_++;
-    auto ptr = w.getIfExist();
+    auto ptr = w.get_existing();
     if (ptr) {
       ptr->val_++;
     }
-  })
-      .join();
+  }).join();
   EXPECT_EQ(1, Widget::totalMade_);
   EXPECT_EQ(2, Widget::totalVal_);
 }
@@ -358,9 +375,7 @@ class SimpleThreadCachedInt {
   ThreadLocal<int, NewTag> val_;
 
  public:
-  void add(int val) {
-    *val_ += val;
-  }
+  void add(int val) { *val_ += val; }
 
   int read() {
     int ret = 0;
@@ -452,39 +467,6 @@ TEST(ThreadLocal, Movable2) {
 }
 
 namespace {
-class ThreadCachedIntWidget {
- public:
-  ThreadCachedIntWidget() {}
-
-  ~ThreadCachedIntWidget() {
-    if (ints_) {
-      ints_->increment(0);
-    }
-  }
-
-  void set(detail::ThreadCachedInts<void>* ints) {
-    ints_ = ints;
-  }
-
- private:
-  detail::ThreadCachedInts<void>* ints_{nullptr};
-};
-} // namespace
-
-TEST(ThreadLocal, TCICreateOnThreadExit) {
-  detail::ThreadCachedInts<void> ints;
-  ThreadLocal<ThreadCachedIntWidget> w;
-
-  std::thread([&] {
-    // make sure the ints object is created
-    ints.increment(1);
-    // now the widget
-    w->set(&ints);
-  })
-      .join();
-}
-
-namespace {
 
 constexpr size_t kFillObjectSize = 300;
 
@@ -512,14 +494,10 @@ class FillObject {
     }
   }
 
-  ~FillObject() {
-    ++gDestroyed;
-  }
+  ~FillObject() { ++gDestroyed; }
 
  private:
-  uint64_t val() const {
-    return (idx_ << 40) | folly::getCurrentThreadID();
-  }
+  uint64_t val() const { return (idx_ << 40) | folly::getCurrentThreadID(); }
 
   uint64_t idx_;
   uint64_t data_[kFillObjectSize];
@@ -639,9 +617,7 @@ class HoldsOne {
  public:
   HoldsOne() : value_(1) {}
   // Do an actual access to catch the buggy case where this == nullptr
-  int value() const {
-    return value_;
-  }
+  int value() const { return value_; }
 
  private:
   int value_;
@@ -779,8 +755,8 @@ TEST(ThreadLocal, Fork2) {
 #endif
 
 TEST(ThreadLocal, SHARED_LIBRARY_TEST_NAME) {
-  auto exe = fs::executable_path();
-  auto lib = exe.parent_path() / "thread_local_test_lib.so";
+  auto const lib =
+      folly::test::find_resource("folly/test/thread_local_test_lib.so");
   auto handle = dlopen(lib.string().c_str(), RTLD_LAZY);
   ASSERT_NE(nullptr, handle)
       << "unable to load " << lib.string() << ": " << dlerror();
@@ -822,18 +798,3 @@ TEST(ThreadLocal, SHARED_LIBRARY_TEST_NAME) {
 }
 
 #endif
-
-namespace folly {
-namespace threadlocal_detail {
-struct PthreadKeyUnregisterTester {
-  PthreadKeyUnregister p;
-  constexpr PthreadKeyUnregisterTester() = default;
-};
-} // namespace threadlocal_detail
-} // namespace folly
-
-TEST(ThreadLocal, UnregisterClassHasConstExprCtor) {
-  folly::threadlocal_detail::PthreadKeyUnregisterTester x;
-  // yep!
-  SUCCEED();
-}

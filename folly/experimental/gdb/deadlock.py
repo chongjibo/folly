@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ from enum import Enum
 import gdb
 
 
-class DiGraph(object):
+class DiGraph:
     """
     Adapted from networkx: http://networkx.github.io/
     Represents a directed graph. Edges can store (key, value) attributes.
@@ -166,7 +166,7 @@ def simple_cycles(G):  # noqa: C901
     """
 
     def _unblock(thisnode, blocked, B):
-        stack = set([thisnode])
+        stack = {thisnode}
         while stack:
             node = stack.pop()
             if node in blocked:
@@ -319,7 +319,7 @@ class MutexType(Enum):
 
 def print_cycle(graph, lwp_to_thread_id, cycle):
     """Prints the threads and mutexes involved in the deadlock."""
-    for (m, n) in cycle:
+    for m, n in cycle:
         print(
             "Thread %d (LWP %d) is waiting on %s (0x%016x) held by "
             "Thread %d (LWP %d)"
@@ -435,8 +435,8 @@ class Deadlock(gdb.Command):
         # Go through all the blocked threads and see which threads
         # they are blocked on, and build the thread wait graph.
         for thread_lwp, mutex_type in blocked_threads.items():
-            get_owner_and_address_func = MutexType.get_mutex_owner_and_address_func_for_type(
-                mutex_type
+            get_owner_and_address_func = (
+                MutexType.get_mutex_owner_and_address_func_for_type(mutex_type)
             )
             if not get_owner_and_address_func:
                 continue

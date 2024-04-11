@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,35 +15,29 @@
  */
 
 #include <folly/experimental/coro/detail/Malloc.h>
-#include <folly/Benchmark.h>
 
-#include <new>
+#include <folly/lang/Hint.h>
+#include <folly/lang/New.h>
 
 extern "C" {
 
 FOLLY_NOINLINE
 void* folly_coro_async_malloc(std::size_t size) {
-  void* p = ::operator new(size);
+  auto p = folly::operator_new(size);
 
   // Add this after the call to prevent the compiler from
   // turning the call to operator new() into a tailcall.
-  folly::doNotOptimizeAway(p);
+  folly::compiler_must_not_elide(p);
 
   return p;
 }
 
 FOLLY_NOINLINE
 void folly_coro_async_free(void* ptr, std::size_t size) {
-#if __cpp_sized_deallocation >= 201309
-  ::operator delete(ptr, size);
-#else
-  // sized delete is not available on iOS before 10.0
-  (void)size;
-  ::operator delete(ptr);
-#endif
+  folly::operator_delete(ptr, size);
 
   // Add this after the call to prevent the compiler from
   // turning the call to operator delete() into a tailcall.
-  folly::doNotOptimizeAway(size);
+  folly::compiler_must_not_elide(size);
 }
 } // extern "C"

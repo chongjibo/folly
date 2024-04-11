@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,9 +41,7 @@ struct ObservableTraits {
     observable.subscribe(std::forward<F>(callback));
   }
 
-  static void unsubscribe(Observable& observable) {
-    observable.unsubscribe();
-  }
+  static void unsubscribe(Observable& observable) { observable.unsubscribe(); }
 };
 
 template <typename Observable, typename Traits = ObservableTraits<Observable>>
@@ -58,6 +56,7 @@ class ObserverCreator {
 
  private:
   using Context = detail::ObserverCreatorContext<Observable, Traits>;
+  class ContextPrimaryPtr;
 
   std::shared_ptr<Context> context_;
 };

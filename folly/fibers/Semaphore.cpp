@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -119,6 +119,20 @@ bool Semaphore::try_wait(Waiter& waiter) {
   return true;
 }
 
+bool Semaphore::try_wait() {
+  auto oldVal = tokens_.load(std::memory_order_acquire);
+  do {
+    if (oldVal == 0) {
+      return false;
+    }
+  } while (!tokens_.compare_exchange_weak(
+      oldVal,
+      oldVal - 1,
+      std::memory_order_release,
+      std::memory_order_acquire));
+  return true;
+}
+
 #if FOLLY_HAS_COROUTINES
 
 coro::Task<void> Semaphore::co_wait() {
@@ -157,7 +171,7 @@ coro::Task<void> Semaphore::co_wait() {
         // sure that we aren't reading it concurrently with a potential write
         // from a thread requesting cancellation.
         if (cancelled) {
-          co_yield folly::coro::co_error(folly::OperationCancelled{});
+          co_yield folly::coro::co_cancelled;
         }
 
         co_return;
@@ -173,15 +187,11 @@ coro::Task<void> Semaphore::co_wait() {
 
 #endif
 
-#if FOLLY_FUTURE_USING_FIBER
-
 namespace {
 
 class FutureWaiter final : public fibers::Baton::Waiter {
  public:
-  FutureWaiter() {
-    semaphoreWaiter.baton.setWaiter(*this);
-  }
+  FutureWaiter() { semaphoreWaiter.baton.setWaiter(*this); }
 
   void post() override {
     std::unique_ptr<FutureWaiter> destroyOnReturn{this};
@@ -216,10 +226,12 @@ SemiFuture<Unit> Semaphore::future_wait() {
   return makeSemiFuture();
 }
 
-#endif
-
 size_t Semaphore::getCapacity() const {
   return capacity_;
+}
+
+size_t Semaphore::getAvailableTokens() const {
+  return tokens_.load(std::memory_order_relaxed);
 }
 
 } // namespace fibers

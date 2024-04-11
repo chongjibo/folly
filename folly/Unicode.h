@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// Some utility routines relating to unicode.
+// Some utility routines relating to Unicode.
 
 #pragma once
 
@@ -63,8 +63,7 @@ inline bool utf16_code_unit_is_low_surrogate(char16_t const c) {
   return c >= 0xdc00 && c < 0xe000;
 }
 inline char32_t unicode_code_point_from_utf16_surrogate_pair(
-    char16_t const high,
-    char16_t const low) {
+    char16_t const high, char16_t const low) {
   if (!utf16_code_unit_is_high_surrogate(high)) {
     throw_exception<unicode_error>("invalid high surrogate");
   }
@@ -77,19 +76,18 @@ inline char32_t unicode_code_point_from_utf16_surrogate_pair(
 //////////////////////////////////////////////////////////////////////
 
 /*
- * Encode a single unicode code point into a UTF-8 byte sequence.
+ * Encode a single Unicode code point into a UTF-8 byte sequence.
  *
- * Return value is undefined if `cp' is an invalid code point.
+ * Result is undefined if `cp' is an invalid code point.
  */
 std::string codePointToUtf8(char32_t cp);
+void appendCodePointToUtf8(char32_t cp, std::string& out);
 
 /*
- * Decode a single unicode code point from UTF-8 byte sequence.
+ * Decode a single Unicode code point from UTF-8 byte sequence.
  */
 char32_t utf8ToCodePoint(
-    const unsigned char*& p,
-    const unsigned char* const e,
-    bool skipOnError);
+    const unsigned char*& p, const unsigned char* const e, bool skipOnError);
 
 //////////////////////////////////////////////////////////////////////
 

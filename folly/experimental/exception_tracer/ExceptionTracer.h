@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@
 #include <typeinfo>
 #include <vector>
 
+#include <folly/portability/Config.h>
+
 namespace folly {
 namespace exception_tracer {
 
@@ -35,10 +37,10 @@ struct ExceptionInfo {
   std::vector<uintptr_t> frames; // front() is top of stack
 };
 
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+
 void printExceptionInfo(
-    std::ostream& out,
-    const ExceptionInfo& info,
-    int options);
+    std::ostream& out, const ExceptionInfo& info, int options);
 std::ostream& operator<<(std::ostream& out, const ExceptionInfo& info);
 
 /**
@@ -51,6 +53,8 @@ std::vector<ExceptionInfo> getCurrentExceptions();
  * Install the terminate / unexpected handlers to dump exceptions.
  */
 void installHandlers();
+
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 } // namespace exception_tracer
 } // namespace folly

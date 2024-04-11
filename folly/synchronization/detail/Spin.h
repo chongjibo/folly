@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,6 +41,15 @@ spin_result spin_pause_until(
     return spin_result::advance;
   }
 
+  if (f()) {
+    return spin_result::success;
+  }
+
+  constexpr auto min = std::chrono::time_point<Clock, Duration>::min();
+  if (deadline == min) {
+    return spin_result::timeout;
+  }
+
   auto tbegin = Clock::now();
   while (true) {
     if (f()) {
@@ -68,14 +77,13 @@ spin_result spin_pause_until(
 
 template <typename Clock, typename Duration, typename F>
 spin_result spin_yield_until(
-    std::chrono::time_point<Clock, Duration> const& deadline,
-    F f) {
+    std::chrono::time_point<Clock, Duration> const& deadline, F f) {
   while (true) {
     if (f()) {
       return spin_result::success;
     }
 
-    auto const max = std::chrono::time_point<Clock, Duration>::max();
+    const auto max = std::chrono::time_point<Clock, Duration>::max();
     if (deadline != max && Clock::now() >= deadline) {
       return spin_result::timeout;
     }

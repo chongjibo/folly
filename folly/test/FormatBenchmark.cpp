@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,18 @@
 
 #include <folly/Format.h>
 
+#include <utility>
+
 #include <glog/logging.h>
 
 #include <folly/Benchmark.h>
 #include <folly/FBVector.h>
 #include <folly/Utility.h>
-#include <folly/dynamic.h>
 #include <folly/init/Init.h>
-#include <folly/json.h>
+#include <folly/json/dynamic.h>
+#include <folly/json/json.h>
 
-#include <utility>
+FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
 
 using namespace folly;
 
@@ -162,24 +164,8 @@ BENCHMARK(format_nested_strings, iters) {
         format(
             &out,
             "{} {}",
-            format("{} {}", i, i + 1).str(),
-            format("{} {}", -i, -i - 1).str());
-      });
-    }
-  }
-}
-
-BENCHMARK_RELATIVE(format_nested_fbstrings, iters) {
-  BenchmarkSuspender suspender;
-  while (iters--) {
-    for (int i = 0; i < 1000; ++i) {
-      fbstring out;
-      suspender.dismissing([&] {
-        format(
-            &out,
-            "{} {}",
-            format("{} {}", i, i + 1).fbstr(),
-            format("{} {}", -i, -i - 1).fbstr());
+            sformat("{} {}", i, i + 1),
+            sformat("{} {}", -i, -i - 1));
       });
     }
   }
@@ -314,7 +300,6 @@ BENCHMARK_RELATIVE(sformat_long_string_safe, iters) {
 // bigFormat_format                                  90.41%   196.91us    5.08K
 // ----------------------------------------------------------------------------
 // format_nested_strings                                      317.65us    3.15K
-// format_nested_fbstrings                           99.89%   318.01us    3.14K
 // format_nested_direct                             116.52%   272.62us    3.67K
 // ----------------------------------------------------------------------------
 // copy_short_string                                           28.33ns   35.30M
@@ -331,7 +316,7 @@ BENCHMARK_RELATIVE(sformat_long_string_safe, iters) {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
-  init(&argc, &argv, true);
+  folly::Init init(&argc, &argv, true);
   runBenchmarks();
   return 0;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,8 +30,7 @@ namespace folly {
 class LogCategoryConfig {
  public:
   explicit LogCategoryConfig(
-      LogLevel level = kDefaultLogLevel,
-      bool inheritParentLevel = true);
+      LogLevel level = kDefaultLogLevel, bool inheritParentLevel = true);
   LogCategoryConfig(
       LogLevel level,
       bool inheritParentLevel,

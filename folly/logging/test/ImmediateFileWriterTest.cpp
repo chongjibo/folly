@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+#include <folly/logging/ImmediateFileWriter.h>
+
+#include <signal.h>
+
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -22,7 +26,6 @@
 #include <folly/Exception.h>
 #include <folly/FileUtil.h>
 #include <folly/experimental/TestUtil.h>
-#include <folly/logging/ImmediateFileWriter.h>
 #include <folly/logging/LoggerDB.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
@@ -82,9 +85,7 @@ namespace {
 static std::vector<std::string>* internalWarnings;
 
 void handleLoggingError(
-    StringPiece /* file */,
-    int /* lineNumber */,
-    std::string&& msg) {
+    StringPiece /* file */, int /* lineNumber */, std::string&& msg) {
   internalWarnings->emplace_back(std::move(msg));
 }
 } // namespace

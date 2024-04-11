@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include <folly/Conv.h>
 #include <folly/String.h>
 #include <folly/memory/Malloc.h>
+
 #include <glog/logging.h>
 
 namespace folly {
@@ -97,6 +98,13 @@ bool JemallocNodumpAllocator::extend_and_setup_arena() {
     LOG(FATAL) << "Unable to set the hooks: " << errnoStr(ret);
   }
 #endif
+
+  const auto arenaNameKey =
+      folly::to<std::string>("arena.", arena_index_, ".name");
+  const char* arenaNameStr = "FollyJemallocNodumpAllocator";
+  // Note that the mallctl return value is ignored because the name setting is
+  // best effort and can fail on older versions of jemalloc.
+  mallctl(arenaNameKey.c_str(), nullptr, nullptr, &arenaNameStr, sizeof(void*));
 
   return true;
 #else // FOLLY_JEMALLOC_NODUMP_ALLOCATOR_SUPPORTED

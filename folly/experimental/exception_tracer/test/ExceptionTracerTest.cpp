@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@
 #include <stdexcept>
 
 #include <folly/experimental/exception_tracer/ExceptionTracer.h>
+
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 // clang-format off
 [[noreturn]] void bar() {
@@ -90,10 +92,16 @@ void testExceptionPtr2() {
   }
 }
 
-int main(int /* argc */, char* /* argv */ []) {
+int main(int /* argc */, char* /* argv */[]) {
   foo();
   testExceptionPtr1();
   testExceptionPtr2();
   baz();
   // no return because baz() is [[noreturn]]
 }
+
+#else // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+
+int main(int /* argc */, char* /* argv */[]) {}
+
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF

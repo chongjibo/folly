@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 #include <folly/Benchmark.h>
 #include <folly/experimental/flat_combining/test/FlatCombiningTestHelpers.h>
-
 #include <folly/portability/GTest.h>
+
 #include <glog/logging.h>
 
 using namespace folly::test;
@@ -344,7 +344,7 @@ void benchmarkSetup() {
             << " logical cores" << std::endl;
 }
 
-TEST(FlatCombining, folly_benchmark) {
+TEST(FlatCombining, follyBenchmark) {
   if (FLAGS_benchmark) {
     benchmarkSetup();
     for (bool b : {true, false}) {
@@ -405,7 +405,7 @@ static uint64_t test(
   return res;
 }
 
-TEST(FlatCombining, direct_measurement) {
+TEST(FlatCombining, directMeasurement) {
   if (!FLAGS_direct) {
     return;
   }

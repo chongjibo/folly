@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+//
+// Docs: https://fburl.com/fbcref_file
+//
+
 #pragma once
 
 #include <fcntl.h>
@@ -27,23 +31,28 @@
 #include <folly/Expected.h>
 #include <folly/Portability.h>
 #include <folly/Range.h>
+#include <folly/portability/Fcntl.h>
 #include <folly/portability/Unistd.h>
 
 namespace folly {
 
 /**
  * A File represents an open file.
+ * @class folly::File
+ * @refcode folly/docs/examples/folly/File.cpp
  */
 class File {
  public:
   /**
    * Creates an empty File object, for late initialization.
    */
-  File() noexcept;
+  constexpr File() noexcept : fd_(-1), ownsFd_(false) {}
 
   /**
    * Create a File object from an existing file descriptor.
-   * Takes ownership of the file descriptor if ownsFd is true.
+   *
+   * @param fd Existing file descriptor
+   * @param ownsFd Takes ownership of the file descriptor if ownsFd is true.
    */
   explicit File(int fd, bool ownsFd = false) noexcept;
 
@@ -53,9 +62,7 @@ class File {
    */
   explicit File(const char* name, int flags = O_RDONLY, mode_t mode = 0666);
   explicit File(
-      const std::string& name,
-      int flags = O_RDONLY,
-      mode_t mode = 0666);
+      const std::string& name, int flags = O_RDONLY, mode_t mode = 0666);
   explicit File(StringPiece name, int flags = O_RDONLY, mode_t mode = 0666);
 
   /**
@@ -67,8 +74,8 @@ class File {
   static Expected<File, exception_wrapper> makeFile(Args&&... args) noexcept {
     try {
       return File(std::forward<Args>(args)...);
-    } catch (const std::system_error& se) {
-      return makeUnexpected(exception_wrapper(std::current_exception(), se));
+    } catch (const std::system_error&) {
+      return makeUnexpected(exception_wrapper(std::current_exception()));
     }
   }
 
@@ -82,21 +89,28 @@ class File {
   /**
    * Return the file descriptor, or -1 if the file was closed.
    */
-  int fd() const {
-    return fd_;
-  }
+  int fd() const { return fd_; }
 
   /**
    * Returns 'true' iff the file was successfully opened.
    */
-  explicit operator bool() const {
-    return fd_ != -1;
-  }
+  explicit operator bool() const { return fd_ != -1; }
 
   /**
    * Duplicate file descriptor and return File that owns it.
+   *
+   * Duplicated file descriptor does not have close-on-exec flag set,
+   * so it is leaked to child processes. Consider using "dupCloseOnExec".
    */
   File dup() const;
+
+  /**
+   * Duplicate file descriptor and return File that owns it.
+   *
+   * This functions creates a descriptor with close-on-exec flag set
+   * (where supported, otherwise it is equivalent to "dup").
+   */
+  File dupCloseOnExec() const;
 
   /**
    * If we own the file descriptor, close the file and throw on error.
@@ -125,14 +139,16 @@ class File {
   File(File&&) noexcept;
   File& operator=(File&&);
 
-  // FLOCK (INTERPROCESS) LOCKS
-  //
-  // NOTE THAT THESE LOCKS ARE flock() LOCKS.  That is, they may only be used
-  // for inter-process synchronization -- an attempt to acquire a second lock
-  // on the same file descriptor from the same process may succeed.  Attempting
-  // to acquire a second lock on a different file descriptor for the same file
-  // should fail, but some systems might implement flock() using fcntl() locks,
-  // in which case it will succeed.
+  /**
+   * FLOCK (INTERPROCESS) LOCKS
+   *
+   * NOTE THAT THESE LOCKS ARE flock() LOCKS.  That is, they may only be used
+   * for inter-process synchronization -- an attempt to acquire a second lock
+   * on the same file descriptor from the same process may succeed.  Attempting
+   * to acquire a second lock on a different file descriptor for the same file
+   * should fail, but some systems might implement flock() using fcntl() locks,
+   * in which case it will succeed.
+   */
   void lock();
   bool try_lock();
   void unlock();
@@ -153,6 +169,9 @@ class File {
   bool ownsFd_;
 };
 
+/**
+ * Swaps the file descriptors and ownership
+ */
 void swap(File& a, File& b) noexcept;
 
 } // namespace folly

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,13 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pyre-unsafe
+
 import array
 import struct
 import unittest
 
 from folly.iobuf import IOBuf
 
-from .iobuf_helper import get_empty_chain, make_chain
+from .iobuf_helper import (
+    get_empty_chain,
+    make_chain,
+    to_uppercase_string,
+    to_uppercase_string_heap,
+)
 
 
 class IOBufTests(unittest.TestCase):
@@ -42,8 +49,7 @@ class IOBufTests(unittest.TestCase):
         self.assertEqual(len(chain), len(control[0]))
         self.assertEqual(chain.chain_size(), sum(len(x) for x in control))
         self.assertEqual(chain.chain_count(), len(control))
-        # pyre-fixme[6]: Expected `Union[bytearray, bytes, memoryview]` for 1st
-        #  param but got `Optional[IOBuf]`.
+        # pyre-fixme[6]: For 1st argument expected `Buffer` but got `Optional[IOBuf]`.
         self.assertEqual(memoryview(chain.next), control[1])
         self.assertEqual(b"".join(chain), b"".join(control))
 
@@ -56,8 +62,7 @@ class IOBufTests(unittest.TestCase):
         self.assertEqual(len(chain), len(control[0]))
         self.assertEqual(chain.chain_size(), sum(len(x) for x in control))
         self.assertEqual(chain.chain_count(), len(control))
-        # pyre-fixme[6]: Expected `Union[bytearray, bytes, memoryview]` for 1st
-        #  param but got `Optional[IOBuf]`.
+        # pyre-fixme[6]: For 1st argument expected `Buffer` but got `Optional[IOBuf]`.
         self.assertEqual(memoryview(chain.next), control[1])
         self.assertEqual(b"".join(chain), b"".join(control))
 
@@ -73,8 +78,7 @@ class IOBufTests(unittest.TestCase):
     def test_empty(self) -> None:
         x = b""
         xb = IOBuf(x)
-        # pyre-fixme[6]: Expected `Union[bytearray, bytes, memoryview]` for 1st
-        #  param but got `IOBuf`.
+        # pyre-fixme[6]: For 1st argument expected `Buffer` but got `IOBuf`.
         self.assertEqual(memoryview(xb), x)
         self.assertEqual(bytes(xb), x)
         self.assertFalse(xb)
@@ -115,3 +119,21 @@ class IOBufTests(unittest.TestCase):
     def test_multidimensional(self) -> None:
         x = IOBuf(memoryview(b"abcdef").cast("B", shape=[3, 2]))
         self.assertEqual(x.chain_size(), 6)
+
+    def test_conversion_from_python_to_cpp(self) -> None:
+        iobuf = make_chain(
+            [
+                IOBuf(memoryview(b"abc")),
+                IOBuf(memoryview(b"def")),
+                IOBuf(memoryview(b"ghi")),
+            ]
+        )
+        self.assertEqual(to_uppercase_string(iobuf), "ABCDEFGHI")
+        self.assertEqual(to_uppercase_string_heap(iobuf), "ABCDEFGHI")
+
+    def test_conversion_from_python_to_cpp_with_wrong_type(self) -> None:
+        not_an_iobuf = [1, 2, 3]
+        with self.assertRaises(TypeError):
+            to_uppercase_string(not_an_iobuf)
+        with self.assertRaises(TypeError):
+            to_uppercase_string_heap(not_an_iobuf)

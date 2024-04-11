@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -167,10 +167,7 @@ StringPiece rtrimWhitespace(StringPiece sp) {
 namespace {
 
 int stringAppendfImplHelper(
-    char* buf,
-    size_t bufsize,
-    const char* format,
-    va_list args) {
+    char* buf, size_t bufsize, const char* format, va_list args) {
   va_list args_copy;
   va_copy(args_copy, args);
   int bytes_used = vsnprintf(buf, bufsize, format, args_copy);
@@ -223,9 +220,7 @@ void stringAppendfImpl(std::string& output, const char* format, va_list args) {
 std::string stringPrintf(const char* format, ...) {
   va_list ap;
   va_start(ap, format);
-  SCOPE_EXIT {
-    va_end(ap);
-  };
+  SCOPE_EXIT { va_end(ap); };
   return stringVPrintf(format, ap);
 }
 
@@ -240,14 +235,12 @@ std::string stringVPrintf(const char* format, va_list ap) {
 std::string& stringAppendf(std::string* output, const char* format, ...) {
   va_list ap;
   va_start(ap, format);
-  SCOPE_EXIT {
-    va_end(ap);
-  };
+  SCOPE_EXIT { va_end(ap); };
   return stringVAppendf(output, format, ap);
 }
 
-std::string&
-stringVAppendf(std::string* output, const char* format, va_list ap) {
+std::string& stringVAppendf(
+    std::string* output, const char* format, va_list ap) {
   stringAppendfImpl(*output, format, ap);
   return *output;
 }
@@ -255,9 +248,7 @@ stringVAppendf(std::string* output, const char* format, va_list ap) {
 void stringPrintf(std::string* output, const char* format, ...) {
   va_list ap;
   va_start(ap, format);
-  SCOPE_EXIT {
-    va_end(ap);
-  };
+  SCOPE_EXIT { va_end(ap); };
   return stringVPrintf(output, format, ap);
 }
 
@@ -302,7 +293,7 @@ const PrettySuffix kPrettyBytesMetricSuffixes[] = {
     {"GB", 1e9L},
     {"MB", 1e6L},
     {"kB", 1e3L},
-    {"B ", 0L},
+    {"B ", 0},
     {nullptr, 0},
 };
 
@@ -313,7 +304,7 @@ const PrettySuffix kPrettyBytesBinarySuffixes[] = {
     {"GB", int64_t(1) << 30},
     {"MB", int64_t(1) << 20},
     {"kB", int64_t(1) << 10},
-    {"B ", 0L},
+    {"B ", 0},
     {nullptr, 0},
 };
 
@@ -324,7 +315,7 @@ const PrettySuffix kPrettyBytesBinaryIECSuffixes[] = {
     {"GiB", int64_t(1) << 30},
     {"MiB", int64_t(1) << 20},
     {"KiB", int64_t(1) << 10},
-    {"B  ", 0L},
+    {"B  ", 0},
     {nullptr, 0},
 };
 
@@ -399,7 +390,7 @@ std::string prettyPrint(double val, PrettyType type, bool addSpace) {
           buf,
           sizeof buf,
           "%.4g%s%s",
-          (suffixes[i].val ? (val / suffixes[i].val) : val),
+          (suffixes[i].val != 0. ? (val / suffixes[i].val) : val),
           (addSpace ? " " : ""),
           suffixes[i].suffix);
       return std::string(buf);
@@ -414,8 +405,7 @@ std::string prettyPrint(double val, PrettyType type, bool addSpace) {
 // TODO:
 // 1) Benchmark & optimize
 double prettyToDouble(
-    folly::StringPiece* const prettyString,
-    const PrettyType type) {
+    folly::StringPiece* const prettyString, const PrettyType type) {
   auto value = folly::to<double>(prettyString);
   while (!prettyString->empty() && std::isspace(prettyString->front())) {
     prettyString->advance(1); // Skipping spaces between number and suffix
@@ -444,8 +434,8 @@ double prettyToDouble(
         "Unable to parse suffix \"", *prettyString, "\""));
   }
   prettyString->advance(size_t(longestPrefixLen));
-  return suffixes[bestPrefixId].val ? value * suffixes[bestPrefixId].val
-                                    : value;
+  return suffixes[bestPrefixId].val != 0. ? value * suffixes[bestPrefixId].val
+                                          : value;
 }
 
 double prettyToDouble(folly::StringPiece prettyString, const PrettyType type) {
@@ -471,12 +461,8 @@ std::string hexDump(const void* ptr, size_t size) {
 // `strerror_r` to `invoke_strerror_r` function, and C++ compiler
 // selects proper function.
 
-FOLLY_MAYBE_UNUSED
-static std::string invoke_strerror_r(
-    int (*strerror_r)(int, char*, size_t),
-    int err,
-    char* buf,
-    size_t buflen) {
+[[maybe_unused]] static std::string invoke_strerror_r(
+    int (*strerror_r)(int, char*, size_t), int err, char* buf, size_t buflen) {
   // Using XSI-compatible strerror_r
   int r = strerror_r(err, buf, buflen);
 
@@ -489,8 +475,7 @@ static std::string invoke_strerror_r(
   }
 }
 
-FOLLY_MAYBE_UNUSED
-static std::string invoke_strerror_r(
+[[maybe_unused]] static std::string invoke_strerror_r(
     char* (*strerror_r)(int, char*, size_t),
     int err,
     char* buf,
@@ -597,29 +582,29 @@ void toLowerAscii32(uint32_t& c) {
   // an overflow in the 8-bit value.  So we can pack four 8-bit values
   // into a uint32_t and run each operation on all four values in parallel
   // without having to use any CPU-specific SIMD instructions.
-  uint32_t rotated = c & uint32_t(0x7f7f7f7fL);
-  rotated += uint32_t(0x25252525L);
-  rotated &= uint32_t(0x7f7f7f7fL);
-  rotated += uint32_t(0x1a1a1a1aL);
+  uint32_t rotated = c & uint32_t(0x7f7f7f7fUL);
+  rotated += uint32_t(0x25252525UL);
+  rotated &= uint32_t(0x7f7f7f7fUL);
+  rotated += uint32_t(0x1a1a1a1aUL);
 
   // Step 5 involves a shift, so some bits will spill over from each
   // 8-bit value into the next.  But that's okay, because they're bits
   // that will be cleared by the mask in step 6 anyway.
   rotated &= ~c;
   rotated >>= 2;
-  rotated &= uint32_t(0x20202020L);
+  rotated &= uint32_t(0x20202020UL);
   c += rotated;
 }
 
 void toLowerAscii64(uint64_t& c) {
   // 64-bit version of toLower32
-  uint64_t rotated = c & uint64_t(0x7f7f7f7f7f7f7f7fL);
-  rotated += uint64_t(0x2525252525252525L);
-  rotated &= uint64_t(0x7f7f7f7f7f7f7f7fL);
-  rotated += uint64_t(0x1a1a1a1a1a1a1a1aL);
+  uint64_t rotated = c & uint64_t(0x7f7f7f7f7f7f7f7fULL);
+  rotated += uint64_t(0x2525252525252525ULL);
+  rotated &= uint64_t(0x7f7f7f7f7f7f7f7fULL);
+  rotated += uint64_t(0x1a1a1a1a1a1a1a1aULL);
   rotated &= ~c;
   rotated >>= 2;
-  rotated &= uint64_t(0x2020202020202020L);
+  rotated &= uint64_t(0x2020202020202020ULL);
   c += rotated;
 }
 
@@ -674,8 +659,8 @@ void toLowerAscii(char* str, size_t length) {
 
 namespace detail {
 
-size_t
-hexDumpLine(const void* ptr, size_t offset, size_t size, std::string& line) {
+size_t hexDumpLine(
+    const void* ptr, size_t offset, size_t size, std::string& line) {
   static char hexValues[] = "0123456789abcdef";
   // Line layout:
   // 8: address

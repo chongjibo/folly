@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,14 @@
  */
 
 #pragma once
+
+#include <unordered_map>
+
 #include <folly/CPortability.h>
 #include <folly/Optional.h>
-#include <folly/dynamic.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/IOBufQueue.h>
-#include <unordered_map>
+#include <folly/json/dynamic.h>
 
 /* This is an implementation of the BSER binary serialization scheme.
  * BSER was created as a binary, local-system-only representation of
@@ -97,8 +99,7 @@ size_t decodePduLength(const folly::IOBuf*);
 
 folly::fbstring toBser(folly::dynamic const&, const serialization_opts&);
 std::unique_ptr<folly::IOBuf> toBserIOBuf(
-    folly::dynamic const&,
-    const serialization_opts&);
+    folly::dynamic const&, const serialization_opts&);
 } // namespace bser
 } // namespace folly
 

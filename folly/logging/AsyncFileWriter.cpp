@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,8 @@
 namespace folly {
 
 AsyncFileWriter::AsyncFileWriter(StringPiece path)
-    : AsyncFileWriter{File{path.str(), O_WRONLY | O_APPEND | O_CREAT}} {}
+    : AsyncFileWriter{
+          File{path.str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC}} {}
 
 AsyncFileWriter::AsyncFileWriter(folly::File&& file) : file_{std::move(file)} {}
 
@@ -36,8 +37,7 @@ bool AsyncFileWriter::ttyOutput() const {
 }
 
 void AsyncFileWriter::writeToFile(
-    const std::vector<std::string>& ioQueue,
-    size_t numDiscarded) {
+    const std::vector<std::string>& ioQueue, size_t numDiscarded) {
 #ifndef _WIN32
   // kNumIovecs controls the maximum number of strings we write at once in a
   // single writev() call.
@@ -85,8 +85,7 @@ void AsyncFileWriter::writeToFile(
 }
 
 void AsyncFileWriter::performIO(
-    const std::vector<std::string>& ioQueue,
-    size_t numDiscarded) {
+    const std::vector<std::string>& ioQueue, size_t numDiscarded) {
   try {
     writeToFile(ioQueue, numDiscarded);
   } catch (const std::exception& ex) {

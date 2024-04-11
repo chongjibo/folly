@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -57,9 +57,7 @@ namespace folly {
 
 class DestructorCheck {
  public:
-  virtual ~DestructorCheck() {
-    rootGuard_.setAllDestroyed();
-  }
+  virtual ~DestructorCheck() { rootGuard_.setAllDestroyed(); }
 
   class Safety;
 
@@ -114,14 +112,10 @@ class DestructorCheck {
     Safety& operator=(const Safety&) = delete;
     Safety& operator=(Safety&&) = delete;
 
-    bool destroyed() const {
-      return prev_ == nullptr;
-    }
+    bool destroyed() const { return prev_ == nullptr; }
 
    private:
-    void setDestroyed() {
-      prev_ = nullptr;
-    }
+    void setDestroyed() { prev_ = nullptr; }
 
     // This field is used to maintain the double-linked list. If the root has
     // been destroyed then the field is set to the nullptr sentinel value.

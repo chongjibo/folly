@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,20 @@
  * limitations under the License.
  */
 
+#pragma once
+
+#include <algorithm>
+#include <vector>
+
+#include <folly/Traits.h>
 #include <folly/Try.h>
 #include <folly/fibers/FiberManager.h>
 #include <folly/fibers/WhenN.h>
 #include <folly/fibers/async/Async.h>
+#include <folly/fibers/async/Baton.h>
 #include <folly/fibers/async/FiberManager.h>
 #include <folly/fibers/async/Future.h>
 #include <folly/functional/Invoke.h>
-
-#include <algorithm>
-#include <vector>
-#pragma once
 
 namespace folly {
 namespace fibers {
@@ -78,8 +81,23 @@ Async<std::tuple<lift_unit_t<async_invocable_inner_type_t<Ts>>...>> collectAll(
     Ts&&... tasks) {
   auto future = folly::collectAllUnsafe(addFiberFuture(
       std::forward<Ts>(tasks), FiberManager::getFiberManager())...);
-  auto tuple = await(futureWait(std::move(future)));
+  auto tuple = await_async(futureWait(std::move(future)));
   return Async(folly::unwrapTryTuple(std::move(tuple)));
+}
+
+template <typename F>
+Async<Try<async_invocable_inner_type_t<F>>> awaitTry(F&& func) {
+  return makeTryWithNoUnwrap([&]() { return await(func()); });
+}
+
+template <typename T>
+Async<T> fromTry(folly::Try<T>&& result) {
+  if constexpr (std::is_void_v<T>) {
+    result.throwUnlessValue();
+    return {};
+  } else {
+    return std::move(*result);
+  }
 }
 
 /*
@@ -91,8 +109,16 @@ Async<std::tuple<lift_unit_t<async_invocable_inner_type_t<Ts>>...>> collectAll(
 template <typename F>
 Async<async_invocable_inner_type_t<F>> executeOnNewFiber(F&& func) {
   DCHECK(detail::onFiber());
-  return futureWait(
-      addFiberFuture(std::forward<F>(func), FiberManager::getFiberManager()));
+  folly::Try<async_invocable_inner_type_t<F>> result;
+  Baton baton;
+  addFiber(
+      [&, g = folly::makeGuard([&] { baton.post(); })]() -> Async<void> {
+        result = await(awaitTry(std::forward<F>(func)));
+        return {};
+      },
+      FiberManager::getFiberManager());
+  await(baton_wait(baton));
+  return fromTry(std::move(result));
 }
 
 /*
@@ -101,8 +127,7 @@ Async<async_invocable_inner_type_t<F>> executeOnNewFiber(F&& func) {
  */
 template <typename F>
 Async<async_invocable_inner_type_t<F>> executeOnRemoteFiber(
-    F&& func,
-    FiberManager& fm) {
+    F&& func, FiberManager& fm) {
   DCHECK(detail::onFiber());
   return futureWait(addFiberRemoteFuture(std::forward<F>(func), fm));
 }

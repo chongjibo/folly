@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,15 @@
  */
 
 #include <folly/experimental/FlatCombiningPriorityQueue.h>
-#include <folly/Benchmark.h>
-#include <folly/portability/GTest.h>
-#include <glog/logging.h>
 
 #include <condition_variable>
 #include <mutex>
 #include <queue>
+
+#include <folly/Benchmark.h>
+#include <folly/portability/GTest.h>
+
+#include <glog/logging.h>
 
 DEFINE_bool(bench, false, "run benchmark");
 DEFINE_int32(reps, 10, "number of reps");
@@ -244,7 +246,7 @@ TEST(FCPriQueue, timeout) {
   CHECK(pq.empty());
 }
 
-TEST(FCPriQueue, push_pop) {
+TEST(FCPriQueue, pushPop) {
   int ops = 1000;
   int work = 0;
   std::chrono::steady_clock::time_point when =

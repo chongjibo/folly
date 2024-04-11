@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,19 +22,16 @@ VirtualEventBase::VirtualEventBase(EventBase& evb)
     : evb_(getKeepAliveToken(evb)) {}
 
 std::future<void> VirtualEventBase::destroy() {
-  evb_->runInEventBaseThread([this] { loopKeepAlive_.reset(); });
-
+  loopKeepAlive_.reset();
   return std::move(destroyFuture_);
 }
 
-void VirtualEventBase::destroyImpl() {
+void VirtualEventBase::destroyImpl() noexcept {
   try {
     {
       // After destroyPromise_ is posted this object may be destroyed, so make
       // sure we release EventBase's keep-alive token before that.
-      SCOPE_EXIT {
-        evb_.reset();
-      };
+      SCOPE_EXIT { evb_.reset(); };
 
       clearCobTimeouts();
 

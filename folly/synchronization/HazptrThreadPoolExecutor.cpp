@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,10 +23,12 @@ namespace {
 
 struct HazptrTPETag {};
 folly::Singleton<folly::CPUThreadPoolExecutor, HazptrTPETag> hazptr_tpe_([] {
-  return new folly::CPUThreadPoolExecutor(1);
+  return new folly::CPUThreadPoolExecutor(
+      std::make_pair(1, 1),
+      std::make_shared<folly::NamedThreadFactory>("hazptr-tpe-"));
 });
 
-folly::Executor* get_hazptr_tpe() {
+folly::Executor::KeepAlive<> get_hazptr_tpe() {
   auto ex = hazptr_tpe_.try_get();
   return ex ? ex.get() : nullptr;
 }
@@ -36,7 +38,7 @@ folly::Executor* get_hazptr_tpe() {
 namespace folly {
 
 void enable_hazptr_thread_pool_executor() {
-  if (FLAGS_folly_hazptr_use_executor) {
+  if (hazptr_use_executor()) {
     default_hazptr_domain().set_executor(&get_hazptr_tpe);
   }
 }

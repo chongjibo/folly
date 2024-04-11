@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,8 @@
 
 #include <folly/test/DeterministicSchedule.h>
 
-#include <cassert>
-
 #include <algorithm>
+#include <cassert>
 #include <list>
 #include <mutex>
 #include <random>
@@ -26,6 +25,7 @@
 #include <utility>
 
 #include <folly/Random.h>
+#include <folly/SingletonThreadLocal.h>
 
 namespace folly {
 namespace test {
@@ -70,8 +70,8 @@ void ThreadTimestamps::clear() {
   timestamps_.clear();
 }
 
-bool ThreadTimestamps::atLeastAsRecentAs(DSchedThreadId tid, DSchedTimestamp ts)
-    const {
+bool ThreadTimestamps::atLeastAsRecentAs(
+    DSchedThreadId tid, DSchedTimestamp ts) const {
   // It is not meaningful learn whether any instance is at least
   // as recent as timestamp 0.
   assert(ts.initialized());
@@ -116,6 +116,30 @@ void ThreadSyncVar::acq_rel() {
   order_.sync(threadInfo.acqRelOrder_);
 }
 
+namespace {
+
+struct PerThreadState {
+  // delete the constructors and assignment operators for sanity
+  //
+  // but... we can't delete the move constructor and assignment operators
+  // because those are required before C++17 in the implementation of
+  // SingletonThreadLocal
+  PerThreadState(const PerThreadState&) = delete;
+  PerThreadState& operator=(const PerThreadState&) = delete;
+  PerThreadState(PerThreadState&&) = default;
+  PerThreadState& operator=(PerThreadState&&) = default;
+  PerThreadState() = default;
+
+  Sem* sem{nullptr};
+  DeterministicSchedule* sched{nullptr};
+  bool exiting{false};
+  DSchedThreadId threadId{};
+  AuxAct aux_act{};
+};
+using TLState = SingletonThreadLocal<PerThreadState>;
+
+} // namespace
+
 DeterministicSchedule::DeterministicSchedule(
     std::function<size_t(size_t)> scheduler)
     : scheduler_(std::move(scheduler)), nextThreadId_(0), step_(0) {
@@ -139,7 +163,8 @@ DeterministicSchedule::~DeterministicSchedule() {
   assert(tls.sched == this);
   assert(sems_.size() == 1);
   assert(sems_[0] == tls.sem);
-  beforeThreadExit();
+  delete tls.sem;
+  tls = PerThreadState();
 }
 
 std::function<size_t(size_t)> DeterministicSchedule::uniform(uint64_t seed) {
@@ -199,8 +224,29 @@ struct UniformSubset {
   }
 };
 
-std::function<size_t(size_t)>
-DeterministicSchedule::uniformSubset(uint64_t seed, size_t n, size_t m) {
+bool DeterministicSchedule::isCurrentThreadExiting() {
+  auto& tls = TLState::get();
+  return tls.exiting;
+}
+
+bool DeterministicSchedule::isActive() {
+  auto& tls = TLState::get();
+  return tls.sched != nullptr;
+}
+
+DSchedThreadId DeterministicSchedule::getThreadId() {
+  auto& tls = TLState::get();
+  assert(tls.sched != nullptr);
+  return tls.threadId;
+}
+
+DeterministicSchedule* DeterministicSchedule::getCurrentSchedule() {
+  auto& tls = TLState::get();
+  return tls.sched;
+}
+
+std::function<size_t(size_t)> DeterministicSchedule::uniformSubset(
+    uint64_t seed, size_t n, size_t m) {
   auto gen = std::make_shared<UniformSubset>(seed, n, m);
   return [=](size_t numActive) { return (*gen)(numActive); };
 }
@@ -240,9 +286,7 @@ size_t DeterministicSchedule::getRandNumber(size_t n) {
 }
 
 int DeterministicSchedule::getcpu(
-    unsigned* cpu,
-    unsigned* node,
-    void* /* unused */) {
+    unsigned* cpu, unsigned* node, void* /* unused */) {
   auto& tls = TLState::get();
   if (cpu) {
     *cpu = tls.threadId.val;
@@ -324,21 +368,16 @@ void DeterministicSchedule::beforeThreadExit() {
     reschedule(parent->second);
     joins_.erase(parent);
   }
-  sems_.erase(std::find(sems_.begin(), sems_.end(), tls.sem));
+  descheduleCurrentThread();
   active_.erase(std::this_thread::get_id());
-  if (!sems_.empty()) {
-    FOLLY_TEST_DSCHED_VLOG("exiting");
-    /* Wait here so that parent thread can control when the thread
-     * enters the thread local destructors. */
-    exitingSems_[std::this_thread::get_id()] = tls.sem;
-    afterSharedAccess();
-    tls.sem->wait();
-  }
-  tls.sched = nullptr;
-  tls.aux_act = nullptr;
-  tls.exiting = true;
+
+  FOLLY_TEST_DSCHED_VLOG("exiting");
+  exitingSems_[std::this_thread::get_id()] = tls.sem;
+  afterSharedAccess();
+  // Wait for the parent thread to allow us to run thread-local destructors.
+  tls.sem->wait();
   delete tls.sem;
-  tls.sem = nullptr;
+  tls = PerThreadState();
 }
 
 void DeterministicSchedule::waitForBeforeThreadExit(std::thread& child) {
@@ -371,9 +410,13 @@ void DeterministicSchedule::joinAll(std::vector<std::thread>& children) {
    * shared access during thread local destructors.*/
   for (auto& child : children) {
     if (sched) {
+      beforeSharedAccess();
       sched->exitingSems_[child.get_id()]->post();
     }
     child.join();
+    if (sched) {
+      afterSharedAccess();
+    }
   }
 }
 
@@ -386,9 +429,13 @@ void DeterministicSchedule::join(std::thread& child) {
   atomic_thread_fence(std::memory_order_seq_cst);
   FOLLY_TEST_DSCHED_VLOG("joined " << std::hex << child.get_id());
   if (sched) {
+    beforeSharedAccess();
     sched->exitingSems_[child.get_id()]->post();
   }
   child.join();
+  if (sched) {
+    afterSharedAccess();
+  }
 }
 
 void DeterministicSchedule::callAux(bool success) {

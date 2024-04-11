@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,15 +15,23 @@
  */
 
 #pragma once
-#include <folly/CPortability.h>
 #include <bitset>
 
+#include <folly/Portability.h>
+
 namespace folly {
+
+constexpr char const* kLoggingEnvVarName = "FOLLY_LOGGING";
+
 class InitOptions {
  public:
   InitOptions() noexcept;
 
   bool remove_flags{true};
+  bool use_gflags{true};
+  // Controls whether folly::symbolizer::installFatalSignalCallbacks() is called
+  // during init.
+  bool install_fatal_signal_callbacks{true};
 
   // mask of all fatal (default handler of terminating the process) signals for
   // which `init()` will install handler that print stack traces and invokes
@@ -42,37 +50,38 @@ class InitOptions {
     fatal_signals = val;
     return *this;
   }
+
+  InitOptions& useGFlags(bool useGFlags) {
+    use_gflags = useGFlags;
+    return *this;
+  }
+
+  InitOptions& installFatalSignalCallbacks(bool installFatalSignalCallbacks) {
+    install_fatal_signal_callbacks = installFatalSignalCallbacks;
+    return *this;
+  }
 };
 
 /*
- * Calls common init functions in the necessary order
+ * An RAII object to be constructed at the beginning of main() and destructed
+ * implicitly at the end of main().
+ *
+ * The constructor calls common init functions in the necessary order
  * Among other things, this ensures that folly::Singletons are initialized
  * correctly and installs signal handlers for a superior debugging experience.
  * It also initializes gflags and glog.
+ *
+ * The destructor destroys all singletons managed by folly::Singleton, yielding
+ * better shutdown behavior when performed at the end of main(). In particular,
+ * this guarantees that all singletons managed by folly::Singleton are destroyed
+ * before all Meyers singletons are destroyed.
  *
  * @param argc, argv   arguments to your main
  * @param removeFlags  if true, will update argc,argv to remove recognized
  *                     gflags passed on the command line
  * @param options      options
  */
-
-void init(int* argc, char*** argv, bool removeFlags = true);
-
-void init(int* argc, char*** argv, InitOptions options);
-
-/*
- * An RAII object to be constructed at the beginning of main() and destructed
- * implicitly at the end of main().
- *
- * The constructor performs the same setup as folly::init(), including
- * initializing singletons managed by folly::Singleton.
- *
- * The destructor destroys all singletons managed by folly::Singleton, yielding
- * better shutdown behavior when performed at the end of main(). In particular,
- * this guarantees that all singletons managed by folly::Singleton are destroyed
- * before all Meyers singletons are destroyed.
- */
-class Init {
+class FOLLY_NODISCARD Init {
  public:
   // Force ctor & dtor out of line for better stack traces even with LTO.
   FOLLY_NOINLINE Init(int* argc, char*** argv, bool removeFlags = true);
@@ -86,5 +95,10 @@ class Init {
   Init& operator=(Init const&) = delete;
   Init& operator=(Init&&) = delete;
 };
+
+[[deprecated("Use the RAII version Init")]] void init(
+    int* argc, char*** argv, bool removeFlags = true);
+[[deprecated("Use the RAII version Init")]] void init(
+    int* argc, char*** argv, InitOptions options);
 
 } // namespace folly

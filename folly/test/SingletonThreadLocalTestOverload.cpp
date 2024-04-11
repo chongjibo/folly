@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,12 +22,12 @@ namespace folly {
 using Make = detail::DefaultMake<int>;
 } // namespace folly
 
-struct Make1 : Make {};
-struct Make2 : Make {};
+struct TLTag1 : Make {};
+struct TLTag2 : Make {};
 struct DeathTag {};
 
 int stl_get_sum() {
-  auto& i1 = SingletonThreadLocal<int, DeathTag, Make1>::get();
-  auto& i2 = SingletonThreadLocal<int, DeathTag, Make2>::get();
+  auto& i1 = SingletonThreadLocal<int, DeathTag, Make, TLTag1>::get();
+  auto& i2 = SingletonThreadLocal<int, DeathTag, Make, TLTag2>::get();
   return i1 + i2;
 }

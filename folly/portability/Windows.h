@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -98,6 +98,11 @@
 // Defined in Winbase.h
 #ifdef Yield
 #undef Yield
+#endif
+
+// Defined in nb30.h
+#ifdef REGISTERED
+#undef REGISTERED
 #endif
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,11 @@
 
 #include <folly/synchronization/Hazptr.h>
 
-#include <folly/portability/GFlags.h>
-
 #include <atomic>
 
-DEFINE_bool(
+#include <folly/portability/GFlags.h>
+
+FOLLY_GFLAGS_DEFINE_bool(
     folly_hazptr_use_executor,
     true,
     "Use an executor for hazptr asynchronous reclamation");
@@ -28,5 +28,9 @@ DEFINE_bool(
 namespace folly {
 
 FOLLY_STATIC_CTOR_PRIORITY_MAX hazptr_domain<std::atomic> default_domain;
+
+bool hazptr_use_executor() {
+  return FLAGS_folly_hazptr_use_executor;
+}
 
 } // namespace folly

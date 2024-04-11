@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,9 @@
 #include <folly/logging/LoggerDB.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/Stdlib.h>
+#include <folly/system/ThreadName.h>
+
+FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
 
 using namespace folly;
 
@@ -45,21 +48,23 @@ std::string formatMsg(
     unsigned int lineNumber,
     StringPiece functionName,
     // Default timestamp: 2017-04-17 13:45:56.123456 UTC
-    uint64_t timestampNS = 1492436756123456789ULL) {
+    uint64_t timestampNS = 1492436756123456789ULL,
+    bool logThreadName = false) {
   LoggerDB db{LoggerDB::TESTING};
   auto* category = db.getCategory("test");
-  GlogStyleFormatter formatter;
+  GlogStyleFormatter formatter(logThreadName);
 
   std::chrono::system_clock::time_point logTimePoint{
       std::chrono::duration_cast<std::chrono::system_clock::duration>(
           std::chrono::nanoseconds{timestampNS})};
-  LogMessage logMessage{category,
-                        level,
-                        logTimePoint,
-                        filename,
-                        lineNumber,
-                        functionName,
-                        msg.str()};
+  LogMessage logMessage{
+      category,
+      level,
+      logTimePoint,
+      filename,
+      lineNumber,
+      functionName,
+      msg.str()};
 
   return formatter.formatMessage(logMessage, category);
 }
@@ -76,6 +81,56 @@ TEST(GlogFormatter, log) {
       formatMsg(
           LogLevel::WARN, "hello world", "myfile.cpp", 1234, "testFunction"));
 }
+
+TEST(GlogFormatter, logThreadName) {
+  auto tid = getOSThreadID();
+  auto threadName = getCurrentThreadName().value_or("Unknown");
+
+  // Test a very simple single-line log message
+  auto expected = folly::sformat(
+      "W0417 13:45:56.123456 {:5d} [{}] myfile.cpp:1234] hello world\n",
+      tid,
+      threadName);
+  EXPECT_EQ(
+      expected,
+      formatMsg(
+          LogLevel::WARN,
+          "hello world",
+          "myfile.cpp",
+          1234,
+          "testFunction",
+          1492436756123456789ULL /* timestampNS */,
+          true /* logThreadName */));
+}
+
+#ifndef _WIN32
+TEST(GlogFormatter, logThreadNameChanged) {
+  if (folly::canSetCurrentThreadName()) {
+    std::string msg;
+    std::string threadName = "foo";
+    uint64_t otherThreadID;
+    std::thread thread([&] {
+      folly::setThreadName(threadName);
+      otherThreadID = getOSThreadID();
+      msg = formatMsg(
+          LogLevel::WARN,
+          "hello world",
+          "myfile.cpp",
+          1234,
+          "testFunction",
+          1492436756123456789ULL /* timestampNS */,
+          true /* logThreadName */);
+    });
+    thread.join();
+    // Test a very simple single-line log message
+    auto expected = folly::sformat(
+        "W0417 13:45:56.123456 {:5d} [{}] myfile.cpp:1234] hello world\n",
+        otherThreadID,
+        threadName);
+    EXPECT_EQ(expected, msg);
+  }
+}
+#endif
 
 TEST(GlogFormatter, filename) {
   auto tid = getOSThreadID();
@@ -192,7 +247,7 @@ TEST(GlogFormatter, unprintableChars) {
 
 int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  folly::init(&argc, &argv);
+  folly::Init init(&argc, &argv);
 
   // Some of our tests check timestamps emitted by the formatter.
   // Set the timezone to a consistent value so that the tests are not

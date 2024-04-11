@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,6 @@
  * limitations under the License.
  */
 
-/*
- * @author: Marcelo Juchem <marcelo@fb.com>
- */
-
 #include <folly/Memory.h>
 #include <folly/memory/Arena.h>
 #include <folly/portability/GTest.h>
@@ -27,17 +23,13 @@ using namespace folly;
 struct global_counter {
   global_counter() : count_(0) {}
 
-  void increase() {
-    ++count_;
-  }
+  void increase() { ++count_; }
   void decrease() {
     EXPECT_GT(count_, 0);
     --count_;
   }
 
-  unsigned count() const {
-    return count_;
-  }
+  unsigned count() const { return count_; }
 
  private:
   unsigned count_;
@@ -48,9 +40,7 @@ struct Foo {
     counter_.increase();
   }
 
-  ~Foo() {
-    counter_.decrease();
-  }
+  ~Foo() { counter_.decrease(); }
 
  private:
   global_counter& counter_;
@@ -96,7 +86,7 @@ void unique_ptr_test(Allocator& allocator) {
   EXPECT_EQ(counter.count(), 0);
 }
 
-TEST(ArenaSmartPtr, unique_ptr_SysArena) {
+TEST(ArenaSmartPtr, uniquePtrSysarena) {
   SysArena arena;
   SysArenaAllocator<Foo> alloc(arena);
   unique_ptr_test(alloc);
@@ -157,7 +147,7 @@ void shared_ptr_test(Allocator& allocator) {
   EXPECT_EQ(foo.use_count(), 0);
 }
 
-TEST(ArenaSmartPtr, shared_ptr_SysArena) {
+TEST(ArenaSmartPtr, sharedPtrSysarena) {
   SysArena arena;
   SysArenaAllocator<Foo> alloc(arena);
   shared_ptr_test(alloc);

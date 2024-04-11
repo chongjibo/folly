@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include <folly/detail/Futex.h>
 #include <folly/synchronization/ParkingLot.h>
 
 namespace folly {
@@ -54,9 +53,7 @@ typename TargetClock::time_point time_point_conv(
  * the relevant arguments
  */
 int futexWakeImpl(
-    const Futex<std::atomic>* futex,
-    int count,
-    uint32_t wakeMask);
+    const Futex<std::atomic>* futex, int count, uint32_t wakeMask);
 FutexResult futexWaitImpl(
     const Futex<std::atomic>* futex,
     uint32_t expected,
@@ -65,9 +62,7 @@ FutexResult futexWaitImpl(
     uint32_t waitMask);
 
 int futexWakeImpl(
-    const Futex<EmulatedFutexAtomic>* futex,
-    int count,
-    uint32_t wakeMask);
+    const Futex<EmulatedFutexAtomic>* futex, int count, uint32_t wakeMask);
 FutexResult futexWaitImpl(
     const Futex<EmulatedFutexAtomic>* futex,
     uint32_t expected,
@@ -96,8 +91,8 @@ futexWaitImpl(
 }
 
 template <typename Futex>
-FutexResult
-futexWait(const Futex* futex, uint32_t expected, uint32_t waitMask) {
+FutexResult futexWait(
+    const Futex* futex, uint32_t expected, uint32_t waitMask) {
   auto rv = futexWaitImpl(futex, expected, nullptr, nullptr, waitMask);
   assert(rv != FutexResult::TIMEDOUT);
   return rv;

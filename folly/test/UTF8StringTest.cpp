@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,33 +21,34 @@
 #include <folly/test/TestUtils.h>
 
 using namespace folly;
-using namespace std;
 
-const folly::StringPiece kTestUTF8 = u8"This is \U0001F602 stuff!";
+const folly::StringPiece kTestUTF8 =
+    reinterpret_cast<const char*>(u8"This is \U0001F602 stuff!");
 
-TEST(UTF8StringPiece, valid_utf8) {
+TEST(UTF8StringPiece, validUtf8) {
   folly::StringPiece sp = kTestUTF8;
   UTF8StringPiece utf8 = sp;
   // utf8.size() not available since it's not a random-access range
   EXPECT_EQ(16, utf8.walk_size());
 }
 
-TEST(UTF8StringPiece, valid_suffix) {
+TEST(UTF8StringPiece, validSuffix) {
   UTF8StringPiece utf8 = kTestUTF8.subpiece(8);
   EXPECT_EQ(8, utf8.walk_size());
 }
 
-TEST(UTF8StringPiece, empty_mid_codepoint) {
+TEST(UTF8StringPiece, emptyMidCodepoint) {
   UTF8StringPiece utf8 = kTestUTF8.subpiece(9, 0); // okay since it's empty
   EXPECT_EQ(0, utf8.walk_size());
 }
 
-TEST(UTF8StringPiece, invalid_mid_codepoint) {
+TEST(UTF8StringPiece, invalidMidCodepoint) {
   EXPECT_THROW(UTF8StringPiece(kTestUTF8.subpiece(9, 1)), std::out_of_range);
 }
 
-TEST(UTF8StringPiece, valid_implicit_conversion) {
-  std::string input = u8"\U0001F602\U0001F602\U0001F602";
+TEST(UTF8StringPiece, validImplicitConversion) {
+  std::string input =
+      reinterpret_cast<const char*>(u8"\U0001F602\U0001F602\U0001F602");
   auto checkImplicitCtor = [](UTF8StringPiece implicitCtor) {
     return implicitCtor.walk_size();
   };

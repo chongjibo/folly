@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,10 +14,20 @@
 
 from cpython.ref cimport PyObject
 from folly cimport cFollyExecutor, cFollyTry
+from libcpp cimport bool
 
 cdef extern from "folly/python/coro.h" namespace "folly::coro" nogil:
     cdef cppclass cFollyCoroTask "folly::coro::Task"[T]:
         pass
+
+cdef extern from "folly/CancellationToken.h" namespace "folly" nogil:
+    cdef cppclass cFollyCancellationToken "folly::CancellationToken":
+        pass
+
+    cdef cppclass cFollyCancellationSource "folly::CancellationSource":
+        cFollyCancellationSource() except +
+        cFollyCancellationToken getToken()
+        bool requestCancellation()
 
 cdef extern from "folly/python/coro.h" namespace "folly::python":
     void bridgeCoroTask[T](
@@ -31,4 +41,11 @@ cdef extern from "folly/python/coro.h" namespace "folly::python":
         cFollyCoroTask[T]&& fut,
         void(*)(cFollyTry[T]&&, PyObject*),
         PyObject* pyFuture
+    )
+    void bridgeCoroTaskWithCancellation "folly::python::bridgeCoroTask"[T](
+        cFollyExecutor* executor,
+        cFollyCoroTask[T]&& fut,
+        void(*)(cFollyTry[T]&&, PyObject*),
+        PyObject* pyFuture,
+        cFollyCancellationToken&& cancelToken,
     )

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,10 @@
 #pragma once
 
 #include <atomic>
-#include <experimental/coroutine>
+
+#include <folly/experimental/coro/Coroutine.h>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace coro {
@@ -25,6 +28,11 @@ namespace coro {
 /// A baton is a synchronisation primitive for coroutines that allows a
 /// coroutine to co_await the baton and suspend until the baton is posted by
 /// some thread via a call to .post().
+///
+/// This primitive is typically used in the construction of larger library types
+/// rather than directly in user code.
+///
+/// As a primitive, this is not cancellation-aware.
 ///
 /// The Baton supports being awaited by multiple coroutines at a time. If the
 /// baton is not ready at the time it is awaited then an awaiting coroutine
@@ -90,12 +98,9 @@ class Baton {
    public:
     explicit WaitOperation(const Baton& baton) noexcept : baton_(baton) {}
 
-    bool await_ready() const noexcept {
-      return baton_.ready();
-    }
+    bool await_ready() const noexcept { return baton_.ready(); }
 
-    bool await_suspend(
-        std::experimental::coroutine_handle<> awaitingCoroutine) noexcept {
+    bool await_suspend(coroutine_handle<> awaitingCoroutine) noexcept {
       awaitingCoroutine_ = awaitingCoroutine;
       return baton_.waitImpl(this);
     }
@@ -106,7 +111,7 @@ class Baton {
     friend class Baton;
 
     const Baton& baton_;
-    std::experimental::coroutine_handle<> awaitingCoroutine_;
+    coroutine_handle<> awaitingCoroutine_;
     WaitOperation* next_;
   };
 
@@ -142,3 +147,5 @@ inline void Baton::reset() noexcept {
 
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

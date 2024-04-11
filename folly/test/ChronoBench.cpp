@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,26 @@ BENCHMARK(coarse_steady_clock_now, iters) {
   uint64_t r = 0;
   while (iters--) {
     using clock = folly::chrono::coarse_steady_clock;
+    auto const s = clock::now().time_since_epoch().count();
+    r = folly::hash::twang_mix64(r ^ s);
+  }
+  folly::doNotOptimizeAway(r);
+}
+
+BENCHMARK(system_clock_now, iters) {
+  uint64_t r = 0;
+  while (iters--) {
+    using clock = std::chrono::system_clock;
+    auto const s = clock::now().time_since_epoch().count();
+    r = folly::hash::twang_mix64(r ^ s);
+  }
+  folly::doNotOptimizeAway(r);
+}
+
+BENCHMARK(coarse_system_clock_now, iters) {
+  uint64_t r = 0;
+  while (iters--) {
+    using clock = folly::chrono::coarse_system_clock;
     auto const s = clock::now().time_since_epoch().count();
     r = folly::hash::twang_mix64(r ^ s);
   }

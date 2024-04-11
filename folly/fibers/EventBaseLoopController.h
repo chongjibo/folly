@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,13 @@
 
 #pragma once
 
+#include <atomic>
+#include <memory>
+
 #include <folly/CancellationToken.h>
 #include <folly/fibers/ExecutorBasedLoopController.h>
 #include <folly/fibers/FiberManagerInternal.h>
 #include <folly/io/async/VirtualEventBase.h>
-#include <atomic>
-#include <memory>
 
 namespace folly {
 namespace fibers {
@@ -37,16 +38,16 @@ class EventBaseLoopController : public ExecutorBasedLoopController {
   void attachEventBase(EventBase& eventBase);
   void attachEventBase(VirtualEventBase& eventBase);
 
-  VirtualEventBase* getEventBase() {
-    return eventBase_;
-  }
+  VirtualEventBase* getEventBase() { return eventBase_; }
 
   void setLoopRunner(InlineFunctionRunner* loopRunner) {
     loopRunner_ = loopRunner;
   }
 
-  folly::Executor* executor() const override {
-    return eventBase_;
+  folly::Executor* executor() const override { return eventBase_; }
+
+  bool isInLoopThread() override {
+    return eventBase_->getEventBase().inRunningEventBaseThread();
   }
 
  private:
@@ -55,9 +56,7 @@ class EventBaseLoopController : public ExecutorBasedLoopController {
     explicit ControllerCallback(EventBaseLoopController& controller)
         : controller_(controller) {}
 
-    void runLoopCallback() noexcept override {
-      controller_.runLoop();
-    }
+    void runLoopCallback() noexcept override { controller_.runLoop(); }
 
    private:
     EventBaseLoopController& controller_;
@@ -65,13 +64,13 @@ class EventBaseLoopController : public ExecutorBasedLoopController {
 
   folly::CancellationToken eventBaseShutdownToken_;
 
-  bool awaitingScheduling_{false};
   VirtualEventBase* eventBase_{nullptr};
   Executor::KeepAlive<VirtualEventBase> eventBaseKeepAlive_;
   ControllerCallback callback_;
   FiberManager* fm_{nullptr};
-  std::atomic<bool> eventBaseAttached_{false};
   InlineFunctionRunner* loopRunner_{nullptr};
+  std::atomic<bool> eventBaseAttached_{false};
+  bool awaitingScheduling_{false};
 
   /* LoopController interface */
 

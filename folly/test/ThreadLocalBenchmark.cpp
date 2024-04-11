@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,21 +39,15 @@ using namespace folly;
 template <typename T>
 class PThreadGetSpecific {
  public:
-  PThreadGetSpecific() : key_(0) {
-    pthread_key_create(&key_, OnThreadExit);
-  }
+  PThreadGetSpecific() : key_(0) { pthread_key_create(&key_, OnThreadExit); }
 
-  T* get() const {
-    return static_cast<T*>(pthread_getspecific(key_));
-  }
+  T* get() const { return static_cast<T*>(pthread_getspecific(key_)); }
 
   void reset(T* t) {
     delete get();
     pthread_setspecific(key_, t);
   }
-  static void OnThreadExit(void* obj) {
-    delete static_cast<T*>(obj);
-  }
+  static void OnThreadExit(void* obj) { delete static_cast<T*>(obj); }
 
  private:
   pthread_key_t key_;

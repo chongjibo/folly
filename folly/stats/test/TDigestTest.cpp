@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -399,7 +399,7 @@ TEST_P(DistributionTest, ReasonableError) {
   EXPECT_GE(reasonableError, stddev);
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     ReasonableErrors,
     DistributionTest,
     ::testing::Combine(

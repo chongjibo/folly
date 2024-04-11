@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,14 @@
 
 #pragma once
 
-#include <folly/Function.h>
-#include <folly/futures/Future.h>
-#include <folly/futures/Promise.h>
 #include <exception>
 #include <memory>
 #include <stdexcept>
 #include <vector>
+
+#include <folly/Function.h>
+#include <folly/futures/Future.h>
+#include <folly/futures/Promise.h>
 
 namespace folly {
 namespace fibers {
@@ -120,11 +121,6 @@ class BatchDispatcher {
 
       for (size_t i = 0; i < promises.size(); i++) {
         promises[i].setValue(std::move(results[i]));
-      }
-    } catch (const std::exception& ex) {
-      for (size_t i = 0; i < promises.size(); i++) {
-        promises[i].setException(
-            exception_wrapper(std::current_exception(), ex));
       }
     } catch (...) {
       for (size_t i = 0; i < promises.size(); i++) {

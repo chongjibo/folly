@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,11 +29,11 @@
 #include <folly/Optional.h>
 #include <folly/Range.h>
 #include <folly/Utility.h>
+#include <folly/container/Access.h>
 #include <folly/gen/Core.h>
 
 /**
  * Generator-based Sequence Comprehensions in C++, akin to C#'s LINQ
- * @author Tom Jackson <tjackson@fb.com>
  *
  * This library makes it possible to write declarative comprehensions for
  * processing sequences of values efficiently in C++. The operators should be
@@ -120,17 +120,11 @@ class MemberFunction {
  public:
   explicit MemberFunction(MemberPtr member) : member_(member) {}
 
-  Result operator()(Class&& x) const {
-    return (x.*member_)();
-  }
+  Result operator()(Class&& x) const { return (x.*member_)(); }
 
-  Result operator()(Class& x) const {
-    return (x.*member_)();
-  }
+  Result operator()(Class& x) const { return (x.*member_)(); }
 
-  Result operator()(Class* x) const {
-    return (x->*member_)();
-  }
+  Result operator()(Class* x) const { return (x->*member_)(); }
 };
 
 template <class Class, class Result>
@@ -144,13 +138,9 @@ class ConstMemberFunction {
  public:
   explicit ConstMemberFunction(MemberPtr member) : member_(member) {}
 
-  Result operator()(const Class& x) const {
-    return (x.*member_)();
-  }
+  Result operator()(const Class& x) const { return (x.*member_)(); }
 
-  Result operator()(const Class* x) const {
-    return (x->*member_)();
-  }
+  Result operator()(const Class* x) const { return (x->*member_)(); }
 };
 
 template <class Class, class FieldType>
@@ -164,25 +154,15 @@ class Field {
  public:
   explicit Field(FieldPtr field) : field_(field) {}
 
-  const FieldType& operator()(const Class& x) const {
-    return x.*field_;
-  }
+  const FieldType& operator()(const Class& x) const { return x.*field_; }
 
-  const FieldType& operator()(const Class* x) const {
-    return x->*field_;
-  }
+  const FieldType& operator()(const Class* x) const { return x->*field_; }
 
-  FieldType& operator()(Class& x) const {
-    return x.*field_;
-  }
+  FieldType& operator()(Class& x) const { return x.*field_; }
 
-  FieldType& operator()(Class* x) const {
-    return x->*field_;
-  }
+  FieldType& operator()(Class* x) const { return x->*field_; }
 
-  FieldType&& operator()(Class&& x) const {
-    return std::move(x.*field_);
-  }
+  FieldType&& operator()(Class&& x) const { return std::move(x.*field_); }
 };
 
 class Move {
@@ -247,9 +227,7 @@ class TryTo {
 template <>
 class To<StringPiece> {
  public:
-  StringPiece operator()(StringPiece src) const {
-    return src;
-  }
+  StringPiece operator()(StringPiece src) const { return src; }
 };
 
 template <class Key, class Value>
@@ -266,7 +244,7 @@ struct FBounded;
 template <class Container>
 struct ValueTypeOfRange {
  public:
-  using RefType = decltype(*std::begin(std::declval<Container&>()));
+  using RefType = decltype(*access::begin(std::declval<Container&>()));
   using StorageType = typename std::decay<RefType>::type;
 };
 
@@ -422,6 +400,9 @@ class Unwrap;
 template <class Value>
 class VirtualGen;
 
+template <class Value>
+class VirtualGenMoveOnly;
+
 /*
  * Source Factories
  */
@@ -509,9 +490,14 @@ Yield generator(Source&& source) {
  * Create inline generator, used like:
  *
  *  auto gen = GENERATOR(int) { yield(1); yield(2); };
+ *
+ * GENERATOR_REF can be useful for creating a generator that doesn't
+ * leave its original scope.
  */
 #define GENERATOR(TYPE) \
   ::folly::gen::detail::GeneratorBuilder<TYPE>() + [=](auto&& yield)
+#define GENERATOR_REF(TYPE) \
+  ::folly::gen::detail::GeneratorBuilder<TYPE>() + [&](auto&& yield)
 
 /*
  * empty() - for producing empty sequences.

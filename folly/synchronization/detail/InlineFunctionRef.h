@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,12 @@
 
 #pragma once
 
+#include <new>
+
 #include <folly/Function.h>
 #include <folly/Traits.h>
 #include <folly/Utility.h>
 #include <folly/functional/Invoke.h>
-#include <folly/lang/Launder.h>
 
 namespace folly {
 namespace detail {
@@ -91,8 +92,7 @@ class InlineFunctionRef<ReturnType(Args...), Size> {
   // This requires that the we pass in a type that is not ref-qualified.
   template <typename Func>
   using ConstructMode = std::conditional_t<
-      folly::is_trivially_copyable<Func>{} &&
-          (sizeof(Func) <= sizeof(Storage)) &&
+      std::is_trivially_copyable_v<Func> && (sizeof(Func) <= sizeof(Storage)) &&
           (alignof(Func) <= alignof(Storage)),
       InSituTag,
       RefTag>;
@@ -144,7 +144,7 @@ class InlineFunctionRef<ReturnType(Args...), Size> {
         !std::is_reference<Func>{},
         "InlineFunctionRef cannot be used with lvalues");
     static_assert(std::is_rvalue_reference<Func&&>{}, "");
-    construct(ConstructMode<Func>{}, folly::as_const(func));
+    construct(ConstructMode<Func>{}, std::as_const(func));
   }
 
   /**
@@ -160,9 +160,7 @@ class InlineFunctionRef<ReturnType(Args...), Size> {
    * We have a function engaged if the call function points to anything other
    * than null.
    */
-  operator bool() const noexcept {
-    return call_;
-  }
+  operator bool() const noexcept { return call_; }
 
  private:
   friend class InlineFunctionRefTest;
@@ -181,7 +179,7 @@ class InlineFunctionRef<ReturnType(Args...), Size> {
     //       modifications.
     static_assert(alignof(Value) <= alignof(Storage), "");
     static_assert(is_invocable<const std::decay_t<Func>, Args&&...>{}, "");
-    static_assert(folly::is_trivially_copyable<Value>{}, "");
+    static_assert(std::is_trivially_copyable<Value>{}, "");
 
     new (&storage_) Value{func};
     call_ = &callInline<Value>;
@@ -208,7 +206,7 @@ class InlineFunctionRef<ReturnType(Args...), Size> {
             std::is_function<std::remove_pointer_t<Func>>::value,
         "");
     return folly::invoke(
-        *folly::launder(reinterpret_cast<const Func*>(&object)),
+        *std::launder(reinterpret_cast<const Func*>(&object)),
         static_cast<Args&&>(args)...);
   }
 
@@ -219,7 +217,7 @@ class InlineFunctionRef<ReturnType(Args...), Size> {
     // cast to a pointer and then to the pointee.
     static_assert(std::is_pointer<Func>::value, "");
     return folly::invoke(
-        **folly::launder(reinterpret_cast<const Func*>(&object)),
+        **std::launder(reinterpret_cast<const Func*>(&object)),
         static_cast<Args&&>(args)...);
   }
 

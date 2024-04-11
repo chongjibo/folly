@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,13 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/detail/InlineTask.h>
 #include <folly/portability/GTest.h>
 
 #include <tuple>
+
+#if FOLLY_HAS_COROUTINES
 
 template <typename T>
 using InlineTask = folly::coro::detail::InlineTask<T>;
@@ -107,6 +107,41 @@ TEST_F(InlineTaskTest, SimpleRefTask) {
   EXPECT_EQ(&hasRun, &result);
 }
 
+TEST_F(InlineTaskTest, ReturnValueWithInitializerListSyntax) {
+  struct TypeWithImplicitSingleValueConstructor {
+    float value_;
+    /* implicit */ TypeWithImplicitSingleValueConstructor(float x)
+        : value_(x) {}
+  };
+
+  auto f = []() -> InlineTask<TypeWithImplicitSingleValueConstructor> {
+    co_return {1.23f};
+  };
+
+  auto result = folly::coro::blockingWait(f());
+  EXPECT_EQ(1.23f, result.value_);
+}
+
+TEST_F(InlineTaskTest, ReturnValueWithInitializerListSyntax2) {
+  struct TypeWithImplicitMultiValueConstructor {
+    std::string s_;
+    float x_;
+    /* implicit */ TypeWithImplicitMultiValueConstructor(
+        std::string s, float x) noexcept
+        : s_(s), x_(x) {}
+  };
+
+  auto f = []() -> InlineTask<TypeWithImplicitMultiValueConstructor> {
+    co_return {"hello", 3.1415f};
+  };
+
+  auto result = folly::coro::blockingWait(f());
+  EXPECT_EQ("hello", result.s_);
+  EXPECT_EQ(3.1415f, result.x_);
+}
+
+namespace {
+
 struct MoveOnlyType {
   int value_;
 
@@ -115,48 +150,15 @@ struct MoveOnlyType {
   MoveOnlyType(MoveOnlyType&& other) noexcept
       : value_(std::exchange(other.value_, -1)) {}
 
-  MoveOnlyType& operator=(MoveOnlyType&& other) noexcept {
+  [[maybe_unused]] MoveOnlyType& operator=(MoveOnlyType&& other) noexcept {
     value_ = std::exchange(other.value_, -1);
     return *this;
   }
 
-  ~MoveOnlyType() {
-    value_ = -2;
-  }
+  ~MoveOnlyType() { value_ = -2; }
 };
 
-struct TypeWithImplicitSingleValueConstructor {
-  float value_;
-  /* implicit */ TypeWithImplicitSingleValueConstructor(float x) : value_(x) {}
-};
-
-TEST_F(InlineTaskTest, ReturnValueWithInitializerListSyntax) {
-  auto f = []() -> InlineTask<TypeWithImplicitSingleValueConstructor> {
-    co_return{1.23f};
-  };
-
-  auto result = folly::coro::blockingWait(f());
-  EXPECT_EQ(1.23f, result.value_);
-}
-
-struct TypeWithImplicitMultiValueConstructor {
-  std::string s_;
-  float x_;
-  /* implicit */ TypeWithImplicitMultiValueConstructor(
-      std::string s,
-      float x) noexcept
-      : s_(s), x_(x) {}
-};
-
-TEST_F(InlineTaskTest, ReturnValueWithInitializerListSyntax2) {
-  auto f = []() -> InlineTask<TypeWithImplicitMultiValueConstructor> {
-    co_return{"hello", 3.1415f};
-  };
-
-  auto result = folly::coro::blockingWait(f());
-  EXPECT_EQ("hello", result.s_);
-  EXPECT_EQ(3.1415f, result.x_);
-}
+} // namespace
 
 TEST_F(InlineTaskTest, TaskOfMoveOnlyType) {
   auto f = []() -> InlineTask<MoveOnlyType> { co_return MoveOnlyType{42}; };
@@ -194,80 +196,94 @@ TEST_F(InlineTaskTest, ReturnLvalueReference) {
   EXPECT_EQ(&value, &x);
 }
 
-struct MyException : std::exception {};
-
 TEST_F(InlineTaskTest, ExceptionsPropagateFromVoidTask) {
+  struct MyException : std::exception {};
+
   auto f = []() -> InlineTask<void> {
-    co_await std::experimental::suspend_never{};
+    co_await folly::coro::suspend_never{};
     throw MyException{};
   };
   EXPECT_THROW(folly::coro::blockingWait(f()), MyException);
 }
 
 TEST_F(InlineTaskTest, ExceptionsPropagateFromValueTask) {
+  struct MyException : std::exception {};
+
   auto f = []() -> InlineTask<int> {
-    co_await std::experimental::suspend_never{};
+    co_await folly::coro::suspend_never{};
     throw MyException{};
   };
   EXPECT_THROW(folly::coro::blockingWait(f()), MyException);
 }
 
 TEST_F(InlineTaskTest, ExceptionsPropagateFromRefTask) {
+  struct MyException : std::exception {};
+
   auto f = []() -> InlineTask<int&> {
-    co_await std::experimental::suspend_never{};
+    co_await folly::coro::suspend_never{};
     throw MyException{};
   };
   EXPECT_THROW(folly::coro::blockingWait(f()), MyException);
 }
 
-struct ThrowingCopyConstructor {
-  ThrowingCopyConstructor() noexcept = default;
-
-  [[noreturn]] ThrowingCopyConstructor(const ThrowingCopyConstructor&) noexcept(
-      false) {
-    throw MyException{};
-  }
-
-  ThrowingCopyConstructor& operator=(const ThrowingCopyConstructor&) = delete;
-};
-
 TEST_F(InlineTaskTest, ExceptionsPropagateFromReturnValueConstructor) {
-  auto f = []() -> InlineTask<ThrowingCopyConstructor> { co_return{}; };
+  struct MyException : std::exception {};
+
+  struct ThrowingCopyConstructor {
+    [[maybe_unused]] ThrowingCopyConstructor() noexcept = default;
+
+    [[noreturn]] ThrowingCopyConstructor(
+        const ThrowingCopyConstructor&) noexcept(false) {
+      throw MyException{};
+    }
+
+    ThrowingCopyConstructor& operator=(const ThrowingCopyConstructor&) = delete;
+  };
+
+  auto f = []() -> InlineTask<ThrowingCopyConstructor> { co_return {}; };
   EXPECT_THROW(folly::coro::blockingWait(f()), MyException);
 }
 
-InlineTask<void> recursiveTask(int depth) {
-  if (depth > 0) {
-    co_await recursiveTask(depth - 1);
-  }
-}
-
 TEST_F(InlineTaskTest, DeepRecursionDoesntStackOverflow) {
-  folly::coro::blockingWait(recursiveTask(500000));
-}
+  struct RecursiveTask {
+    InlineTask<void> operator()(int depth) {
+      if (depth > 0) {
+        co_await operator()(depth - 1);
+      }
+    }
+  };
 
-InlineTask<int> recursiveValueTask(int depth) {
-  if (depth > 0) {
-    co_return co_await recursiveValueTask(depth - 1) + 1;
-  }
-  co_return 0;
+  folly::coro::blockingWait(RecursiveTask{}(500000));
 }
 
 TEST_F(InlineTaskTest, DeepRecursionOfValueTaskDoesntStackOverflow) {
-  EXPECT_EQ(500000, folly::coro::blockingWait(recursiveValueTask(500000)));
-}
+  struct RecursiveValueTask {
+    InlineTask<int> operator()(int depth) {
+      if (depth > 0) {
+        co_return co_await operator()(depth - 1) + 1;
+      }
+      co_return 0;
+    }
+  };
 
-InlineTask<void> recursiveThrowingTask(int depth) {
-  if (depth > 0) {
-    co_await recursiveThrowingTask(depth - 1);
-  }
-
-  throw MyException{};
+  EXPECT_EQ(500000, folly::coro::blockingWait(RecursiveValueTask{}(500000)));
 }
 
 TEST_F(InlineTaskTest, DeepRecursionOfExceptions) {
+  struct MyException : std::exception {};
+
+  struct RecursiveThrowingTask {
+    static InlineTask<void> go(int depth) {
+      if (depth > 0) {
+        co_await go(depth - 1);
+      }
+
+      throw MyException{};
+    }
+  };
+
   EXPECT_THROW(
-      folly::coro::blockingWait(recursiveThrowingTask(50000)), MyException);
+      folly::coro::blockingWait(RecursiveThrowingTask::go(50000)), MyException);
 }
 
 #endif

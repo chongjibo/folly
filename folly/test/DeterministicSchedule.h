@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,20 +18,24 @@
 
 #include <assert.h>
 #include <errno.h>
-#include <glog/logging.h>
+
 #include <atomic>
 #include <functional>
 #include <list>
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include <glog/logging.h>
+
 #include <folly/ScopeGuard.h>
-#include <folly/SingletonThreadLocal.h>
 #include <folly/concurrency/CacheLocality.h>
 #include <folly/detail/Futex.h>
+#include <folly/lang/CustomizationPoint.h>
+#include <folly/synchronization/AtomicNotification.h>
 #include <folly/synchronization/detail/AtomicUtils.h>
 #include <folly/synchronization/test/Semaphore.h>
 
@@ -56,29 +60,19 @@ struct DSchedThreadId {
   unsigned val;
   explicit constexpr DSchedThreadId() : val(0) {}
   explicit constexpr DSchedThreadId(unsigned v) : val(v) {}
-  unsigned operator=(unsigned v) {
-    return val = v;
-  }
+  unsigned operator=(unsigned v) { return val = v; }
 };
 
 class DSchedTimestamp {
  public:
   constexpr explicit DSchedTimestamp() : val_(0) {}
-  DSchedTimestamp advance() {
-    return DSchedTimestamp(++val_);
-  }
+  DSchedTimestamp advance() { return DSchedTimestamp(++val_); }
   bool atLeastAsRecentAs(const DSchedTimestamp& other) const {
     return val_ >= other.val_;
   }
-  void sync(const DSchedTimestamp& other) {
-    val_ = std::max(val_, other.val_);
-  }
-  bool initialized() const {
-    return val_ > 0;
-  }
-  static constexpr DSchedTimestamp initial() {
-    return DSchedTimestamp(1);
-  }
+  void sync(const DSchedTimestamp& other) { val_ = std::max(val_, other.val_); }
+  bool initialized() const { return val_ > 0; }
+  static constexpr DSchedTimestamp initial() { return DSchedTimestamp(1); }
 
  protected:
   constexpr explicit DSchedTimestamp(size_t v) : val_(v) {}
@@ -176,8 +170,8 @@ class DeterministicSchedule {
    * runnable thread.  The subset is chosen with size n, and the choice
    * is made every m steps.
    */
-  static std::function<size_t(size_t)>
-  uniformSubset(uint64_t seed, size_t n = 2, size_t m = 64);
+  static std::function<size_t(size_t)> uniformSubset(
+      uint64_t seed, size_t n = 2, size_t m = 64);
 
   /** Obtains permission for the current thread to perform inter-thread
    *  communication. */
@@ -199,8 +193,7 @@ class DeterministicSchedule {
   static inline std::thread thread(Func&& func, Args&&... args) {
     // TODO: maybe future versions of gcc will allow forwarding to thread
     atomic_thread_fence(std::memory_order_seq_cst);
-    auto& tls = TLState::get();
-    auto sched = tls.sched;
+    auto sched = getCurrentSchedule();
     auto sem = sched ? sched->beforeThreadCreate() : nullptr;
     auto child = std::thread(
         [=](Args... a) {
@@ -278,49 +271,22 @@ class DeterministicSchedule {
   /** Returns true if the current thread has already completed
    * the thread function, for example if the thread is executing
    * thread local destructors. */
-  static bool isCurrentThreadExiting() {
-    auto& tls = TLState::get();
-    return tls.exiting;
-  }
+  static bool isCurrentThreadExiting();
 
   /** Add sem back into sems_ */
   static void reschedule(Sem* sem);
 
-  static bool isActive() {
-    auto& tls = TLState::get();
-    return tls.sched != nullptr;
-  }
+  static bool isActive();
 
-  static DSchedThreadId getThreadId() {
-    auto& tls = TLState::get();
-    assert(tls.sched != nullptr);
-    return tls.threadId;
-  }
+  static DSchedThreadId getThreadId();
 
   static ThreadInfo& getCurrentThreadInfo();
 
   static void atomic_thread_fence(std::memory_order mo);
 
  private:
-  struct PerThreadState {
-    // delete the constructors and assignment operators for sanity
-    //
-    // but... we can't delete the move constructor and assignment operators
-    // because those are required before C++17 in the implementation of
-    // SingletonThreadLocal
-    PerThreadState(const PerThreadState&) = delete;
-    PerThreadState& operator=(const PerThreadState&) = delete;
-    PerThreadState(PerThreadState&&) = default;
-    PerThreadState& operator=(PerThreadState&&) = default;
-    PerThreadState() = default;
+  static DeterministicSchedule* getCurrentSchedule();
 
-    Sem* sem{nullptr};
-    DeterministicSchedule* sched{nullptr};
-    bool exiting{false};
-    DSchedThreadId threadId{};
-    AuxAct aux_act{};
-  };
-  using TLState = SingletonThreadLocal<PerThreadState>;
   static AuxChk aux_chk;
 
   std::function<size_t(size_t)> scheduler_;
@@ -366,14 +332,10 @@ struct DeterministicAtomicImpl {
 
   constexpr /* implicit */ DeterministicAtomicImpl(T v) noexcept : data_(v) {}
 
-  bool is_lock_free() const noexcept {
-    return data_.is_lock_free();
-  }
+  bool is_lock_free() const noexcept { return data_.is_lock_free(); }
 
   bool compare_exchange_strong(
-      T& v0,
-      T v1,
-      std::memory_order mo = std::memory_order_seq_cst) noexcept {
+      T& v0, T v1, std::memory_order mo = std::memory_order_seq_cst) noexcept {
     return compare_exchange_strong(
         v0, v1, mo, ::folly::detail::default_failure_memory_order(mo));
   }
@@ -393,9 +355,7 @@ struct DeterministicAtomicImpl {
   }
 
   bool compare_exchange_weak(
-      T& v0,
-      T v1,
-      std::memory_order mo = std::memory_order_seq_cst) noexcept {
+      T& v0, T v1, std::memory_order mo = std::memory_order_seq_cst) noexcept {
     return compare_exchange_weak(
         v0, v1, mo, ::folly::detail::default_failure_memory_order(mo));
   }
@@ -727,18 +687,22 @@ detail::FutexResult deterministicFutexWaitImpl(
  * waits and wakes
  */
 template <typename Integer>
-void atomic_wait(const DeterministicAtomic<Integer>*, Integer) {}
+void tag_invoke(
+    cpo_t<atomic_wait>, const DeterministicAtomic<Integer>*, Integer) {}
 template <typename Integer, typename Clock, typename Duration>
-std::cv_status atomic_wait_until(
+std::cv_status tag_invoke(
+    cpo_t<atomic_wait_until>,
     const DeterministicAtomic<Integer>*,
     Integer,
     const std::chrono::time_point<Clock, Duration>&) {
   return std::cv_status::no_timeout;
 }
 template <typename Integer>
-void atomic_notify_one(const DeterministicAtomic<Integer>*) {}
+void tag_invoke(cpo_t<atomic_notify_one>, const DeterministicAtomic<Integer>*) {
+}
 template <typename Integer>
-void atomic_notify_all(const DeterministicAtomic<Integer>*) {}
+void tag_invoke(cpo_t<atomic_notify_all>, const DeterministicAtomic<Integer>*) {
+}
 
 /**
  * DeterministicMutex is a drop-in replacement of std::mutex that

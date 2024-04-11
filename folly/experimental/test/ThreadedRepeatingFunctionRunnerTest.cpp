@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,18 @@
 
 #include <folly/experimental/ThreadedRepeatingFunctionRunner.h>
 
-#include <folly/portability/GTest.h>
 #include <atomic>
+
+#include <folly/portability/GTest.h>
 
 using namespace std;
 
 struct Foo {
   explicit Foo(std::atomic<int>& d) : data(d) {}
-  ~Foo() {
-    runner_.stop();
-  }
+  ~Foo() { runner_.stop(); }
 
   void start() {
-    runner_.add("Foo", [this]() {
+    runner_.add("Foo", [this]() noexcept {
       ++data;
       return std::chrono::seconds(0);
     });
@@ -46,7 +45,7 @@ struct FooLongSleep {
   }
 
   void start() {
-    runner_.add("FooLongSleep", [this]() {
+    runner_.add("FooLongSleep", [this]() noexcept {
       data.store(1);
       return 1000h; // Test would time out if we waited
     });

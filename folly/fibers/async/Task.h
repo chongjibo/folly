@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,11 @@ namespace async {
 template <typename T>
 Async<T> taskWait(folly::coro::Task<T>&& task) {
   return folly::coro::blockingWait(std::move(task));
+}
+
+inline Async<void> taskWait(folly::coro::Task<void>&& task) {
+  folly::coro::blockingWait(std::move(task));
+  return {};
 }
 
 } // namespace async

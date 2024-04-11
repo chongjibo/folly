@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@
 
 #pragma once
 
-#include <folly/Optional.h>
-#include <folly/functional/Invoke.h>
-
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+
+#include <folly/Optional.h>
+#include <folly/functional/Invoke.h>
 
 namespace folly {
 namespace detail {
@@ -189,7 +189,7 @@ class DistributedMutex {
    * It is undefined behavior to unlock from a thread that did not lock the
    * mutex
    */
-  void unlock(DistributedMutexStateProxy);
+  void unlock(DistributedMutexStateProxy const&);
 
   /**
    * Try to acquire the mutex
@@ -311,8 +311,7 @@ class DistributedMutex {
    */
   template <typename Rep, typename Period, typename Task>
   folly::Optional<invoke_result_t<Task&>> try_lock_combine_for(
-      const std::chrono::duration<Rep, Period>& duration,
-      Task task);
+      const std::chrono::duration<Rep, Period>& duration, Task task);
 
   /**
    * Try to combine a task as a combined critical section untill the given time
@@ -322,8 +321,7 @@ class DistributedMutex {
    */
   template <typename Clock, typename Duration, typename Task>
   folly::Optional<invoke_result_t<Task&>> try_lock_combine_until(
-      const std::chrono::time_point<Clock, Duration>& deadline,
-      Task task);
+      const std::chrono::time_point<Clock, Duration>& deadline, Task task);
 
  private:
   Atomic<std::uintptr_t> state_{0};
@@ -342,4 +340,3 @@ using DistributedMutex = detail::distributed_mutex::DistributedMutex<>;
 } // namespace folly
 
 #include <folly/synchronization/DistributedMutex-inl.h>
-#include <folly/synchronization/DistributedMutexSpecializations.h>

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <folly/dynamic.h>
-#include <folly/json.h>
+#include <folly/json/dynamic.h>
+#include <folly/json/json.h>
 #include <folly/logging/LogCategory.h>
 #include <folly/logging/LogConfig.h>
 #include <folly/logging/LogConfigParser.h>
@@ -44,8 +44,7 @@ auto MatchLogHandler(const LogHandlerConfig& config) {
   return LogHandlerMatcherImpl(config);
 }
 auto MatchLogHandler(
-    StringPiece type,
-    std::unordered_map<std::string, std::string> options) {
+    StringPiece type, std::unordered_map<std::string, std::string> options) {
   return MatchLogHandler(LogHandlerConfig{type, std::move(options)});
 }
 

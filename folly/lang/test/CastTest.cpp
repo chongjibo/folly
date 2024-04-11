@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@
 #include <folly/Utility.h>
 #include <folly/portability/GTest.h>
 
-using folly::as_const;
 using folly::down_cast;
+using std::as_const;
 
 class CastTest : public testing::Test {};
 

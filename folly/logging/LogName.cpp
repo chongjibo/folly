@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -129,7 +129,7 @@ StringPiece LogName::getParent(StringPiece name) {
     return name;
   }
 
-  ssize_t idx = name.size();
+  size_t idx = name.size();
 
   // Skip over any trailing separator characters
   while (idx > 0 && isSeparator(name[idx - 1])) {

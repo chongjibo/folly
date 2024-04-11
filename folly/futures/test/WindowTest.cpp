@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
+#include <vector>
+
 #include <boost/thread/barrier.hpp>
 
 #include <folly/Conv.h>
 #include <folly/executors/ManualExecutor.h>
 #include <folly/futures/Future.h>
 #include <folly/portability/GTest.h>
-
-#include <vector>
 
 using namespace folly;
 
@@ -31,12 +31,12 @@ static eggs_t eggs("eggs");
 TEST(Window, basic) {
   // int -> Future<int>
   auto fn = [](std::vector<int> input, size_t window_size, size_t expect) {
-    auto res =
-        reduce(
-            window(input, [](int i) { return makeFuture(i); }, window_size),
-            0,
-            [](int sum, const Try<int>& b) { return sum + *b; })
-            .get();
+    auto res = reduce(
+                   window(
+                       input, [](int i) { return makeFuture(i); }, window_size),
+                   0,
+                   [](int sum, const Try<int>& b) { return sum + *b; })
+                   .get();
     EXPECT_EQ(expect, res);
   };
   {
@@ -102,13 +102,34 @@ TEST(Window, basic) {
     auto res =
         reduce(
             window(
-                5UL,
+                size_t(5),
                 [](size_t iteration) { return folly::makeFuture(iteration); },
                 2),
-            0UL,
+            size_t{0},
             [](size_t sum, const Try<size_t>& b) { return sum + b.value(); })
             .get();
     EXPECT_EQ(0 + 1 + 2 + 3 + 4, res);
+  }
+}
+
+TEST(Window, inline) {
+  // inline future collection on same executor
+  {
+    ManualExecutor x;
+    auto allf = collectAll(window(
+                               &x,
+                               std::vector<int>{42, 42, 42},
+                               [&](int i) { return makeFuture(i).via(&x); },
+                               2))
+                    .via(&x)
+                    .thenTryInline([](auto&&) {});
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(2, x.run());
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(2, x.run());
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(1, x.run());
+    EXPECT_TRUE(allf.isReady());
   }
 }
 
@@ -180,7 +201,8 @@ TEST(Window, parallel) {
   for (size_t i = 0; i < ps.size(); i++) {
     input.emplace_back(i);
   }
-  auto f = collect(window(input, [&](int i) { return ps[i].getFuture(); }, 3));
+  auto f = collect(window(
+      input, [&](int i) { return ps[i].getFuture(); }, 3));
 
   std::vector<std::thread> ts;
   boost::barrier barrier(ps.size() + 1);
@@ -209,7 +231,8 @@ TEST(Window, parallelWithError) {
   for (size_t i = 0; i < ps.size(); i++) {
     input.emplace_back(i);
   }
-  auto f = collect(window(input, [&](int i) { return ps[i].getFuture(); }, 3));
+  auto f = collect(window(
+      input, [&](int i) { return ps[i].getFuture(); }, 3));
 
   std::vector<std::thread> ts;
   boost::barrier barrier(ps.size() + 1);
@@ -240,8 +263,8 @@ TEST(Window, allParallelWithError) {
   for (size_t i = 0; i < ps.size(); i++) {
     input.emplace_back(i);
   }
-  auto f =
-      collectAll(window(input, [&](int i) { return ps[i].getFuture(); }, 3));
+  auto f = collectAll(window(
+      input, [&](int i) { return ps[i].getFuture(); }, 3));
 
   std::vector<std::thread> ts;
   boost::barrier barrier(ps.size() + 1);
@@ -341,8 +364,8 @@ TEST(WindowExecutor, parallel) {
   for (size_t i = 0; i < ps.size(); i++) {
     input.emplace_back(i);
   }
-  auto f = collect(
-      window(&executor, input, [&](int i) { return ps[i].getFuture(); }, 3));
+  auto f = collect(window(
+      &executor, input, [&](int i) { return ps[i].getFuture(); }, 3));
 
   std::vector<std::thread> ts;
   boost::barrier barrier(ps.size() + 1);
@@ -374,8 +397,8 @@ TEST(WindowExecutor, parallelWithError) {
   for (size_t i = 0; i < ps.size(); i++) {
     input.emplace_back(i);
   }
-  auto f = collect(
-      window(&executor, input, [&](int i) { return ps[i].getFuture(); }, 3));
+  auto f = collect(window(
+      &executor, input, [&](int i) { return ps[i].getFuture(); }, 3));
 
   std::vector<std::thread> ts;
   boost::barrier barrier(ps.size() + 1);
@@ -409,8 +432,8 @@ TEST(WindowExecutor, allParallelWithError) {
   for (size_t i = 0; i < ps.size(); i++) {
     input.emplace_back(i);
   }
-  auto f = collectAll(
-      window(&executor, input, [&](int i) { return ps[i].getFuture(); }, 3));
+  auto f = collectAll(window(
+      &executor, input, [&](int i) { return ps[i].getFuture(); }, 3));
 
   std::vector<std::thread> ts;
   boost::barrier barrier(ps.size() + 1);

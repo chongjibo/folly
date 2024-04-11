@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,26 +37,31 @@ struct Magic {
       : dtor_(std::move(dtor)), move_(std::move(move)) {
     ctor();
   }
-  Magic(Magic&& other) /* may throw */ {
-    *this = std::move(other);
-  }
+  Magic(Magic&& other) /* may throw */ { *this = std::move(other); }
   Magic& operator=(Magic&& other) {
     dtor_ = std::move(other.dtor_);
     move_ = std::move(other.move_);
     move_();
     return *this;
   }
-  ~Magic() {
-    dtor_();
-  }
+  ~Magic() { dtor_(); }
+};
+
+template <typename T>
+struct DeferredDtor {
+  folly::Indestructible<T>& obj_;
+  explicit constexpr DeferredDtor(folly::Indestructible<T>& obj) noexcept
+      : obj_{obj} {}
+  ~DeferredDtor() { obj_->~T(); }
 };
 
 class IndestructibleTest : public testing::Test {};
 } // namespace
 
 TEST_F(IndestructibleTest, access) {
-  static const Indestructible<map<string, int>> data{
+  Indestructible<map<string, int>> data{
       map<string, int>{{"key1", 17}, {"key2", 19}, {"key3", 23}}};
+  DeferredDtor s{data};
 
   auto& m = *data;
   EXPECT_EQ(19, m.at("key2"));
@@ -66,7 +71,7 @@ TEST_F(IndestructibleTest, no_destruction) {
   int state = 0;
   int value = 0;
 
-  static Indestructible<Magic> sing(
+  Indestructible<Magic> sing(
       [&] {
         ++state;
         value = 7;
@@ -81,37 +86,9 @@ TEST_F(IndestructibleTest, no_destruction) {
 }
 
 TEST_F(IndestructibleTest, empty) {
-  static const Indestructible<map<string, int>> data;
+  const Indestructible<map<string, int>> data;
   auto& m = *data;
   EXPECT_EQ(0, m.size());
-}
-
-TEST_F(IndestructibleTest, move) {
-  int state = 0;
-  int value = 0;
-  int moves = 0;
-
-  static Indestructible<Magic> sing( // move assignment
-      [&] {
-        ++state;
-        value = 7;
-      },
-      [&] { state = -1; },
-      [&] { ++moves; });
-
-  EXPECT_EQ(1, state);
-  EXPECT_EQ(7, value);
-  EXPECT_EQ(0, moves);
-
-  // move constructor
-  static Indestructible<Magic> move_ctor(std::move(sing));
-  EXPECT_EQ(1, state);
-  EXPECT_EQ(1, moves);
-
-  // move assignment
-  static Indestructible<Magic> move_assign = std::move(move_ctor);
-  EXPECT_EQ(1, state);
-  EXPECT_EQ(2, moves);
 }
 
 TEST_F(IndestructibleTest, disabled_default_ctor) {
@@ -126,7 +103,9 @@ TEST_F(IndestructibleTest, disabled_default_ctor) {
 }
 
 TEST_F(IndestructibleTest, list_initialization) {
-  auto map = folly::Indestructible<std::map<int, int>>{{{1, 2}}};
+  folly::Indestructible<std::map<int, int>> map{{{1, 2}}};
+  DeferredDtor s{map};
+
   EXPECT_EQ(map->at(1), 2);
 }
 
@@ -158,4 +137,28 @@ TEST_F(IndestructibleTest, list_initialization_explicit_implicit) {
   using I = std::map<int, int>;
   EXPECT_TRUE((!std::is_convertible<E, Indestructible<E>>::value));
   EXPECT_TRUE((std::is_convertible<I, Indestructible<I>>::value));
+}
+
+TEST_F(IndestructibleTest, conversion) {
+  using I = std::map<string, string>;
+  folly::Indestructible<I> map{I{{"foo", "bar"}}};
+  DeferredDtor s{map};
+  I& r = map;
+  EXPECT_EQ(1, r.count("foo"));
+  I const& cr = std::as_const(map);
+  EXPECT_EQ(1, cr.count("foo"));
+}
+
+TEST_F(IndestructibleTest, factory_method) {
+  struct Foo {
+    Foo(int x) : value(x) {}
+    Foo(const Foo&) = delete;
+
+    const int value;
+  };
+
+  auto factory = [] { return Foo(42); };
+
+  folly::Indestructible<Foo> foo(folly::factory_constructor, factory);
+  EXPECT_EQ(42, foo->value);
 }

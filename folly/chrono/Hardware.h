@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 #include <chrono>
 #include <cstdint>
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
 extern "C" std::uint64_t __rdtsc();
 #pragma intrinsic(__rdtsc)
 #endif
@@ -29,10 +29,14 @@ extern "C" std::uint64_t __rdtsc();
 namespace folly {
 
 inline std::uint64_t hardware_timestamp() {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
   return __rdtsc();
 #elif defined(__GNUC__) && (defined(__i386__) || FOLLY_X64)
   return __builtin_ia32_rdtsc();
+#elif FOLLY_AARCH64 && !FOLLY_MOBILE
+  uint64_t cval;
+  asm volatile("mrs %0, cntvct_el0" : "=r"(cval));
+  return cval;
 #else
   // use steady_clock::now() as an approximation for the timestamp counter on
   // non-x86 systems

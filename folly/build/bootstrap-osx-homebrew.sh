@@ -1,5 +1,5 @@
 #!/bin/bash -x
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +42,7 @@ install_deps() {
         pkg-config
         snappy
         xz
+        fmt
     )
 
     # fetch deps
@@ -67,7 +68,7 @@ cmake \
     ..
 
 # fetch googletest, if doesn't exist
-GTEST_VER=1.8.0
+GTEST_VER=1.10.0
 GTEST_DIR=gtest-${GTEST_VER}
 if [ ! -d ${GTEST_DIR} ]; then
     mkdir ${GTEST_DIR}

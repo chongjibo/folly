@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
  */
 
 #include <folly/io/async/EventHandler.h>
-#include <folly/String.h>
-#include <folly/io/async/EventBase.h>
 
 #include <cassert>
+
+#include <folly/String.h>
+#include <folly/io/async/EventBase.h>
 
 namespace folly {
 
@@ -147,19 +148,15 @@ void EventHandler::libeventCallback(libevent_fd_t fd, short events, void* arg) {
   assert(fd == handler->event_.eb_ev_fd());
   (void)fd; // prevent unused variable warnings
 
-  auto observer = handler->eventBase_->getExecutionObserver();
-  if (observer) {
-    observer->starting(reinterpret_cast<uintptr_t>(handler));
-  }
-
   // this can't possibly fire if handler->eventBase_ is nullptr
   handler->eventBase_->bumpHandlingTime();
 
-  handler->handlerReady(uint16_t(events));
+  ExecutionObserverScopeGuard guard(
+      &handler->eventBase_->getExecutionObserverList(),
+      &handler->eventBase_,
+      folly::ExecutionObserver::CallbackType::Event);
 
-  if (observer) {
-    observer->stopped(reinterpret_cast<uintptr_t>(handler));
-  }
+  handler->handlerReady(uint16_t(events));
 }
 
 void EventHandler::setEventBase(EventBase* eventBase) {

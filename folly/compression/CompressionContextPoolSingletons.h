@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,24 +52,48 @@ struct ZSTD_DCtx_Deleter {
   void operator()(ZSTD_DCtx* ctx) const noexcept;
 };
 
+struct ZSTD_CCtx_Resetter {
+  void operator()(ZSTD_CCtx* ctx) const noexcept;
+};
+
+struct ZSTD_DCtx_Resetter {
+  void operator()(ZSTD_DCtx* ctx) const noexcept;
+};
+
 using ZSTD_CCtx_Pool = CompressionCoreLocalContextPool<
     ZSTD_CCtx,
     ZSTD_CCtx_Creator,
     ZSTD_CCtx_Deleter,
+    ZSTD_CCtx_Resetter,
     4>;
 using ZSTD_DCtx_Pool = CompressionCoreLocalContextPool<
     ZSTD_DCtx,
     ZSTD_DCtx_Creator,
     ZSTD_DCtx_Deleter,
+    ZSTD_DCtx_Resetter,
     4>;
 
+/**
+ * Returns a clean ZSTD_CCtx.
+ */
 ZSTD_CCtx_Pool::Ref getZSTD_CCtx();
 
+/**
+ * Returns a clean ZSTD_DCtx.
+ */
 ZSTD_DCtx_Pool::Ref getZSTD_DCtx();
 
 ZSTD_CCtx_Pool::Ref getNULL_ZSTD_CCtx();
 
 ZSTD_DCtx_Pool::Ref getNULL_ZSTD_DCtx();
+
+ZSTD_CCtx_Pool& zstd_cctx_pool();
+
+ZSTD_DCtx_Pool& zstd_dctx_pool();
+
+size_t get_zstd_cctx_created_count();
+
+size_t get_zstd_dctx_created_count();
 
 #endif // FOLLY_HAVE_LIBZSTD
 

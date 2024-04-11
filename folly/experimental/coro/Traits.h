@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,11 @@
 #pragma once
 
 #include <folly/Traits.h>
+#include <folly/experimental/coro/Coroutine.h>
 
-#include <experimental/coroutine>
 #include <type_traits>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace coro {
@@ -41,14 +43,11 @@ using remove_reference_wrapper_t = typename remove_reference_wrapper<T>::type;
 namespace detail {
 
 template <typename T>
-using _is_coroutine_handle =
-    folly::detail::is_instantiation_of<std::experimental::coroutine_handle, T>;
+inline constexpr bool is_coroutine_handle_v =
+    folly::detail::is_instantiation_of_v< //
+        coroutine_handle,
+        T>;
 
-template <typename T>
-struct _is_valid_await_suspend_return_type : folly::Disjunction<
-                                                 std::is_void<T>,
-                                                 std::is_same<bool, T>,
-                                                 _is_coroutine_handle<T>> {};
 } // namespace detail
 
 /// is_awaiter<T>::value
@@ -59,33 +58,29 @@ struct _is_valid_await_suspend_return_type : folly::Disjunction<
 ///
 /// An 'Awaiter' must have the following three methods.
 /// - awaiter.await_ready() -> bool
-/// - awaiter.await_suspend(std::experimental::coroutine_handle<void>()) ->
+/// - awaiter.await_suspend(coroutine_handle<void>()) ->
 ///     void OR
 ///     bool OR
-///     std::experimental::coroutine_handle<T> for some T
+///     coroutine_handle<T> for some T
 /// - awaiter.await_resume()
 ///
-/// Note that the requirement to accept coroutine_handle<void> rather than
-/// just some coroutine_handle<P> is to ensure that the awaitable can be
-/// awaited in any coroutine context where the promise_type does not modify
-/// what is normally awaitable through use of await_transform().
+/// Note that we don't check for a valid await_suspend() method here since
+/// we don't yet know the promise type to use and some await_suspend()
+/// implementations have particular requirements on the promise (eg. the
+/// stack-aware awaiters may require the .getAsyncFrame() method)
 template <typename T, typename = void>
-struct is_awaiter : std::false_type {};
+struct is_awaiter : std::bool_constant<!require_sizeof<T>> {};
+
+template <typename T>
+struct is_awaiter<T, std::enable_if_t<std::is_void_v<T>>> : std::false_type {};
 
 template <typename T>
 struct is_awaiter<
     T,
     folly::void_t<
         decltype(std::declval<T&>().await_ready()),
-        decltype(std::declval<T&>().await_suspend(
-            std::declval<std::experimental::coroutine_handle<void>>())),
         decltype(std::declval<T&>().await_resume())>>
-    : folly::Conjunction<
-          std::is_same<bool, decltype(std::declval<T&>().await_ready())>,
-          detail::_is_valid_await_suspend_return_type<decltype(
-              std::declval<T&>().await_suspend(
-                  std::declval<
-                      std::experimental::coroutine_handle<void>>()))>> {};
+    : std::is_same<bool, decltype(std::declval<T&>().await_ready())> {};
 
 template <typename T>
 constexpr bool is_awaiter_v = is_awaiter<T>::value;
@@ -93,7 +88,12 @@ constexpr bool is_awaiter_v = is_awaiter<T>::value;
 namespace detail {
 
 template <typename Awaitable, typename = void>
-struct _has_member_operator_co_await : std::false_type {};
+struct _has_member_operator_co_await
+    : std::bool_constant<!require_sizeof<Awaitable>> {};
+
+template <typename T>
+struct _has_member_operator_co_await<T, std::enable_if_t<std::is_void_v<T>>>
+    : std::false_type {};
 
 template <typename Awaitable>
 struct _has_member_operator_co_await<
@@ -102,7 +102,12 @@ struct _has_member_operator_co_await<
     : is_awaiter<decltype(std::declval<Awaitable>().operator co_await())> {};
 
 template <typename Awaitable, typename = void>
-struct _has_free_operator_co_await : std::false_type {};
+struct _has_free_operator_co_await
+    : std::bool_constant<!require_sizeof<Awaitable>> {};
+
+template <typename T>
+struct _has_free_operator_co_await<T, std::enable_if_t<std::is_void_v<T>>>
+    : std::false_type {};
 
 template <typename Awaitable>
 struct _has_free_operator_co_await<
@@ -148,7 +153,7 @@ template <
             value,
         int> = 0>
 Awaitable& get_awaiter(Awaitable&& awaitable) {
-  return awaitable;
+  return static_cast<Awaitable&>(awaitable);
 }
 
 template <
@@ -205,5 +210,19 @@ struct await_result<Awaitable, std::enable_if_t<is_awaitable_v<Awaitable>>> {
 template <typename Awaitable>
 using await_result_t = typename await_result<Awaitable>::type;
 
+namespace detail {
+
+template <typename Promise, typename = void>
+constexpr bool promiseHasAsyncFrame_v = !require_sizeof<Promise>;
+
+template <typename Promise>
+constexpr bool promiseHasAsyncFrame_v<
+    Promise,
+    void_t<decltype(std::declval<Promise&>().getAsyncFrame())>> = true;
+
+} // namespace detail
+
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

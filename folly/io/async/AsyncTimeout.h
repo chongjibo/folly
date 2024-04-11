@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,18 +16,17 @@
 
 #pragma once
 
-#include <folly/io/async/EventBaseBackendBase.h>
-#include <folly/io/async/TimeoutManager.h>
-
-#include <folly/portability/Event.h>
-
 #include <memory>
 #include <utility>
+
+#include <folly/io/async/EventBaseBackendBase.h>
+#include <folly/io/async/Request.h>
+#include <folly/io/async/TimeoutManager.h>
+#include <folly/portability/Event.h>
 
 namespace folly {
 
 class EventBase;
-class RequestContext;
 
 /**
  * AsyncTimeout is used to asynchronously wait for a timeout to occur.
@@ -91,15 +90,23 @@ class AsyncTimeout {
    * new timeout value.
    *
    * @param milliseconds  The timeout duration, in milliseconds.
+   * @param rctx request context to be captured by the callback
+   *             set to empty if current context should not be saved.
    *
    * @return Returns true if the timeout was successfully scheduled,
    *         and false if an error occurred.  After an error, the timeout is
    *         always unscheduled, even if scheduleTimeout() was just
    *         rescheduling an existing timeout.
    */
-  bool scheduleTimeout(uint32_t milliseconds);
-  bool scheduleTimeout(TimeoutManager::timeout_type timeout);
-  bool scheduleTimeoutHighRes(TimeoutManager::timeout_type_high_res timeout);
+  bool scheduleTimeout(
+      uint32_t milliseconds,
+      std::shared_ptr<RequestContext>&& rctx = RequestContext::saveContext());
+  bool scheduleTimeout(
+      TimeoutManager::timeout_type timeout,
+      std::shared_ptr<RequestContext>&& rctx = RequestContext::saveContext());
+  bool scheduleTimeoutHighRes(
+      TimeoutManager::timeout_type_high_res timeout,
+      std::shared_ptr<RequestContext>&& rctx = RequestContext::saveContext());
 
   /**
    * Cancel the timeout, if it is running.
@@ -128,8 +135,7 @@ class AsyncTimeout {
       TimeoutManager* timeoutManager,
       InternalEnum internal = InternalEnum::NORMAL);
   void attachEventBase(
-      EventBase* eventBase,
-      InternalEnum internal = InternalEnum::NORMAL);
+      EventBase* eventBase, InternalEnum internal = InternalEnum::NORMAL);
 
   /**
    * Detach the timeout from its TimeoutManager.
@@ -143,16 +149,12 @@ class AsyncTimeout {
   void detachTimeoutManager();
   void detachEventBase();
 
-  const TimeoutManager* getTimeoutManager() {
-    return timeoutManager_;
-  }
+  const TimeoutManager* getTimeoutManager() { return timeoutManager_; }
 
   /**
    * Returns the internal handle to the event
    */
-  EventBaseBackendBase::Event* getEvent() {
-    return &event_;
-  }
+  EventBaseBackendBase::Event* getEvent() { return &event_; }
 
   /**
    * Convenience function that wraps a function object as
@@ -176,12 +178,10 @@ class AsyncTimeout {
    *    while (!done); // busy wait
    *  }
    *
-   * @author: Marcelo Juchem <marcelo@fb.com>
    */
   template <typename TCallback>
   static std::unique_ptr<AsyncTimeout> make(
-      TimeoutManager& manager,
-      TCallback&& callback);
+      TimeoutManager& manager, TCallback&& callback);
 
   /**
    * Convenience function that wraps a function object as
@@ -210,7 +210,6 @@ class AsyncTimeout {
    *    while (!done); // busy wait
    *  }
    *
-   * @author: Marcelo Juchem <marcelo@fb.com>
    */
   template <typename TCallback>
   static std::unique_ptr<AsyncTimeout> schedule(
@@ -238,8 +237,6 @@ namespace detail {
 
 /**
  * Wraps a function object as an AsyncTimeout instance.
- *
- * @author: Marcelo Juchem <marcelo@fb.com>
  */
 template <typename TCallback>
 struct async_timeout_wrapper : public AsyncTimeout {
@@ -262,8 +259,7 @@ struct async_timeout_wrapper : public AsyncTimeout {
 
 template <typename TCallback>
 std::unique_ptr<AsyncTimeout> AsyncTimeout::make(
-    TimeoutManager& manager,
-    TCallback&& callback) {
+    TimeoutManager& manager, TCallback&& callback) {
   return std::unique_ptr<AsyncTimeout>(
       new detail::async_timeout_wrapper<typename std::decay<TCallback>::type>(
           std::addressof(manager), std::forward<TCallback>(callback)));

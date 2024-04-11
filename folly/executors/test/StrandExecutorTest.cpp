@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,18 +16,17 @@
 
 #include <folly/executors/StrandExecutor.h>
 
-#include <folly/CancellationToken.h>
-#include <folly/executors/GlobalExecutor.h>
-#include <folly/executors/ManualExecutor.h>
-#include <folly/synchronization/Baton.h>
-
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
+#include <folly/CancellationToken.h>
+#include <folly/executors/GlobalExecutor.h>
+#include <folly/executors/ManualExecutor.h>
 #include <folly/portability/GTest.h>
+#include <folly/synchronization/Baton.h>
 
 using namespace folly;
 using namespace std::chrono_literals;
@@ -84,9 +83,7 @@ TEST(StrandExecutor, ThreadSafetyTest) {
 
   int value = 0;
 
-  auto incrementValue = [&]() noexcept {
-    ++value;
-  };
+  auto incrementValue = [&]() noexcept { ++value; };
 
   auto strandEx1 =
       StrandExecutor::create(strandContext, getKeepAliveToken(ex1));

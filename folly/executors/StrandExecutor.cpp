@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@
 
 #include <folly/executors/StrandExecutor.h>
 
+#include <glog/logging.h>
+
 #include <folly/ExceptionString.h>
 #include <folly/executors/GlobalExecutor.h>
-
-#include <glog/logging.h>
 
 namespace folly {
 
@@ -64,9 +64,7 @@ void StrandContext::add(Func func, Executor::KeepAlive<> executor) {
 }
 
 void StrandContext::addWithPriority(
-    Func func,
-    Executor::KeepAlive<> executor,
-    int8_t priority) {
+    Func func, Executor::KeepAlive<> executor, int8_t priority) {
   addImpl(QueueItem{std::move(func), std::move(executor), priority});
 }
 
@@ -100,15 +98,8 @@ void StrandContext::executeNext(
   std::size_t pendingCount = 0;
   for (std::size_t i = 0; i < maxItemsToProcessSynchronously; ++i) {
     QueueItem item = thisPtr->queue_.dequeue();
-    try {
-      std::exchange(item.func, {})();
-    } catch (const std::exception& ex) {
-      LOG(DFATAL) << "StrandExecutor: func threw unhandled exception "
-                  << folly::exceptionStr(ex);
-    } catch (...) {
-      LOG(DFATAL) << "StrandExecutor: func threw unhandled non-exception "
-                     "object";
-    }
+    Executor::invokeCatchingExns(
+        "StrandExecutor: func", std::exchange(item.func, {}));
 
     ++pendingCount;
 
@@ -196,14 +187,14 @@ uint8_t StrandExecutor::getNumPriorities() const {
   return parent_->getNumPriorities();
 }
 
-bool StrandExecutor::keepAliveAcquire() {
+bool StrandExecutor::keepAliveAcquire() noexcept {
   [[maybe_unused]] auto oldCount =
       refCount_.fetch_add(1, std::memory_order_relaxed);
   DCHECK(oldCount > 0);
   return true;
 }
 
-void StrandExecutor::keepAliveRelease() {
+void StrandExecutor::keepAliveRelease() noexcept {
   const auto oldCount = refCount_.fetch_sub(1, std::memory_order_acq_rel);
   DCHECK(oldCount > 0);
   if (oldCount == 1) {

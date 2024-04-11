@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 #pragma once
 
 #include <bitset>
-#include <functional>
 
 namespace folly {
 namespace symbolizer {
@@ -56,5 +55,11 @@ void addFatalSignalCallback(SignalCallback cb);
  * callbacks in the order in which they were added.
  */
 void installFatalSignalCallbacks();
+
+/**
+ * True if a fatal signal was received (i.e. the process is crashing).
+ */
+bool fatalSignalReceived();
+
 } // namespace symbolizer
 } // namespace folly

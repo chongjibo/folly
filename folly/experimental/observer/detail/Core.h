@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -69,16 +69,12 @@ class Core : public std::enable_shared_from_this<Core> {
   /**
    * Gets the version of the observed object.
    */
-  size_t getVersion() const {
-    return version_;
-  }
+  size_t getVersion() const { return version_; }
 
   /**
    * Get the last version at which the observed object was actually changed.
    */
-  size_t getVersionLastChange() {
-    return versionLastChange_;
-  }
+  size_t getVersionLastChange() { return versionLastChange_; }
 
   /**
    * Check if the observed object needs to be re-computed. Returns the version
@@ -115,7 +111,7 @@ class Core : public std::enable_shared_from_this<Core> {
 
   folly::Function<std::shared_ptr<const void>()> creator_;
 
-  std::mutex refreshMutex_;
+  mutable SharedMutex refreshMutex_;
 
   bool forceRefresh_{false};
 };

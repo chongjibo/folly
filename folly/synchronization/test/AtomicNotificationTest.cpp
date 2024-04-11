@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@
 
 #include <folly/synchronization/AtomicNotification.h>
 
+#include <thread>
+
 #include <folly/Optional.h>
 #include <folly/portability/GTest.h>
-
-#include <thread>
 
 using namespace std::literals;
 
@@ -148,7 +148,7 @@ class SimpleBaton {
 
 template <typename Integer>
 void run_atomic_aliasing() {
-  auto&& atomic = folly::Optional<std::atomic<Integer>>{folly::in_place, 0};
+  auto&& atomic = folly::Optional<std::atomic<Integer>>{std::in_place, 0};
   auto&& one = SimpleBaton{};
   auto&& two = SimpleBaton{};
 

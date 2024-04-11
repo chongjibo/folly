@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -339,18 +339,12 @@ class DynamicBoundedQueue {
   /// Enqueue functions
 
   /** enqueue */
-  FOLLY_ALWAYS_INLINE void enqueue(const T& v) {
-    enqueueImpl(v);
-  }
+  FOLLY_ALWAYS_INLINE void enqueue(const T& v) { enqueueImpl(v); }
 
-  FOLLY_ALWAYS_INLINE void enqueue(T&& v) {
-    enqueueImpl(std::move(v));
-  }
+  FOLLY_ALWAYS_INLINE void enqueue(T&& v) { enqueueImpl(std::move(v)); }
 
   /** try_enqueue */
-  FOLLY_ALWAYS_INLINE bool try_enqueue(const T& v) {
-    return tryEnqueueImpl(v);
-  }
+  FOLLY_ALWAYS_INLINE bool try_enqueue(const T& v) { return tryEnqueueImpl(v); }
 
   FOLLY_ALWAYS_INLINE bool try_enqueue(T&& v) {
     return tryEnqueueImpl(std::move(v));
@@ -359,30 +353,26 @@ class DynamicBoundedQueue {
   /** try_enqueue_until */
   template <typename Clock, typename Duration>
   FOLLY_ALWAYS_INLINE bool try_enqueue_until(
-      const T& v,
-      const std::chrono::time_point<Clock, Duration>& deadline) {
+      const T& v, const std::chrono::time_point<Clock, Duration>& deadline) {
     return tryEnqueueUntilImpl(v, deadline);
   }
 
   template <typename Clock, typename Duration>
   FOLLY_ALWAYS_INLINE bool try_enqueue_until(
-      T&& v,
-      const std::chrono::time_point<Clock, Duration>& deadline) {
+      T&& v, const std::chrono::time_point<Clock, Duration>& deadline) {
     return tryEnqueueUntilImpl(std::move(v), deadline);
   }
 
   /** try_enqueue_for */
   template <typename Rep, typename Period>
   FOLLY_ALWAYS_INLINE bool try_enqueue_for(
-      const T& v,
-      const std::chrono::duration<Rep, Period>& duration) {
+      const T& v, const std::chrono::duration<Rep, Period>& duration) {
     return tryEnqueueForImpl(v, duration);
   }
 
   template <typename Rep, typename Period>
   FOLLY_ALWAYS_INLINE bool try_enqueue_for(
-      T&& v,
-      const std::chrono::duration<Rep, Period>& duration) {
+      T&& v, const std::chrono::duration<Rep, Period>& duration) {
     return tryEnqueueForImpl(std::move(v), duration);
   }
 
@@ -403,11 +393,18 @@ class DynamicBoundedQueue {
     return false;
   }
 
+  FOLLY_ALWAYS_INLINE folly::Optional<T> try_dequeue() {
+    auto elem = q_.try_dequeue();
+    if (elem.hasValue()) {
+      addCredit(WeightFn()(*elem));
+    }
+    return elem;
+  }
+
   /** try_dequeue_until */
   template <typename Clock, typename Duration>
   FOLLY_ALWAYS_INLINE bool try_dequeue_until(
-      T& elem,
-      const std::chrono::time_point<Clock, Duration>& deadline) {
+      T& elem, const std::chrono::time_point<Clock, Duration>& deadline) {
     if (q_.try_dequeue_until(elem, deadline)) {
       addCredit(WeightFn()(elem));
       return true;
@@ -415,16 +412,35 @@ class DynamicBoundedQueue {
     return false;
   }
 
+  template <typename Clock, typename Duration>
+  FOLLY_ALWAYS_INLINE folly::Optional<T> try_dequeue_until(
+      const std::chrono::time_point<Clock, Duration>& deadline) {
+    auto elem = q_.try_dequeue_until(deadline);
+    if (elem.hasValue()) {
+      addCredit(WeightFn()(*elem));
+    }
+    return elem;
+  }
+
   /** try_dequeue_for */
   template <typename Rep, typename Period>
   FOLLY_ALWAYS_INLINE bool try_dequeue_for(
-      T& elem,
-      const std::chrono::duration<Rep, Period>& duration) {
+      T& elem, const std::chrono::duration<Rep, Period>& duration) {
     if (q_.try_dequeue_for(elem, duration)) {
       addCredit(WeightFn()(elem));
       return true;
     }
     return false;
+  }
+
+  template <typename Rep, typename Period>
+  FOLLY_ALWAYS_INLINE folly::Optional<T> try_dequeue_for(
+      const std::chrono::duration<Rep, Period>& duration) {
+    auto elem = q_.try_dequeue_for(duration);
+    if (elem.hasValue()) {
+      addCredit(WeightFn()(*elem));
+    }
+    return elem;
   }
 
   /// Secondary functions
@@ -445,14 +461,10 @@ class DynamicBoundedQueue {
   }
 
   /** size */
-  size_t size() const noexcept {
-    return q_.size();
-  }
+  size_t size() const noexcept { return q_.size(); }
 
   /** empty */
-  bool empty() const noexcept {
-    return q_.empty();
-  }
+  bool empty() const noexcept { return q_.empty(); }
 
  private:
   /// Private functions ///
@@ -460,7 +472,7 @@ class DynamicBoundedQueue {
   // Calculation of threshold to move credits in bulk from consumers
   // to producers
   constexpr Weight threshold(Weight capacity) const noexcept {
-    return capacity / 10;
+    return (capacity + 9) / 10;
   }
 
   // Functions called frequently by producers
@@ -479,10 +491,9 @@ class DynamicBoundedQueue {
 
   template <typename Clock, typename Duration, typename Arg>
   FOLLY_ALWAYS_INLINE bool tryEnqueueUntilImpl(
-      Arg&& v,
-      const std::chrono::time_point<Clock, Duration>& deadline) {
+      Arg&& v, const std::chrono::time_point<Clock, Duration>& deadline) {
     Weight weight = WeightFn()(std::forward<Arg>(v));
-    if (LIKELY(tryAddDebit(weight))) {
+    if (FOLLY_LIKELY(tryAddDebit(weight))) {
       q_.enqueue(std::forward<Arg>(v));
       return true;
     }
@@ -491,9 +502,8 @@ class DynamicBoundedQueue {
 
   template <typename Rep, typename Period, typename Arg>
   FOLLY_ALWAYS_INLINE bool tryEnqueueForImpl(
-      Arg&& v,
-      const std::chrono::duration<Rep, Period>& duration) {
-    if (LIKELY(tryEnqueueImpl(std::forward<Arg>(v)))) {
+      Arg&& v, const std::chrono::duration<Rep, Period>& duration) {
+    if (FOLLY_LIKELY(tryEnqueueImpl(std::forward<Arg>(v)))) {
       return true;
     }
     auto deadline = std::chrono::steady_clock::now() + duration;
@@ -503,7 +513,7 @@ class DynamicBoundedQueue {
   FOLLY_ALWAYS_INLINE bool tryAddDebit(Weight weight) noexcept {
     Weight capacity = getCapacity();
     Weight before = fetchAddDebit(weight);
-    if (LIKELY(before + weight <= capacity)) {
+    if (FOLLY_LIKELY(before + weight <= capacity)) {
       return true;
     } else {
       subDebit(weight);
@@ -574,8 +584,7 @@ class DynamicBoundedQueue {
 
   template <typename Clock, typename Duration, typename Arg>
   bool tryEnqueueUntilSlow(
-      Arg&& v,
-      const std::chrono::time_point<Clock, Duration>& deadline) {
+      Arg&& v, const std::chrono::time_point<Clock, Duration>& deadline) {
     Weight weight = WeightFn()(std::forward<Arg>(v));
     if (canEnqueue(deadline, weight)) {
       q_.enqueue(std::forward<Arg>(v));

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -116,11 +116,9 @@ Options defaultZlibOptions();
  * Levels supported: 0 = no compression, 1 = fast, ..., 9 = best; default = 6
  */
 std::unique_ptr<Codec> getCodec(
-    Options options = Options(),
-    int level = COMPRESSION_LEVEL_DEFAULT);
+    Options options = Options(), int level = COMPRESSION_LEVEL_DEFAULT);
 std::unique_ptr<StreamCodec> getStreamCodec(
-    Options options = Options(),
-    int level = COMPRESSION_LEVEL_DEFAULT);
+    Options options = Options(), int level = COMPRESSION_LEVEL_DEFAULT);
 
 } // namespace zlib
 } // namespace io

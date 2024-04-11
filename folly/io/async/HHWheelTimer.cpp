@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,8 +61,7 @@ HHWheelTimerBase<Duration>::Callback::~Callback() {
 
 template <class Duration>
 void HHWheelTimerBase<Duration>::Callback::setScheduled(
-    HHWheelTimerBase* wheel,
-    std::chrono::steady_clock::time_point deadline) {
+    HHWheelTimerBase* wheel, std::chrono::steady_clock::time_point deadline) {
   assert(wheel_ == nullptr);
   assert(expiration_ == decltype(expiration_){});
 
@@ -150,8 +149,7 @@ void HHWheelTimerBase<Duration>::scheduleTimeoutImpl(
 
 template <class Duration>
 void HHWheelTimerBase<Duration>::scheduleTimeout(
-    Callback* callback,
-    Duration timeout) {
+    Callback* callback, Duration timeout) {
   // Make sure that the timeout is not negative.
   timeout = std::max(timeout, Duration::zero());
   // Cancel the callback if it happens to be scheduled already.
@@ -206,9 +204,7 @@ void HHWheelTimerBase<Duration>::scheduleTimeout(Callback* callback) {
 
 template <class Duration>
 bool HHWheelTimerBase<Duration>::cascadeTimers(
-    int bucket,
-    int tick,
-    const std::chrono::steady_clock::time_point curTime) {
+    int bucket, int tick, const std::chrono::steady_clock::time_point curTime) {
   CallbackList cbs;
   cbs.swap(buckets_[bucket][tick]);
   auto nextTick = calcNextTick(curTime);
@@ -228,7 +224,7 @@ bool HHWheelTimerBase<Duration>::cascadeTimers(
 
 template <class Duration>
 void HHWheelTimerBase<Duration>::scheduleTimeoutInternal(Duration timeout) {
-  this->AsyncTimeout::scheduleTimeout(timeout);
+  this->AsyncTimeout::scheduleTimeout(timeout, {});
 }
 
 template <class Duration>
@@ -244,7 +240,12 @@ void HHWheelTimerBase<Duration>::timeoutExpired() noexcept {
   // cause inconsistencies in the state of this object. As such, we need
   // to treat these calls slightly differently.
   CHECK(!processingCallbacksGuard_);
+  FOLLY_PUSH_WARNING
+#if __GNUC__ >= 12
+  FOLLY_GCC_DISABLE_WARNING("-Wdangling-pointer")
+#endif
   processingCallbacksGuard_ = &isDestroyed;
+  FOLLY_POP_WARNING
   auto reEntryGuard = folly::makeGuard([&] {
     if (!isDestroyed) {
       processingCallbacksGuard_ = nullptr;
@@ -356,9 +357,8 @@ void HHWheelTimerBase<Duration>::scheduleNextTimeout(int64_t nextTick) {
 
 template <class Duration>
 void HHWheelTimerBase<Duration>::scheduleNextTimeout(
-    int64_t nextTick,
-    int64_t ticks) {
-  scheduleTimeoutInternal(interval_ * ticks);
+    int64_t nextTick, int64_t ticks) {
+  scheduleTimeoutInternal(interval_.fromWheelTicks(ticks));
   expireTick_ = ticks + nextTick - 1;
 }
 
@@ -383,14 +383,14 @@ int64_t HHWheelTimerBase<Duration>::calcNextTick() {
 template <class Duration>
 int64_t HHWheelTimerBase<Duration>::calcNextTick(
     std::chrono::steady_clock::time_point curTime) {
-  return (curTime - startTime_) / interval_;
+  return interval_.toWheelTicksFromSteadyClock(curTime - startTime_);
 }
 
 // std::chrono::microseconds
 template <>
 void HHWheelTimerBase<std::chrono::microseconds>::scheduleTimeoutInternal(
     std::chrono::microseconds timeout) {
-  this->AsyncTimeout::scheduleTimeoutHighRes(timeout);
+  this->AsyncTimeout::scheduleTimeoutHighRes(timeout, {});
 }
 
 // std::chrono::milliseconds

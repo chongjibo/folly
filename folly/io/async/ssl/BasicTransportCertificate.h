@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,14 @@
 
 #pragma once
 
-#include <folly/io/async/AsyncTransportCertificate.h>
 #include <memory>
+
+#include <folly/io/async/ssl/OpenSSLTransportCertificate.h>
 
 namespace folly {
 namespace ssl {
 
-class BasicTransportCertificate : public folly::AsyncTransportCertificate {
+class BasicTransportCertificate : public folly::OpenSSLTransportCertificate {
  public:
   // Create a basic transport cert from an existing one.  Returns nullptr
   // if cert is null.
@@ -32,17 +33,14 @@ class BasicTransportCertificate : public folly::AsyncTransportCertificate {
       return nullptr;
     }
     return std::make_unique<BasicTransportCertificate>(
-        cert->getIdentity(), cert->getX509());
+        cert->getIdentity(), OpenSSLTransportCertificate::tryExtractX509(cert));
   }
 
   BasicTransportCertificate(
-      std::string identity,
-      folly::ssl::X509UniquePtr x509)
+      std::string identity, folly::ssl::X509UniquePtr x509)
       : identity_(std::move(identity)), x509_(std::move(x509)) {}
 
-  std::string getIdentity() const override {
-    return identity_;
-  }
+  std::string getIdentity() const override { return identity_; }
 
   folly::ssl::X509UniquePtr getX509() const override {
     if (!x509_) {
@@ -52,6 +50,8 @@ class BasicTransportCertificate : public folly::AsyncTransportCertificate {
     X509_up_ref(x509raw);
     return folly::ssl::X509UniquePtr(x509raw);
   }
+
+  void dropX509() { x509_.reset(); }
 
  private:
   std::string identity_;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,45 +53,61 @@ bool equal(PtrRange lhs, PtrRange rhs) {
   return std::equal(lhs.b, lhs.e, rhs.b, rhs.e, cmp);
 }
 
+std::string_view parse_demangled_tag_name(std::string_view str) {
+  auto off = std::string_view::npos;
+  // strip surrounding `folly::tag<{...}>`
+  off = str.find('<');
+  str = str.substr(off + 1, str.size() - off - 2);
+  // strip trailing spaces, if any
+  off = str.find_last_not_of(' ');
+  str = str.substr(0, off == std::string_view::npos ? off : off + 1);
+  // done
+  return str;
+}
+
 std::string join(PtrRange types) {
   std::ostringstream ret;
   for (auto t = types.b; t != types.e; ++t) {
     if (t != types.b) {
       ret << ", ";
     }
-    ret << demangle((*t)->name());
+    ret << parse_demangled_tag_name(demangle((*t)->name()));
   }
   return ret.str();
 }
 
 template <typename Value>
+fbstring render_tmpl(Value value) {
+  return fbstring(parse_demangled_tag_name(demangle(value.tmpl->name())));
+}
+
+template <typename Value>
 std::string render(Value value) {
+  auto const tmpl_s = render_tmpl(value);
   auto const key_s = join(ptr_range_key(value));
   auto const mapped_s = join(ptr_range_mapped(value));
   std::ostringstream ret;
-  ret << value.tmpl << "<" << key_s << ", " << mapped_s << ">";
+  ret << tmpl_s << "<" << key_s << ", " << mapped_s << ">";
   return ret.str();
 }
 
 } // namespace
 
-void UniqueInstance::enforce(
-    char const* tmpl,
-    Ptr const* ptrs,
-    std::uint32_t key_size,
-    std::uint32_t mapped_size,
-    Value& global) noexcept {
-  Value const local{tmpl, ptrs, key_size, mapped_size};
+void UniqueInstance::enforce(Arg& arg) noexcept {
+  auto const& local = arg.local;
+  auto& global = StaticSingletonManager::create<Value>(arg.global);
 
   if (!global.tmpl) {
     global = local;
     return;
   }
+  if (*global.tmpl != *local.tmpl) {
+    throw_exception<std::logic_error>("mismatched unique instance");
+  }
   if (!equal(ptr_range_key(global), ptr_range_key(local))) {
     throw_exception<std::logic_error>("mismatched unique instance");
   }
-  if (std::strcmp(global.tmpl, local.tmpl) == 0 &&
-      equal(ptr_range_mapped(global), ptr_range_mapped(local))) {
+  if (equal(ptr_range_mapped(global), ptr_range_mapped(local))) {
     return;
   }
 

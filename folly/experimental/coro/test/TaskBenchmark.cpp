@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,13 +17,13 @@
 #include <folly/Benchmark.h>
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/CurrentExecutor.h>
 #include <folly/experimental/coro/Task.h>
 
 #include <memory>
+
+#if FOLLY_HAS_COROUTINES
 
 BENCHMARK(SingleVoidSynchronousTaskInLoop, iters) {
   folly::coro::blockingWait([iters]() -> folly::coro::Task<void> {
@@ -64,9 +64,7 @@ template <int Tag>
 class Derived : public Base {
  public:
   FOLLY_NOINLINE
-  folly::coro::Task<int> virtualMethod() override {
-    co_return Tag;
-  }
+  folly::coro::Task<int> virtualMethod() override { co_return Tag; }
 };
 
 FOLLY_NOINLINE

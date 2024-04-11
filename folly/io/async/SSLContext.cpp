@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,13 +21,16 @@
 #include <folly/Random.h>
 #include <folly/SharedMutex.h>
 #include <folly/SpinLock.h>
-#include <folly/ssl/Init.h>
+#include <folly/ssl/OpenSSLTicketHandler.h>
+#include <folly/ssl/PasswordCollector.h>
 #include <folly/ssl/SSLSessionManager.h>
 #include <folly/system/ThreadId.h>
 
 // ---------------------------------------------------------------------
 // SSLContext implementation
 // ---------------------------------------------------------------------
+namespace folly {
+
 namespace {
 
 int getExDataIndex() {
@@ -36,51 +39,75 @@ int getExDataIndex() {
   return index;
 }
 
-} // namespace
+/**
+ * Configure the given SSL context to use the given version.
+ */
+void configureProtocolVersion(SSL_CTX* ctx, SSLContext::SSLVersion version) {
+  /*
+   * From the OpenSSL docs https://fburl.com/ii9k29qw:
+   * Setting the minimum or maximum version to 0, will enable protocol versions
+   * down to the lowest version, or up to the highest version supported by the
+   * library, respectively.
+   *
+   * We can use that as the default/fallback.
+   */
+  int minVersion = 0;
+  switch (version) {
+    case SSLContext::SSLVersion::TLSv1:
+      minVersion = TLS1_VERSION;
+      break;
+    case SSLContext::SSLVersion::SSLv3:
+      minVersion = SSL3_VERSION;
+      break;
+    case SSLContext::SSLVersion::TLSv1_2:
+      minVersion = TLS1_2_VERSION;
+      break;
+#if FOLLY_OPENSSL_HAS_TLS13
+    case SSLContext::SSLVersion::TLSv1_3:
+      minVersion = TLS1_3_VERSION;
+      break;
+#endif
+    case SSLContext::SSLVersion::SSLv2:
+    default:
+      // do nothing
+      break;
+  }
+  int setMinProtoResult = SSL_CTX_set_min_proto_version(ctx, minVersion);
+  DCHECK(setMinProtoResult == 1)
+      << sformat("unsupported min TLS protocol version: 0x{:04x}", minVersion);
+}
 
-namespace folly {
+static int dispatchTicketCrypto(
+    SSL* ssl,
+    unsigned char* keyName,
+    unsigned char* iv,
+    EVP_CIPHER_CTX* cipherCtx,
+    HMAC_CTX* hmacCtx,
+    int encrypt) {
+  auto ctx = folly::SSLContext::getFromSSLCtx(SSL_get_SSL_CTX(ssl));
+  DCHECK(ctx);
+
+  auto handler = ctx->getTicketHandler();
+  if (!handler) {
+    LOG(FATAL) << "Null OpenSSLTicketHandler in callback";
+  }
+
+  return handler->ticketCallback(ssl, keyName, iv, cipherCtx, hmacCtx, encrypt);
+}
+} // namespace
 
 //
 // For OpenSSL portability API
 
 // SSLContext implementation
 SSLContext::SSLContext(SSLVersion version) {
-  folly::ssl::init();
-
-  ctx_ = SSL_CTX_new(SSLv23_method());
+  ctx_ = SSL_CTX_new(TLS_method());
   if (ctx_ == nullptr) {
     throw std::runtime_error("SSL_CTX_new: " + getErrors());
   }
 
-  int opt = 0;
-  switch (version) {
-    case TLSv1:
-      opt = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3;
-      break;
-    case SSLv3:
-      opt = SSL_OP_NO_SSLv2;
-      break;
-    case TLSv1_2:
-      opt = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 |
-          SSL_OP_NO_TLSv1_1;
-      break;
-    case SSLv2:
-    default:
-      // do nothing
-      break;
-  }
-
-    // Disable TLS 1.3 by default, for now, if this version of OpenSSL
-    // supports it. There are some semantic differences (e.g. assumptions
-    // on getSession() returning a resumable session, SSL_CTX_set_ciphersuites,
-    // etc.)
-    //
-#if FOLLY_OPENSSL_IS_110
-  SSL_CTX_set_max_proto_version(ctx_, TLS1_2_VERSION);
-#endif
-
-  int newOpt = SSL_CTX_set_options(ctx_, opt);
-  DCHECK((newOpt & opt) == opt);
+  // configure the TLS version used
+  configureProtocolVersion(ctx_, version);
 
   SSL_CTX_set_mode(ctx_, SSL_MODE_AUTO_RETRY);
 
@@ -92,10 +119,8 @@ SSLContext::SSLContext(SSLVersion version) {
 
   setupCtx(ctx_);
 
-#if FOLLY_OPENSSL_HAS_SNI
   SSL_CTX_set_tlsext_servername_callback(ctx_, baseServerNameOpenSSLCallback);
   SSL_CTX_set_tlsext_servername_arg(ctx_, this);
-#endif
 }
 
 SSLContext::~SSLContext() {
@@ -104,9 +129,7 @@ SSLContext::~SSLContext() {
     ctx_ = nullptr;
   }
 
-#if FOLLY_OPENSSL_HAS_ALPN
   deleteNextProtocolsStrings();
-#endif
 }
 
 void SSLContext::ciphers(const std::string& ciphers) {
@@ -118,18 +141,29 @@ void SSLContext::setClientECCurvesList(
   if (ecCurves.empty()) {
     return;
   }
-#if OPENSSL_VERSION_NUMBER >= 0x1000200fL
   std::string ecCurvesList;
   join(":", ecCurves, ecCurvesList);
   int rc = SSL_CTX_set1_curves_list(ctx_, ecCurvesList.c_str());
   if (rc == 0) {
     throw std::runtime_error("SSL_CTX_set1_curves_list " + getErrors());
   }
+}
+
+void SSLContext::setSupportedGroups(const std::vector<std::string>& groups) {
+  if (groups.empty()) {
+    return;
+  }
+#if FOLLY_OPENSSL_PREREQ(1, 1, 1)
+  std::string groupsList;
+  join(":", groups, groupsList);
+  int rc = SSL_CTX_set1_groups_list(ctx_, groupsList.c_str());
+  if (rc == 0) {
+    throw std::runtime_error("SSL_CTX_set1_curves " + getErrors());
+  }
 #endif
 }
 
 void SSLContext::setServerECCurve(const std::string& curveName) {
-#if OPENSSL_VERSION_NUMBER >= 0x0090800fL && !defined(OPENSSL_NO_ECDH)
   EC_KEY* ecdh = nullptr;
   int nid;
 
@@ -151,9 +185,6 @@ void SSLContext::setServerECCurve(const std::string& curveName) {
 
   SSL_CTX_set_tmp_ecdh(ctx_, ecdh);
   EC_KEY_free(ecdh);
-#else
-  throw std::runtime_error("Elliptic curve encryption not allowed");
-#endif
 }
 
 SSLContext::SSLContext(SSL_CTX* ctx) : ctx_(ctx) {
@@ -181,10 +212,61 @@ void SSLContext::setCiphersOrThrow(const std::string& ciphers) {
   providedCiphersString_ = ciphers;
 }
 
+void SSLContext::setSigAlgsOrThrow(const std::string& sigalgs) {
+  int rc = SSL_CTX_set1_sigalgs_list(ctx_, sigalgs.c_str());
+  if (rc == 0) {
+    throw std::runtime_error("SSL_CTX_set1_sigalgs_list " + getErrors());
+  }
+}
+
 void SSLContext::setVerificationOption(
     const SSLContext::SSLVerifyPeerEnum& verifyPeer) {
   CHECK(verifyPeer != SSLVerifyPeerEnum::USE_CTX); // dont recurse
   verifyPeer_ = verifyPeer;
+}
+
+void SSLContext::setVerificationOption(
+    const SSLContext::VerifyClientCertificate& verifyClient) {
+  verifyClient_ = verifyClient;
+}
+
+void SSLContext::setVerificationOption(
+    const SSLContext::VerifyServerCertificate& verifyServer) {
+  verifyServer_ = verifyServer;
+}
+
+int SSLContext::getVerificationMode(
+    const SSLContext::VerifyClientCertificate& verifyClient) {
+  int mode = SSL_VERIFY_NONE;
+  switch (verifyClient) {
+    case VerifyClientCertificate::ALWAYS:
+      mode = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+      break;
+
+    case VerifyClientCertificate::IF_PRESENTED:
+      mode = SSL_VERIFY_PEER;
+      break;
+
+    case VerifyClientCertificate::DO_NOT_REQUEST:
+      mode = SSL_VERIFY_NONE;
+      break;
+  }
+  return mode;
+}
+
+int SSLContext::getVerificationMode(
+    const SSLContext::VerifyServerCertificate& verifyServer) {
+  int mode = SSL_VERIFY_NONE;
+  switch (verifyServer) {
+    case VerifyServerCertificate::IF_PRESENTED:
+      mode = SSL_VERIFY_PEER;
+      break;
+
+    case VerifyServerCertificate::IGNORE_VERIFY_RESULT:
+      mode = SSL_VERIFY_NONE;
+      break;
+  }
+  return mode;
 }
 
 int SSLContext::getVerificationMode(
@@ -213,14 +295,15 @@ int SSLContext::getVerificationMode(
   return mode;
 }
 
-int SSLContext::getVerificationMode() {
-  return getVerificationMode(verifyPeer_);
+int SSLContext::getVerificationMode() const {
+  // the below or'ing is incorrect unless VERIFY_NONE is 0
+  static_assert(SSL_VERIFY_NONE == 0);
+  return getVerificationMode(verifyClient_) |
+      getVerificationMode(verifyServer_) | getVerificationMode(verifyPeer_);
 }
 
 void SSLContext::authenticate(
-    bool checkPeerCert,
-    bool checkPeerName,
-    const std::string& peerName) {
+    bool checkPeerCert, bool checkPeerName, const std::string& peerName) {
   int mode;
   if (checkPeerCert) {
     mode = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT |
@@ -342,8 +425,7 @@ void SSLContext::loadPrivateKeyFromBufferPEM(folly::StringPiece pkey) {
 }
 
 void SSLContext::loadCertKeyPairFromBufferPEM(
-    folly::StringPiece cert,
-    folly::StringPiece pkey) {
+    folly::StringPiece cert, folly::StringPiece pkey) {
   loadCertificateFromBufferPEM(cert);
   loadPrivateKeyFromBufferPEM(pkey);
   if (!isCertKeyPairValid()) {
@@ -358,6 +440,38 @@ void SSLContext::loadCertKeyPairFromFiles(
     const char* keyFormat) {
   loadCertificate(certPath, certFormat);
   loadPrivateKey(keyPath, keyFormat);
+  if (!isCertKeyPairValid()) {
+    throw std::runtime_error("SSL certificate and private key do not match");
+  }
+}
+
+void SSLContext::setCertChainKeyPair(
+    std::vector<ssl::X509UniquePtr>&& certChain, ssl::EvpPkeyUniquePtr&& key) {
+  if (certChain.empty()) {
+    throw std::invalid_argument("Empty certificate chain provided");
+  }
+
+  constexpr size_t kMaxCertChain = 65;
+  if (kMaxCertChain < certChain.size()) {
+    throw std::invalid_argument("Too many certificates in chain");
+  }
+
+  if (SSL_CTX_use_PrivateKey(ctx_, key.get()) == 0) {
+    throw std::runtime_error("SSL_CTX_use_PrivateKey: " + getErrors());
+  }
+
+  auto& leafCert = certChain.front();
+
+  if (SSL_CTX_use_certificate(ctx_, leafCert.get()) == 0) {
+    throw std::runtime_error("SSL_CTX_use_certificate: " + getErrors());
+  }
+
+  for (size_t i = 1; i < certChain.size(); ++i) {
+    if (SSL_CTX_add1_chain_cert(ctx_, certChain[i].get()) == 0) {
+      throw std::runtime_error("SSL_CTX_add0_chain_cert: " + getErrors());
+    }
+  }
+
   if (!isCertKeyPairValid()) {
     throw std::runtime_error("SSL certificate and private key do not match");
   }
@@ -381,17 +495,33 @@ void SSLContext::loadTrustedCertificates(X509_STORE* store) {
   SSL_CTX_set_cert_store(ctx_, store);
 }
 
-void SSLContext::loadClientCAList(const char* path) {
-  auto clientCAs = SSL_load_client_CA_file(path);
-  if (clientCAs == nullptr) {
-    LOG(ERROR) << "Unable to load ca file: " << path << " " << getErrors();
-    return;
+void SSLContext::setSupportedClientCertificateAuthorityNames(
+    std::vector<ssl::X509NameUniquePtr> names) {
+  // SSL_CTX_set_client_CA_list *takes ownership* of a STACK_OF(X509_NAME)
+  // where each pointer in the STACK is an *owned* X509.
+  ssl::OwningStackOfX509NameUniquePtr nameList(sk_X509_NAME_new(nullptr));
+  if (!nameList) {
+    throw std::runtime_error(
+        "SSLContext::setSupportedClientCertificateAuthorityNames failed to allocate name list");
   }
-  SSL_CTX_set_client_CA_list(ctx_, clientCAs);
+
+  // Release ownership of the X509_NAME into the stack.
+  //
+  // If exceptions are thrown, all elements are properly cleaned up because of
+  // the *UniquePtr wrappers.
+  for (auto& name : names) {
+    if (!sk_X509_NAME_push(nameList.get(), name.release())) {
+      throw std::runtime_error(
+          "SSLContext::setSupportedClientCertificateAuthorityNames failed to add X509_NAME");
+    }
+  }
+
+  // And finally pass ownership over the whole X509_NAME stack to OpenSSL
+  SSL_CTX_set_client_CA_list(ctx_, nameList.release());
 }
 
 void SSLContext::passwordCollector(
-    std::shared_ptr<PasswordCollector> collector) {
+    std::shared_ptr<ssl::PasswordCollector> collector) {
   if (collector == nullptr) {
     LOG(ERROR) << "passwordCollector: ignore invalid password collector";
     return;
@@ -400,8 +530,6 @@ void SSLContext::passwordCollector(
   SSL_CTX_set_default_passwd_cb(ctx_, passwordCallback);
   SSL_CTX_set_default_passwd_cb_userdata(ctx_, this);
 }
-
-#if FOLLY_OPENSSL_HAS_SNI
 
 void SSLContext::setServerNameCallback(const ServerNameCallback& cb) {
   serverNameCb_ = cb;
@@ -447,9 +575,7 @@ int SSLContext::baseServerNameOpenSSLCallback(SSL* ssl, int* al, void* data) {
 
   return SSL_TLSEXT_ERR_NOACK;
 }
-#endif // FOLLY_OPENSSL_HAS_SNI
 
-#if FOLLY_OPENSSL_HAS_ALPN
 int SSLContext::alpnSelectCallback(
     SSL* /* ssl */,
     const unsigned char** out,
@@ -472,10 +598,30 @@ int SSLContext::alpnSelectCallback(
             item.length,
             in,
             inlen) != OPENSSL_NPN_NEGOTIATED) {
-      return SSL_TLSEXT_ERR_NOACK;
+      if (!context->getAlpnAllowMismatch()) {
+        return SSL_TLSEXT_ERR_ALERT_FATAL;
+      } else {
+        return SSL_TLSEXT_ERR_NOACK;
+      }
     }
   }
   return SSL_TLSEXT_ERR_OK;
+}
+
+std::string SSLContext::getAdvertisedNextProtocols() const {
+  if (advertisedNextProtocols_.empty()) {
+    return "";
+  }
+  std::string alpns(
+      (const char*)advertisedNextProtocols_[0].protocols + 1,
+      advertisedNextProtocols_[0].length - 1);
+  auto len = advertisedNextProtocols_[0].protocols[0];
+  for (size_t i = len; i < alpns.length();) {
+    len = alpns[i];
+    alpns[i] = ',';
+    i += len + 1;
+  }
+  return alpns;
 }
 
 bool SSLContext::setAdvertisedNextProtocols(
@@ -560,8 +706,6 @@ size_t SSLContext::pickNextProtocols() {
   return size_t(nextProtocolDistribution_(rng));
 }
 
-#endif // FOLLY_OPENSSL_HAS_ALPN
-
 SSL* SSLContext::createSSL() const {
   SSL* ssl = SSL_new(ctx_);
   if (ssl == nullptr) {
@@ -630,10 +774,6 @@ void SSLContext::enableFalseStart() {
 }
 #endif
 
-void SSLContext::initializeOpenSSL() {
-  folly::ssl::init();
-}
-
 void SSLContext::setOptions(long options) {
   long newOpt = SSL_CTX_set_options(ctx_, options);
   if ((newOpt & options) != options) {
@@ -664,10 +804,8 @@ std::string SSLContext::getErrors(int errnoCopy) {
   return errors;
 }
 
-void SSLContext::enableTLS13() {
-#if FOLLY_OPENSSL_IS_110
-  SSL_CTX_set_max_proto_version(ctx_, 0);
-#endif
+void SSLContext::disableTLS13() {
+  SSL_CTX_set_max_proto_version(ctx_, TLS1_2_VERSION);
 }
 
 void SSLContext::setupCtx(SSL_CTX* ctx) {
@@ -727,9 +865,28 @@ void SSLContext::setSessionLifecycleCallbacks(
   sessionLifecycleCallbacks_ = std::move(cb);
 }
 
-std::ostream& operator<<(std::ostream& os, const PasswordCollector& collector) {
-  os << collector.describe();
-  return os;
+#if FOLLY_OPENSSL_PREREQ(1, 1, 1)
+void SSLContext::setCiphersuitesOrThrow(const std::string& ciphersuites) {
+  auto rc = SSL_CTX_set_ciphersuites(ctx_, ciphersuites.c_str());
+  if (rc == 0) {
+    throw std::runtime_error("SSL_CTX_set_ciphersuites: " + getErrors());
+  }
+}
+
+void SSLContext::setAllowNoDheKex(bool flag) {
+  auto opt = SSL_OP_ALLOW_NO_DHE_KEX;
+  if (flag) {
+    SSL_CTX_set_options(ctx_, opt);
+  } else {
+    SSL_CTX_clear_options(ctx_, opt);
+  }
+}
+#endif // FOLLY_OPENSSL_PREREQ(1, 1, 1)
+
+void SSLContext::setTicketHandler(
+    std::unique_ptr<OpenSSLTicketHandler> handler) {
+  ticketHandler_ = std::move(handler);
+  SSL_CTX_set_tlsext_ticket_key_cb(ctx_, dispatchTicketCrypto);
 }
 
 } // namespace folly

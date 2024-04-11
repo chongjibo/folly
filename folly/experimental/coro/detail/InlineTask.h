@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,16 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/Try.h>
+#include <folly/experimental/coro/Coroutine.h>
+#include <folly/experimental/coro/WithAsyncStack.h>
 #include <folly/experimental/coro/detail/Malloc.h>
+#include <folly/lang/Assume.h>
+#include <folly/tracing/AsyncStack.h>
 
 #include <cassert>
-#include <experimental/coroutine>
 #include <utility>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace coro {
@@ -45,13 +50,10 @@ class InlineTask;
 
 class InlineTaskPromiseBase {
   struct FinalAwaiter {
-    bool await_ready() noexcept {
-      return false;
-    }
+    bool await_ready() noexcept { return false; }
 
     template <typename Promise>
-    std::experimental::coroutine_handle<> await_suspend(
-        std::experimental::coroutine_handle<Promise> h) noexcept {
+    coroutine_handle<> await_suspend(coroutine_handle<Promise> h) noexcept {
       InlineTaskPromiseBase& promise = h.promise();
       return promise.continuation_;
     }
@@ -76,22 +78,17 @@ class InlineTaskPromiseBase {
     ::folly_coro_async_free(ptr, size);
   }
 
-  std::experimental::suspend_always initial_suspend() noexcept {
-    return {};
-  }
+  suspend_always initial_suspend() noexcept { return {}; }
 
-  auto final_suspend() noexcept {
-    return FinalAwaiter{};
-  }
+  auto final_suspend() noexcept { return FinalAwaiter{}; }
 
-  void set_continuation(
-      std::experimental::coroutine_handle<> continuation) noexcept {
+  void set_continuation(coroutine_handle<> continuation) noexcept {
     assert(!continuation_);
     continuation_ = continuation;
   }
 
  private:
-  std::experimental::coroutine_handle<> continuation_;
+  coroutine_handle<> continuation_;
 };
 
 template <typename T>
@@ -101,8 +98,7 @@ class InlineTaskPromise : public InlineTaskPromiseBase {
       std::is_move_constructible<T>::value,
       "InlineTask<T> only supports types that are move-constructible.");
   static_assert(
-      !std::is_rvalue_reference<T>::value,
-      "InlineTask<T&&> is not supported");
+      !std::is_rvalue_reference<T>::value, "InlineTask<T&&> is not supported");
 
   InlineTaskPromise() noexcept = default;
 
@@ -111,28 +107,19 @@ class InlineTaskPromise : public InlineTaskPromiseBase {
   InlineTask<T> get_return_object() noexcept;
 
   template <
-      typename Value,
+      typename Value = T,
       std::enable_if_t<std::is_convertible<Value&&, T>::value, int> = 0>
   void return_value(Value&& value) noexcept(
       std::is_nothrow_constructible<T, Value&&>::value) {
     result_.emplace(static_cast<Value&&>(value));
   }
 
-  // Also provide non-template overload for T&& so that we can do
-  // 'co_return {arg1, arg2}' as shorthand for 'co_return T{arg1, arg2}'.
-  void return_value(T&& value) noexcept(
-      std::is_nothrow_move_constructible<T>::value) {
-    result_.emplace(static_cast<T&&>(value));
-  }
-
   void unhandled_exception() noexcept {
     result_.emplaceException(
-        folly::exception_wrapper::from_exception_ptr(std::current_exception()));
+        folly::exception_wrapper{std::current_exception()});
   }
 
-  T result() {
-    return std::move(result_).value();
-  }
+  T result() { return std::move(result_).value(); }
 
  private:
   // folly::Try<T> doesn't support storing reference types so we store a
@@ -156,12 +143,10 @@ class InlineTaskPromise<void> : public InlineTaskPromiseBase {
 
   void unhandled_exception() noexcept {
     result_.emplaceException(
-        folly::exception_wrapper::from_exception_ptr(std::current_exception()));
+        folly::exception_wrapper{std::current_exception()});
   }
 
-  void result() {
-    return result_.value();
-  }
+  void result() { return result_.value(); }
 
  private:
   folly::Try<void> result_;
@@ -173,7 +158,7 @@ class InlineTask {
   using promise_type = detail::InlineTaskPromise<T>;
 
  private:
-  using handle_t = std::experimental::coroutine_handle<promise_type>;
+  using handle_t = coroutine_handle<promise_type>;
 
  public:
   InlineTask(InlineTask&& other) noexcept
@@ -193,12 +178,9 @@ class InlineTask {
       }
     }
 
-    bool await_ready() noexcept {
-      return false;
-    }
+    bool await_ready() noexcept { return false; }
 
-    handle_t await_suspend(
-        std::experimental::coroutine_handle<> awaitingCoroutine) noexcept {
+    handle_t await_suspend(coroutine_handle<> awaitingCoroutine) noexcept {
       assert(coro_ && !coro_.done());
       coro_.promise().set_continuation(awaitingCoroutine);
       return coro_;
@@ -230,13 +212,12 @@ class InlineTask {
 template <typename T>
 inline InlineTask<T> InlineTaskPromise<T>::get_return_object() noexcept {
   return InlineTask<T>{
-      std::experimental::coroutine_handle<InlineTaskPromise<T>>::from_promise(
-          *this)};
+      coroutine_handle<InlineTaskPromise<T>>::from_promise(*this)};
 }
 
 inline InlineTask<void> InlineTaskPromise<void>::get_return_object() noexcept {
-  return InlineTask<void>{std::experimental::coroutine_handle<
-      InlineTaskPromise<void>>::from_promise(*this)};
+  return InlineTask<void>{
+      coroutine_handle<InlineTaskPromise<void>>::from_promise(*this)};
 }
 
 /// InlineTaskDetached is a coroutine-return type where the coroutine is
@@ -253,27 +234,80 @@ inline InlineTask<void> InlineTaskPromise<void>::get_return_object() noexcept {
 /// folly::coro::detail namespace to discourage general usage.
 struct InlineTaskDetached {
   class promise_type {
+    struct FinalAwaiter {
+      bool await_ready() noexcept { return false; }
+      void await_suspend(coroutine_handle<promise_type> h) noexcept {
+        folly::deactivateAsyncStackFrame(h.promise().getAsyncFrame());
+        h.destroy();
+      }
+      [[noreturn]] void await_resume() noexcept { folly::assume_unreachable(); }
+    };
+
    public:
+    static void* operator new(std::size_t size) {
+      return ::folly_coro_async_malloc(size);
+    }
+
+    static void operator delete(void* ptr, std::size_t size) {
+      ::folly_coro_async_free(ptr, size);
+    }
+
+    promise_type() noexcept {
+      asyncFrame_.setParentFrame(folly::getDetachedRootAsyncStackFrame());
+    }
+
     InlineTaskDetached get_return_object() noexcept {
-      return {};
+      return InlineTaskDetached{
+          coroutine_handle<promise_type>::from_promise(*this)};
     }
 
-    std::experimental::suspend_never initial_suspend() noexcept {
-      return {};
-    }
+    suspend_always initial_suspend() noexcept { return {}; }
 
-    std::experimental::suspend_never final_suspend() noexcept {
-      return {};
-    }
+    FinalAwaiter final_suspend() noexcept { return {}; }
 
     void return_void() noexcept {}
 
-    [[noreturn]] void unhandled_exception() noexcept {
-      std::terminate();
+    [[noreturn]] void unhandled_exception() noexcept { std::terminate(); }
+
+    template <typename Awaitable>
+    decltype(auto) await_transform(Awaitable&& awaitable) {
+      return folly::coro::co_withAsyncStack(
+          static_cast<Awaitable&&>(awaitable));
     }
+
+    folly::AsyncStackFrame& getAsyncFrame() noexcept { return asyncFrame_; }
+
+   private:
+    folly::AsyncStackFrame asyncFrame_;
   };
+
+  InlineTaskDetached(InlineTaskDetached&& other) noexcept
+      : coro_(std::exchange(other.coro_, {})) {}
+
+  ~InlineTaskDetached() {
+    if (coro_) {
+      coro_.destroy();
+    }
+  }
+
+  FOLLY_NOINLINE void start() noexcept {
+    start(FOLLY_ASYNC_STACK_RETURN_ADDRESS());
+  }
+
+  void start(void* returnAddress) noexcept {
+    coro_.promise().getAsyncFrame().setReturnAddress(returnAddress);
+    folly::resumeCoroutineWithNewAsyncStackRoot(std::exchange(coro_, {}));
+  }
+
+ private:
+  explicit InlineTaskDetached(coroutine_handle<promise_type> h) noexcept
+      : coro_(h) {}
+
+  coroutine_handle<promise_type> coro_;
 };
 
 } // namespace detail
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

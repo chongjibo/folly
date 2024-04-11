@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@
 
 #pragma once
 
+#include <map>
+
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/Event.h>
-#include <map>
 
 namespace folly {
 
@@ -69,9 +70,7 @@ class AsyncSignalHandler {
   /**
    * Get the EventBase used by this AsyncSignalHandler.
    */
-  EventBase* getEventBase() const {
-    return eventBase_;
-  }
+  EventBase* getEventBase() const { return eventBase_; }
 
   /**
    * Register to receive callbacks about the specified signal.
@@ -116,6 +115,27 @@ class AsyncSignalHandler {
 
   EventBase* eventBase_{nullptr};
   SignalEventMap signalEvents_;
+};
+
+/**
+ * Derived template class that allows forwarding of a callback to be invoked in
+ * the overridden signalReceived().
+ *
+ * One possible use is passing in a lambda;
+ *   CallbackAsyncSignalHandler handler{evb, [&foo](int) {
+ *     // do something with foo
+ *   }};
+ */
+template <typename Callback>
+class CallbackAsyncSignalHandler : public AsyncSignalHandler {
+ public:
+  CallbackAsyncSignalHandler(folly::EventBase* evb, Callback&& cb)
+      : AsyncSignalHandler{evb}, cb_{std::forward<Callback>(cb)} {}
+
+  void signalReceived(int signum) noexcept override { cb_(signum); }
+
+ private:
+  Callback cb_;
 };
 
 } // namespace folly

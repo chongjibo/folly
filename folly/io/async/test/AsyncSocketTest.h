@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,51 +16,28 @@
 
 #pragma once
 
+#include <memory>
+
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/test/BlockingSocket.h>
+#include <folly/io/async/test/CallbackStateEnum.h>
+#include <folly/io/async/test/ConnCallback.h>
 #include <folly/net/NetOps.h>
 #include <folly/net/NetworkSocket.h>
 #include <folly/portability/Sockets.h>
 
-#include <memory>
+namespace folly::test {
 
-enum StateEnum { STATE_WAITING, STATE_SUCCEEDED, STATE_FAILED };
-
-typedef std::function<void()> VoidCallback;
-
-class ConnCallback : public folly::AsyncSocket::ConnectCallback {
+class WriteCallback : public folly::AsyncTransport::WriteCallback,
+                      public folly::AsyncWriter::ReleaseIOBufCallback {
  public:
-  ConnCallback()
-      : state(STATE_WAITING),
-        exception(folly::AsyncSocketException::UNKNOWN, "none") {}
-
-  void connectSuccess() noexcept override {
-    state = STATE_SUCCEEDED;
-    if (successCallback) {
-      successCallback();
-    }
-  }
-
-  void connectErr(const folly::AsyncSocketException& ex) noexcept override {
-    state = STATE_FAILED;
-    exception = ex;
-    if (errorCallback) {
-      errorCallback();
-    }
-  }
-
-  StateEnum state;
-  folly::AsyncSocketException exception;
-  VoidCallback successCallback;
-  VoidCallback errorCallback;
-};
-
-class WriteCallback : public folly::AsyncTransport::WriteCallback {
- public:
-  WriteCallback()
+  explicit WriteCallback(bool enableReleaseIOBufCallback = false)
       : state(STATE_WAITING),
         bytesWritten(0),
-        exception(folly::AsyncSocketException::UNKNOWN, "none") {}
+        numIoBufCount(0),
+        numIoBufBytes(0),
+        exception(folly::AsyncSocketException::UNKNOWN, "none"),
+        releaseIOBufCallback(enableReleaseIOBufCallback ? this : nullptr) {}
 
   void writeSuccess() noexcept override {
     state = STATE_SUCCEEDED;
@@ -81,11 +58,27 @@ class WriteCallback : public folly::AsyncTransport::WriteCallback {
     }
   }
 
+  void writeStarting() noexcept override { writeStartingInvocations++; }
+
+  folly::AsyncWriter::ReleaseIOBufCallback* getReleaseIOBufCallback() noexcept
+      override {
+    return releaseIOBufCallback;
+  }
+
+  void releaseIOBuf(std::unique_ptr<folly::IOBuf> ioBuf) noexcept override {
+    numIoBufCount += ioBuf->countChainElements();
+    numIoBufBytes += ioBuf->computeChainDataLength();
+  }
+
   StateEnum state;
   std::atomic<size_t> bytesWritten;
+  std::atomic<size_t> numIoBufCount;
+  std::atomic<size_t> numIoBufBytes;
   folly::AsyncSocketException exception;
   VoidCallback successCallback;
   VoidCallback errorCallback;
+  ReleaseIOBufCallback* releaseIOBufCallback;
+  size_t writeStartingInvocations{0};
 };
 
 class ReadCallback : public folly::AsyncTransport::ReadCallback {
@@ -120,9 +113,7 @@ class ReadCallback : public folly::AsyncTransport::ReadCallback {
     }
   }
 
-  void readEOF() noexcept override {
-    state = STATE_SUCCEEDED;
-  }
+  void readEOF() noexcept override { state = STATE_SUCCEEDED; }
 
   void readErr(const folly::AsyncSocketException& ex) noexcept override {
     state = STATE_FAILED;
@@ -130,6 +121,10 @@ class ReadCallback : public folly::AsyncTransport::ReadCallback {
   }
 
   void verifyData(const char* expected, size_t expectedLen) const {
+    verifyData((const unsigned char*)expected, expectedLen);
+  }
+
+  void verifyData(const unsigned char* expected, size_t expectedLen) const {
     size_t offset = 0;
     for (size_t idx = 0; idx < buffers.size(); ++idx) {
       const auto& buf = buffers[idx];
@@ -139,6 +134,13 @@ class ReadCallback : public folly::AsyncTransport::ReadCallback {
       offset += cmpLen;
     }
     CHECK_EQ(offset, expectedLen);
+  }
+
+  void clearData() {
+    for (auto& buffer : buffers) {
+      buffer.free();
+    }
+    buffers.clear();
   }
 
   size_t dataRead() const {
@@ -180,6 +182,64 @@ class ReadCallback : public folly::AsyncTransport::ReadCallback {
   const size_t maxBufferSz;
 };
 
+class ReadvCallback : public folly::AsyncTransport::ReadCallback {
+ public:
+  ReadvCallback(size_t bufferSize, size_t len)
+      : state_(STATE_WAITING),
+        exception_(folly::AsyncSocketException::UNKNOWN, "none"),
+        queue_(folly::IOBufIovecBuilder::Options().setBlockSize(bufferSize)),
+        len_(len) {
+    setReadMode(folly::AsyncTransport::ReadCallback::ReadMode::ReadVec);
+  }
+
+  ~ReadvCallback() override = default;
+
+  void getReadBuffer(void** bufReturn, size_t* lenReturn) override {
+    std::ignore = bufReturn;
+    std::ignore = lenReturn;
+
+    CHECK(false); // this should not be called
+  }
+
+  void getReadBuffers(folly::IOBufIovecBuilder::IoVecVec& iovs) override {
+    queue_.allocateBuffers(iovs, len_);
+  }
+
+  void readDataAvailable(size_t len) noexcept override {
+    auto tmp = queue_.extractIOBufChain(len);
+    if (!buf_) {
+      buf_ = std::move(tmp);
+    } else {
+      buf_->prependChain(std::move(tmp));
+    }
+  }
+
+  void reset() { buf_.reset(); }
+
+  void readEOF() noexcept override { state_ = STATE_SUCCEEDED; }
+
+  void readErr(const folly::AsyncSocketException& ex) noexcept override {
+    state_ = STATE_FAILED;
+    exception_ = ex;
+  }
+
+  void verifyData(const std::string& data) const {
+    CHECK(buf_);
+    auto r = buf_->coalesce();
+    std::string tmp;
+    tmp.assign(reinterpret_cast<const char*>(r.begin()), r.end() - r.begin());
+    CHECK_EQ(data, tmp);
+  }
+
+  std::unique_ptr<folly::IOBuf> buf_;
+
+ private:
+  StateEnum state_;
+  folly::AsyncSocketException exception_;
+  folly::IOBufIovecBuilder queue_;
+  const size_t len_;
+};
+
 class BufferCallback : public folly::AsyncTransport::BufferCallback {
  public:
   BufferCallback(folly::AsyncSocket* socket, size_t expectedBytes)
@@ -204,19 +264,156 @@ class BufferCallback : public folly::AsyncTransport::BufferCallback {
     bufferCleared_ = true;
   }
 
-  bool hasBuffered() const {
-    return buffered_;
-  }
+  bool hasBuffered() const { return buffered_; }
 
-  bool hasBufferCleared() const {
-    return bufferCleared_;
-  }
+  bool hasBufferCleared() const { return bufferCleared_; }
 
  private:
   folly::AsyncSocket* socket_{nullptr};
   size_t expectedBytes_{0};
   bool buffered_{false};
   bool bufferCleared_{false};
+};
+
+class ZeroCopyReadCallback : public folly::AsyncTransport::ReadCallback {
+ public:
+  explicit ZeroCopyReadCallback(
+      folly::AsyncTransport::ReadCallback::ZeroCopyMemStore* memStore,
+      size_t _maxBufferSz = 4096)
+      : memStore_(memStore),
+        state(STATE_WAITING),
+        exception(folly::AsyncSocketException::UNKNOWN, "none"),
+        maxBufferSz(_maxBufferSz) {}
+
+  ~ZeroCopyReadCallback() override { currentBuffer.free(); }
+
+  // zerocopy
+  folly::AsyncTransport::ReadCallback::ZeroCopyMemStore*
+  readZeroCopyEnabled() noexcept override {
+    return memStore_;
+  }
+
+  void getZeroCopyFallbackBuffer(
+      void** bufReturn, size_t* lenReturn) noexcept override {
+    if (!currentZeroCopyBuffer.buffer) {
+      currentZeroCopyBuffer.allocate(maxBufferSz);
+    }
+    *bufReturn = currentZeroCopyBuffer.buffer;
+    *lenReturn = currentZeroCopyBuffer.length;
+  }
+
+  void readZeroCopyDataAvailable(
+      std::unique_ptr<folly::IOBuf>&& zeroCopyData,
+      size_t additionalBytes) noexcept override {
+    auto ioBuf = std::move(zeroCopyData);
+    if (additionalBytes) {
+      auto tmp = folly::IOBuf::takeOwnership(
+          currentZeroCopyBuffer.buffer,
+          currentZeroCopyBuffer.length,
+          0,
+          additionalBytes);
+      currentZeroCopyBuffer.reset();
+      if (ioBuf) {
+        ioBuf->prependChain(std::move(tmp));
+      } else {
+        ioBuf = std::move(tmp);
+      }
+    }
+
+    if (!data_) {
+      data_ = std::move(ioBuf);
+    } else {
+      data_->prependChain(std::move(ioBuf));
+    }
+  }
+
+  void getReadBuffer(void** bufReturn, size_t* lenReturn) override {
+    if (!currentBuffer.buffer) {
+      currentBuffer.allocate(maxBufferSz);
+    }
+    *bufReturn = currentBuffer.buffer;
+    *lenReturn = currentBuffer.length;
+  }
+
+  void readDataAvailable(size_t len) noexcept override {
+    auto ioBuf = folly::IOBuf::takeOwnership(
+        currentBuffer.buffer, currentBuffer.length, 0, len);
+    currentBuffer.reset();
+
+    if (!data_) {
+      data_ = std::move(ioBuf);
+    } else {
+      data_->prependChain(std::move(ioBuf));
+    }
+  }
+
+  void readEOF() noexcept override { state = STATE_SUCCEEDED; }
+
+  void readErr(const folly::AsyncSocketException& ex) noexcept override {
+    state = STATE_FAILED;
+    exception = ex;
+  }
+
+  void verifyData(const std::string& expected) const {
+    verifyData((const unsigned char*)expected.data(), expected.size());
+  }
+
+  void verifyData(const unsigned char* expected, size_t expectedLen) const {
+    CHECK(!!data_);
+    auto len = data_->computeChainDataLength();
+    CHECK_EQ(len, expectedLen);
+
+    auto* buf = data_.get();
+    auto* current = buf;
+    size_t offset = 0;
+
+    do {
+      size_t cmpLen = std::min(current->length(), expectedLen - offset);
+      CHECK_EQ(cmpLen, current->length());
+      CHECK_EQ(memcmp(current->data(), expected + offset, cmpLen), 0);
+      offset += cmpLen;
+
+      current = current->next();
+    } while (current != buf);
+
+    std::ignore = expected;
+    CHECK_EQ(offset, expectedLen);
+  }
+
+  class Buffer {
+   public:
+    Buffer() = default;
+    Buffer(char* buf, size_t len) : buffer(buf), length(len) {}
+    ~Buffer() {
+      if (buffer) {
+        ::free(buffer);
+      }
+    }
+
+    void reset() {
+      buffer = nullptr;
+      length = 0;
+    }
+    void allocate(size_t len) {
+      CHECK(buffer == nullptr);
+      buffer = static_cast<char*>(malloc(len));
+      length = len;
+    }
+    void free() {
+      ::free(buffer);
+      reset();
+    }
+
+    char* buffer{nullptr};
+    size_t length{0};
+  };
+  folly::AsyncTransport::ReadCallback::ZeroCopyMemStore* memStore_;
+  StateEnum state;
+  folly::AsyncSocketException exception;
+  Buffer currentBuffer, currentZeroCopyBuffer;
+  VoidCallback dataAvailableCallback;
+  const size_t maxBufferSz;
+  std::unique_ptr<folly::IOBuf> data_;
 };
 
 class ReadVerifier {};
@@ -240,8 +437,7 @@ class TestSendMsgParamsCallback
   }
 
   int getFlagsImpl(
-      folly::WriteFlags flags,
-      int /*defaultFlags*/) noexcept override {
+      folly::WriteFlags flags, int /*defaultFlags*/) noexcept override {
     queriedFlags_ = true;
     if (writeFlags_ == folly::WriteFlags::NONE) {
       writeFlags_ = flags;
@@ -251,7 +447,12 @@ class TestSendMsgParamsCallback
     return flags_;
   }
 
-  void getAncillaryData(folly::WriteFlags flags, void* data) noexcept override {
+  void getAncillaryData(
+      folly::WriteFlags flags,
+      void* data,
+      const folly::AsyncSocket::WriteRequestTag& tag,
+      const bool /* byteEventsEnabled */) noexcept override {
+    CHECK_EQ(tag, expectedTag_);
     queriedData_ = true;
     if (writeFlags_ == folly::WriteFlags::NONE) {
       writeFlags_ = flags;
@@ -262,7 +463,11 @@ class TestSendMsgParamsCallback
     memcpy(data, data_, dataSize_);
   }
 
-  uint32_t getAncillaryDataSize(folly::WriteFlags flags) noexcept override {
+  uint32_t getAncillaryDataSize(
+      folly::WriteFlags flags,
+      const folly::AsyncSocket::WriteRequestTag& tag,
+      const bool /* byteEventsEnabled */) noexcept override {
+    CHECK_EQ(tag, expectedTag_);
     if (writeFlags_ == folly::WriteFlags::NONE) {
       writeFlags_ = flags;
     } else {
@@ -271,12 +476,21 @@ class TestSendMsgParamsCallback
     return dataSize_;
   }
 
+  void wroteBytes(
+      const folly::AsyncSocket::WriteRequestTag& tag) noexcept override {
+    CHECK_EQ(tag, expectedTag_);
+    tagLastWritten_ = tag;
+  }
+
   int flags_;
   folly::WriteFlags writeFlags_;
   uint32_t dataSize_;
   void* data_;
   bool queriedFlags_;
   bool queriedData_;
+  folly::AsyncSocket::WriteRequestTag expectedTag_{
+      folly::AsyncSocket::WriteRequestTag::EmptyDummy()};
+  std::optional<folly::AsyncSocket::WriteRequestTag> tagLastWritten_;
 };
 
 class TestServer {
@@ -319,9 +533,7 @@ class TestServer {
           errno);
     }
 
-    SCOPE_EXIT {
-      freeaddrinfo(res);
-    };
+    SCOPE_EXIT { freeaddrinfo(res); };
 
     if (bufSize > 0) {
       folly::netops::setsockopt(
@@ -357,9 +569,7 @@ class TestServer {
   }
 
   // Get the address for connecting to the server
-  const folly::SocketAddress& getAddress() const {
-    return address_;
-  }
+  const folly::SocketAddress& getAddress() const { return address_; }
 
   folly::NetworkSocket acceptFD(int timeout = 50) {
     folly::netops::PollDescriptor pfd;
@@ -394,8 +604,7 @@ class TestServer {
   }
 
   std::shared_ptr<folly::AsyncSocket> acceptAsync(
-      folly::EventBase* evb,
-      int timeout = 50) {
+      folly::EventBase* evb, int timeout = 50) {
     auto fd = acceptFD(timeout);
     return folly::AsyncSocket::newSocket(evb, fd);
   }
@@ -420,3 +629,5 @@ class TestServer {
   folly::NetworkSocket fd_;
   folly::SocketAddress address_;
 };
+
+} // namespace folly::test

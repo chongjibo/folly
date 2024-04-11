@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@
 
 namespace folly {
 namespace io {
-namespace detail {
 
 /*
  * Helper classes for use with CursorBase::readWhile()
@@ -28,9 +27,7 @@ class CursorStringAppender {
   void append(ByteRange bytes) {
     str_.append(reinterpret_cast<char const*>(bytes.data()), bytes.size());
   }
-  std::string extractString() {
-    return std::move(str_);
-  }
+  std::string extractString() { return std::move(str_); }
 
  private:
   std::string str_;
@@ -43,8 +40,7 @@ class CursorNoopAppender {
 
 template <class Derived, class BufType>
 std::string CursorBase<Derived, BufType>::readTerminatedString(
-    char termChar,
-    size_t maxLength) {
+    char termChar, size_t maxLength) {
   size_t bytesRead{0};
   auto keepReading = [&bytesRead, termChar, maxLength](uint8_t byte) {
     if (byte == termChar) {
@@ -79,8 +75,7 @@ std::string CursorBase<Derived, BufType>::readWhile(
 template <class Derived, class BufType>
 template <typename Predicate, typename Output>
 void CursorBase<Derived, BufType>::readWhile(
-    const Predicate& predicate,
-    Output& out) {
+    const Predicate& predicate, Output& out) {
   while (true) {
     auto peeked = peekBytes();
     if (peeked.empty()) {
@@ -105,6 +100,6 @@ void CursorBase<Derived, BufType>::skipWhile(const Predicate& predicate) {
   CursorNoopAppender appender;
   readWhile(predicate, appender);
 }
-} // namespace detail
+
 } // namespace io
 } // namespace folly

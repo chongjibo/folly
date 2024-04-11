@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,11 @@
 
 #pragma once
 
-#include <libaio.h>
-
 #include <folly/experimental/io/AsyncBase.h>
+
+#if __has_include(<libaio.h>)
+
+#include <libaio.h>
 
 namespace folly {
 
@@ -46,15 +48,13 @@ class AsyncIOOp : public AsyncBaseOp {
 
   void reset(NotificationCallback cb = NotificationCallback()) override;
 
-  AsyncIOOp* getAsyncIOOp() override {
-    return this;
-  }
+  AsyncIOOp* getAsyncIOOp() override { return this; }
 
-  IoUringOp* getIoUringOp() override {
-    return nullptr;
-  }
+  IoUringOp* getIoUringOp() override { return nullptr; }
 
   void toStream(std::ostream& os) const override;
+
+  const iocb& getIocb() const { return iocb_; }
 
  private:
   iocb iocb_;
@@ -78,10 +78,14 @@ class AsyncIO : public AsyncBase {
   AsyncIO& operator=(const AsyncIO&) = delete;
   ~AsyncIO() override;
 
- private:
   void initializeContext() override;
-  int submitOne(AsyncBase::Op* op) override;
 
+ protected:
+  int drainPollFd() override;
+  int submitOne(AsyncBase::Op* op) override;
+  int submitRange(Range<AsyncBase::Op**> ops) override;
+
+ private:
   Range<AsyncBase::Op**> doWait(
       WaitType type,
       size_t minRequests,
@@ -93,3 +97,5 @@ class AsyncIO : public AsyncBase {
 
 using AsyncIOQueue = AsyncBaseQueue;
 } // namespace folly
+
+#endif

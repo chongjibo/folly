@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,8 +26,7 @@
 using namespace folly;
 
 inline void popAndFulfillPromise(
-    std::queue<std::shared_ptr<Promise<Unit>>>& ps,
-    std::mutex& ps_mutex) {
+    std::queue<std::shared_ptr<Promise<Unit>>>& ps, std::mutex& ps_mutex) {
   ps_mutex.lock();
   auto p = ps.front();
   ps.pop();

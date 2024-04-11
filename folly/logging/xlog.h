@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <cstdlib>
+
 #include <folly/Likely.h>
 #include <folly/Portability.h>
 #include <folly/Range.h>
@@ -24,7 +26,6 @@
 #include <folly/logging/LoggerDB.h>
 #include <folly/logging/ObjectToString.h>
 #include <folly/logging/RateLimiter.h>
-#include <cstdlib>
 
 /*
  * This file contains the XLOG() and XLOGF() macros.
@@ -56,6 +57,28 @@
  * best if you always invoke the compiler from the root directory of your
  * project repository.
  */
+
+/*
+ * The global value of FOLLY_XLOG_MIN_LEVEL. All the messages logged to
+ * XLOG(XXX) with severity less than FOLLY_XLOG_MIN_LEVEL will not be displayed.
+ * If it can be determined at compile time that the message will not be printed,
+ * the statement will be compiled out.
+ * FOLLY_XLOG_MIN_LEVEL should be below FATAL.
+ *
+ *
+ * Example: to strip out messages less than ERR, use the value of ERR below.
+ */
+#ifndef FOLLY_XLOG_MIN_LEVEL
+#define FOLLY_XLOG_MIN_LEVEL MIN_LEVEL
+#endif
+
+namespace folly {
+constexpr auto kLoggingMinLevel = LogLevel::FOLLY_XLOG_MIN_LEVEL;
+static_assert(
+    !isLogLevelFatal(kLoggingMinLevel),
+    "Cannot set FOLLY_XLOG_MIN_LEVEL to disable fatal messages");
+} // namespace folly
+
 #define XLOG(level, ...)                   \
   XLOG_IMPL(                               \
       ::folly::LogLevel::level,            \
@@ -76,12 +99,11 @@
 /**
  * Log a message to this file's default log category, using a format string.
  */
-#define XLOGF(level, fmt, arg1, ...)       \
+#define XLOGF(level, fmt, ...)             \
   XLOG_IMPL(                               \
       ::folly::LogLevel::level,            \
       ::folly::LogStreamProcessor::FORMAT, \
       fmt,                                 \
-      arg1,                                \
       ##__VA_ARGS__)
 
 /**
@@ -89,13 +111,12 @@
  * predicate evaluates to true. Note that the condition is *only* evaluated
  * if the log-level check passes.
  */
-#define XLOGF_IF(level, cond, fmt, arg1, ...) \
-  XLOG_IF_IMPL(                               \
-      ::folly::LogLevel::level,               \
-      cond,                                   \
-      ::folly::LogStreamProcessor::FORMAT,    \
-      fmt,                                    \
-      arg1,                                   \
+#define XLOGF_IF(level, cond, fmt, ...)    \
+  XLOG_IF_IMPL(                            \
+      ::folly::LogLevel::level,            \
+      cond,                                \
+      ::folly::LogStreamProcessor::FORMAT, \
+      fmt,                                 \
       ##__VA_ARGS__)
 
 /**
@@ -104,15 +125,80 @@
  *
  * Note that this is threadsafe.
  */
-#define XLOG_EVERY_MS(level, ms, ...)                                    \
-  XLOG_IF(                                                               \
-      level,                                                             \
-      [] {                                                               \
-        static ::folly::logging::IntervalRateLimiter                     \
-            folly_detail_xlog_limiter(1, std::chrono::milliseconds(ms)); \
-        return folly_detail_xlog_limiter.check();                        \
-      }(),                                                               \
+#define XLOG_EVERY_MS(level, ms, ...)                                  \
+  XLOG_IF(                                                             \
+      level,                                                           \
+      [__folly_detail_xlog_ms = ms] {                                  \
+        static ::folly::logging::IntervalRateLimiter                   \
+            folly_detail_xlog_limiter(                                 \
+                1, std::chrono::milliseconds(__folly_detail_xlog_ms)); \
+        return folly_detail_xlog_limiter.check();                      \
+      }(),                                                             \
       ##__VA_ARGS__)
+
+/**
+ * Similar to XLOG(...) except only log a message every @param ms
+ * milliseconds and if the specified condition predicate evaluates to true.
+ *
+ * Note that this is threadsafe.
+ */
+#define XLOG_EVERY_MS_IF(level, cond, ms, ...)                               \
+  XLOG_IF(                                                                   \
+      level,                                                                 \
+      (cond) &&                                                              \
+          [__folly_detail_xlog_ms = ms] {                                    \
+            static ::folly::logging::IntervalRateLimiter                     \
+                folly_detail_xlog_limiter(                                   \
+                    1, ::std::chrono::milliseconds(__folly_detail_xlog_ms)); \
+            return folly_detail_xlog_limiter.check();                        \
+          }(),                                                               \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOG(...) except log a message if the specified condition
+ * predicate evaluates to true or every @param ms milliseconds
+ *
+ * Note that this is threadsafe.
+ */
+#define XLOG_EVERY_MS_OR(level, cond, ms, ...)                               \
+  XLOG_IF(                                                                   \
+      level,                                                                 \
+      (cond) ||                                                              \
+          [__folly_detail_xlog_ms = ms] {                                    \
+            static ::folly::logging::IntervalRateLimiter                     \
+                folly_detail_xlog_limiter(                                   \
+                    1, ::std::chrono::milliseconds(__folly_detail_xlog_ms)); \
+            return folly_detail_xlog_limiter.check();                        \
+          }(),                                                               \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOGF(...) except only log a message every @param ms
+ * milliseconds and if the specified condition predicate evaluates to true.
+ *
+ * Note that this is threadsafe.
+ */
+#define XLOGF_EVERY_MS_IF(level, cond, ms, fmt, ...)                         \
+  XLOGF_IF(                                                                  \
+      level,                                                                 \
+      (cond) &&                                                              \
+          [__folly_detail_xlog_ms = ms] {                                    \
+            static ::folly::logging::IntervalRateLimiter                     \
+                folly_detail_xlog_limiter(                                   \
+                    1, ::std::chrono::milliseconds(__folly_detail_xlog_ms)); \
+            return folly_detail_xlog_limiter.check();                        \
+          }(),                                                               \
+      fmt,                                                                   \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOGF(...) except only log a message every @param ms
+ * milliseconds.
+ *
+ * Note that this is threadsafe.
+ */
+#define XLOGF_EVERY_MS(level, ms, fmt, ...) \
+  XLOGF_EVERY_MS_IF(level, true, ms, fmt, ##__VA_ARGS__)
 
 namespace folly {
 namespace detail {
@@ -141,10 +227,93 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNImpl(size_t n) {
 #define XLOG_EVERY_N(level, n, ...)                                       \
   XLOG_IF(                                                                \
       level,                                                              \
-      [] {                                                                \
+      [&] {                                                               \
         struct folly_detail_xlog_tag {};                                  \
         return ::folly::detail::xlogEveryNImpl<folly_detail_xlog_tag>(n); \
       }(),                                                                \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOGF(...) except only log a message every @param n
+ * invocations, approximately.
+ *
+ * The internal counter is process-global and threadsafe but, to
+ * to avoid the performance degradation of atomic-rmw operations,
+ * increments are non-atomic. Some increments may be missed under
+ * contention, leading to possible over-logging or under-logging
+ * effects.
+ */
+#define XLOGF_EVERY_N(level, n, fmt, ...)                                 \
+  XLOGF_IF(                                                               \
+      level,                                                              \
+      [&] {                                                               \
+        struct folly_detail_xlog_tag {};                                  \
+        return ::folly::detail::xlogEveryNImpl<folly_detail_xlog_tag>(n); \
+      }(),                                                                \
+      fmt,                                                                \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOG(...) except only log a message every @param n
+ * invocations, approximately, and if the specified condition predicate
+ * evaluates to true.
+ *
+ * The internal counter is process-global and threadsafe but, to
+ * to avoid the performance degradation of atomic-rmw operations,
+ * increments are non-atomic. Some increments may be missed under
+ * contention, leading to possible over-logging or under-logging
+ * effects.
+ */
+#define XLOG_EVERY_N_IF(level, cond, n, ...)                                  \
+  XLOG_IF(                                                                    \
+      level,                                                                  \
+      (cond) &&                                                               \
+          [&] {                                                               \
+            struct folly_detail_xlog_tag {};                                  \
+            return ::folly::detail::xlogEveryNImpl<folly_detail_xlog_tag>(n); \
+          }(),                                                                \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOG(...) except it logs a message if the condition predicate
+ * evalutes to true or approximately every @param n invocations
+ *
+ * The internal counter is process-global and threadsafe but, to
+ * to avoid the performance degradation of atomic-rmw operations,
+ * increments are non-atomic. Some increments may be missed under
+ * contention, leading to possible over-logging or under-logging
+ * effects.
+ */
+#define XLOG_EVERY_N_OR(level, cond, n, ...)                                  \
+  XLOG_IF(                                                                    \
+      level,                                                                  \
+      (cond) ||                                                               \
+          [&] {                                                               \
+            struct folly_detail_xlog_tag {};                                  \
+            return ::folly::detail::xlogEveryNImpl<folly_detail_xlog_tag>(n); \
+          }(),                                                                \
+      ##__VA_ARGS__)
+
+/**
+ * Similar to XLOGF(...) except only log a message every @param n
+ * invocations, approximately, and if the specified condition predicate
+ * evaluates to true.
+ *
+ * The internal counter is process-global and threadsafe but, to
+ * to avoid the performance degradation of atomic-rmw operations,
+ * increments are non-atomic. Some increments may be missed under
+ * contention, leading to possible over-logging or under-logging
+ * effects.
+ */
+#define XLOGF_EVERY_N_IF(level, cond, n, fmt, ...)                            \
+  XLOGF_IF(                                                                   \
+      level,                                                                  \
+      (cond) &&                                                               \
+          [&] {                                                               \
+            struct folly_detail_xlog_tag {};                                  \
+            return ::folly::detail::xlogEveryNImpl<folly_detail_xlog_tag>(n); \
+          }(),                                                                \
+      fmt,                                                                    \
       ##__VA_ARGS__)
 
 namespace folly {
@@ -172,7 +341,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNExactImpl(size_t n) {
 #define XLOG_EVERY_N_EXACT(level, n, ...)                                      \
   XLOG_IF(                                                                     \
       level,                                                                   \
-      [] {                                                                     \
+      [&] {                                                                    \
         struct folly_detail_xlog_tag {};                                       \
         return ::folly::detail::xlogEveryNExactImpl<folly_detail_xlog_tag>(n); \
       }(),                                                                     \
@@ -212,7 +381,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
 #define XLOG_EVERY_N_THREAD(level, n, ...)                                   \
   XLOG_IF(                                                                   \
       level,                                                                 \
-      [] {                                                                   \
+      [&] {                                                                  \
         struct folly_detail_xlog_tag {};                                     \
         return ::folly::detail::xlogEveryNThreadImpl<folly_detail_xlog_tag>( \
             n);                                                              \
@@ -225,15 +394,45 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
  *
  * The internal counters are process-global and threadsafe.
  */
-#define XLOG_N_PER_MS(level, count, ms, ...)                                   \
+#define XLOG_N_PER_MS(level, count, ms, ...)               \
+  XLOG_IF(                                                 \
+      level,                                               \
+      [] {                                                 \
+        static ::folly::logging::IntervalRateLimiter       \
+            folly_detail_xlog_limiter(                     \
+                (count), ::std::chrono::milliseconds(ms)); \
+        return folly_detail_xlog_limiter.check();          \
+      }(),                                                 \
+      ##__VA_ARGS__)
+
+namespace folly {
+namespace detail {
+
+template <typename Tag>
+FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogFirstNExactImpl(std::size_t n) {
+  static std::atomic<std::size_t> counter{0};
+  auto const value = counter.load(std::memory_order_relaxed);
+  return value < n && counter.fetch_add(1, std::memory_order_relaxed) < n;
+}
+
+} // namespace detail
+} // namespace folly
+
+/**
+ * Similar to XLOG(...) except only log a message the first n times, exactly.
+ *
+ * The internal counter is process-global and threadsafe and exchanges are
+ * atomic.
+ */
+#define XLOG_FIRST_N(level, n, ...)                                            \
   XLOG_IF(                                                                     \
       level,                                                                   \
-      [] {                                                                     \
-        static ::folly::logging::IntervalRateLimiter                           \
-            folly_detail_xlog_limiter((count), std::chrono::milliseconds(ms)); \
-        return folly_detail_xlog_limiter.check();                              \
+      [&] {                                                                    \
+        struct folly_detail_xlog_tag {};                                       \
+        return ::folly::detail::xlogFirstNExactImpl<folly_detail_xlog_tag>(n); \
       }(),                                                                     \
       ##__VA_ARGS__)
+
 /**
  * FOLLY_XLOG_STRIP_PREFIXES can be defined to a string containing a
  * colon-separated list of directory prefixes to strip off from the filename
@@ -246,10 +445,11 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
  * though.)
  */
 #ifdef FOLLY_XLOG_STRIP_PREFIXES
-#define XLOG_FILENAME \
-  folly::xlogStripFilename(__FILE__, FOLLY_XLOG_STRIP_PREFIXES)
+#define XLOG_FILENAME        \
+  (static_cast<char const*>( \
+      ::folly::xlogStripFilename(__FILE__, FOLLY_XLOG_STRIP_PREFIXES)))
 #else
-#define XLOG_FILENAME __FILE__
+#define XLOG_FILENAME (static_cast<char const*>(__FILE__))
 #endif
 
 #define XLOG_IMPL(level, type, ...) \
@@ -277,7 +477,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
  *   requirements of being a single expression, but fortunately static
  *   variables inside a lambda work for this purpose.
  *
- *   Inside header files, each XLOG() statement defines to static variables:
+ *   Inside header files, each XLOG() statement defines two static variables:
  *   - the LogLevel for this category
  *   - a pointer to the LogCategory
  *
@@ -302,25 +502,29 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
  *   initialized.  On all subsequent calls, disabled log statements can be
  *   skipped with just a single check of the LogLevel.
  */
-#define XLOG_ACTUAL_IMPL(level, cond, always_fatal, type, ...)             \
-  (!XLOG_IS_ON_IMPL(level) || !(cond))                                     \
-      ? ::folly::logDisabledHelper(::folly::bool_constant<always_fatal>{}) \
-      : ::folly::LogStreamVoidify<::folly::isLogLevelFatal(level)>{} &     \
-          ::folly::LogStreamProcessor(                                     \
-              [] {                                                         \
-                static ::folly::XlogCategoryInfo<XLOG_IS_IN_HEADER_FILE>   \
-                    folly_detail_xlog_category;                            \
-                return folly_detail_xlog_category.getInfo(                 \
-                    &xlog_detail::xlogFileScopeInfo);                      \
-              }(),                                                         \
-              (level),                                                     \
-              xlog_detail::getXlogCategoryName(XLOG_FILENAME, 0),          \
-              xlog_detail::isXlogCategoryOverridden(0),                    \
-              XLOG_FILENAME,                                               \
-              __LINE__,                                                    \
-              __func__,                                                    \
-              (type),                                                      \
-              ##__VA_ARGS__)                                               \
+#define XLOG_ACTUAL_IMPL(level, cond, always_fatal, type, ...)              \
+  (!XLOG_IS_ON_IMPL(level) || !(cond))                                      \
+      ? ::folly::logDisabledHelper(::std::bool_constant<always_fatal>{})    \
+      : ::folly::LogStreamVoidify<::folly::isLogLevelFatal(level)>{} &      \
+          ::folly::LogStreamProcessor(                                      \
+              [] {                                                          \
+                static ::folly::XlogCategoryInfo<XLOG_IS_IN_HEADER_FILE>    \
+                    folly_detail_xlog_category;                             \
+                return folly_detail_xlog_category.getInfo(                  \
+                    &::folly::detail::custom::xlogFileScopeInfo);           \
+              }(),                                                          \
+              (level),                                                      \
+              [] {                                                          \
+                constexpr auto* folly_detail_xlog_filename = XLOG_FILENAME; \
+                return ::folly::detail::custom::getXlogCategoryName(        \
+                    folly_detail_xlog_filename, 0);                         \
+              }(),                                                          \
+              ::folly::detail::custom::isXlogCategoryOverridden(0),         \
+              XLOG_FILENAME,                                                \
+              __LINE__,                                                     \
+              __func__,                                                     \
+              (type),                                                       \
+              ##__VA_ARGS__)                                                \
               .stream()
 
 /**
@@ -329,6 +533,25 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
  * The level parameter must be an unqualified LogLevel enum value.
  */
 #define XLOG_IS_ON(level) XLOG_IS_ON_IMPL(::folly::LogLevel::level)
+
+/**
+ * Expects a fully qualified LogLevel enum value.
+ *
+ * This helper macro invokes XLOG_IS_ON_IMPL_HELPER() to perform the real
+ * log level check, with a couple additions:
+ * - If the log level is less than FOLLY_XLOG_MIN_LEVEL it evaluates to false
+ *   to allow the compiler to completely optimize out the check and log message
+ *   if the level is less than this compile-time fixed constant.
+ * - If the log level is fatal, this has an extra check at the end to ensure the
+ *   compiler can detect that it always evaluates to true.  This helps the
+ *   compiler detect that statements like XCHECK(false) never return.  Note that
+ *   XLOG_IS_ON_IMPL_HELPER() must still be invoked first for fatal log levels
+ *   in order to initialize folly::detail::custom::xlogFileScopeInfo.
+ */
+#define XLOG_IS_ON_IMPL(level)                              \
+  ((((level) >= ::folly::LogLevel::FOLLY_XLOG_MIN_LEVEL) && \
+    XLOG_IS_ON_IMPL_HELPER(level)) ||                       \
+   ((level) >= ::folly::kMinFatalLogLevel))
 
 /**
  * Helper macro to implement of XLOG_IS_ON()
@@ -345,24 +568,28 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
  *
  * See XlogLevelInfo for the implementation details.
  */
-#define XLOG_IS_ON_IMPL(level)                              \
-  ([] {                                                     \
-    static ::folly::XlogLevelInfo<XLOG_IS_IN_HEADER_FILE>   \
-        folly_detail_xlog_level;                            \
-    return folly_detail_xlog_level.check(                   \
-        (level),                                            \
-        xlog_detail::getXlogCategoryName(XLOG_FILENAME, 0), \
-        xlog_detail::isXlogCategoryOverridden(0),           \
-        &xlog_detail::xlogFileScopeInfo);                   \
+#define XLOG_IS_ON_IMPL_HELPER(level)                           \
+  ([] {                                                         \
+    static ::folly::XlogLevelInfo<XLOG_IS_IN_HEADER_FILE>       \
+        folly_detail_xlog_level;                                \
+    constexpr auto* folly_detail_xlog_filename = XLOG_FILENAME; \
+    constexpr folly::StringPiece folly_detail_xlog_category =   \
+        ::folly::detail::custom::getXlogCategoryName(           \
+            folly_detail_xlog_filename, 0);                     \
+    return folly_detail_xlog_level.check(                       \
+        (level),                                                \
+        folly_detail_xlog_category,                             \
+        ::folly::detail::custom::isXlogCategoryOverridden(0),   \
+        &::folly::detail::custom::xlogFileScopeInfo);           \
   }())
 
 /**
  * Get the name of the log category that will be used by XLOG() statements
  * in this file.
  */
-#define XLOG_GET_CATEGORY_NAME()                            \
-  (xlog_detail::isXlogCategoryOverridden(0)                 \
-       ? xlog_detail::getXlogCategoryName(XLOG_FILENAME, 0) \
+#define XLOG_GET_CATEGORY_NAME()                                        \
+  (::folly::detail::custom::isXlogCategoryOverridden(0)                 \
+       ? ::folly::detail::custom::getXlogCategoryName(XLOG_FILENAME, 0) \
        : ::folly::getXlogCategoryNameForFile(XLOG_FILENAME))
 
 /**
@@ -374,7 +601,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
  * expand to the correct filename based on where the macro is used.
  */
 #define XLOG_GET_CATEGORY() \
-  folly::LoggerDB::get().getCategory(XLOG_GET_CATEGORY_NAME())
+  (::folly::LoggerDB::get().getCategory(XLOG_GET_CATEGORY_NAME()))
 
 /**
  * XLOG_SET_CATEGORY_NAME() can be used to explicitly define the log category
@@ -397,20 +624,35 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
 #define XLOG_SET_CATEGORY_CHECK
 #endif
 
-#define XLOG_SET_CATEGORY_NAME(category)                   \
-  namespace xlog_detail {                                  \
-  namespace {                                              \
-  XLOG_SET_CATEGORY_CHECK                                  \
-  constexpr inline folly::StringPiece getXlogCategoryName( \
-      folly::StringPiece,                                  \
-      int) {                                               \
-    return category;                                       \
-  }                                                        \
-  constexpr inline bool isXlogCategoryOverridden(int) {    \
-    return true;                                           \
-  }                                                        \
-  }                                                        \
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 9
+// gcc 8.x crashes with an internal compiler error when trying to evaluate
+// getXlogCategoryName() in a constexpr expression.  Keeping category name
+// constexpr is important for performance, and XLOG_SET_CATEGORY_NAME() is
+// fairly rarely used, so simply let it be a no-op if compiling with older
+// versions of gcc.
+#define XLOG_SET_CATEGORY_NAME(category)
+#else
+#define XLOG_SET_CATEGORY_NAME(category)                                     \
+  namespace folly {                                                          \
+  namespace detail {                                                         \
+  namespace custom {                                                         \
+  namespace {                                                                \
+  struct xlog_correct_usage;                                                 \
+  static_assert(                                                             \
+      ::std::is_same<                                                        \
+          xlog_correct_usage,                                                \
+          ::folly::detail::custom::xlog_correct_usage>::value,               \
+      "XLOG_SET_CATEGORY_NAME() should not be used within namespace scope"); \
+  XLOG_SET_CATEGORY_CHECK                                                    \
+  FOLLY_CONSTEVAL inline StringPiece getXlogCategoryName(StringPiece, int) { \
+    return category;                                                         \
+  }                                                                          \
+  FOLLY_CONSTEVAL inline bool isXlogCategoryOverridden(int) { return true; } \
+  }                                                                          \
+  }                                                                          \
+  }                                                                          \
   }
+#endif
 
 /**
  * Assert that a condition is true.
@@ -419,8 +661,12 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogEveryNThreadImpl(size_t n) {
  * false.  Unlike assert() CHECK statements are always enabled, regardless of
  * the setting of NDEBUG.
  */
-#define XCHECK(cond, ...) \
-  XLOG_IF(FATAL, UNLIKELY(!(cond)), "Check failed: " #cond " ", ##__VA_ARGS__)
+#define XCHECK(cond, ...)         \
+  XLOG_IF(                        \
+      FATAL,                      \
+      FOLLY_UNLIKELY(!(cond)),    \
+      "Check failed: " #cond " ", \
+      ##__VA_ARGS__)
 
 namespace folly {
 namespace detail {
@@ -430,7 +676,7 @@ std::unique_ptr<std::string> XCheckOpImpl(
     const Arg1& arg1,
     const Arg2& arg2,
     CmpFn&& cmp_fn) {
-  if (LIKELY(cmp_fn(arg1, arg2))) {
+  if (FOLLY_LIKELY(cmp_fn(arg1, arg2))) {
     return nullptr;
   }
   return std::make_unique<std::string>(folly::to<std::string>(
@@ -528,10 +774,8 @@ namespace folly {
 
 class XlogFileScopeInfo {
  public:
-#ifdef __INCLUDE_LEVEL__
-  std::atomic<::folly::LogLevel> level;
-  ::folly::LogCategory* category;
-#endif
+  std::atomic<::folly::LogLevel> level{folly::LogLevel::UNINITIALIZED};
+  ::folly::LogCategory* category{nullptr};
 };
 
 /**
@@ -553,11 +797,11 @@ class XlogLevelInfo {
       XlogFileScopeInfo*) {
     // Do an initial relaxed check.  If this fails we know the category level
     // is initialized and the log admittance check failed.
-    // Use LIKELY() to optimize for the case of disabled debug statements:
+    // Use FOLLY_LIKELY() to optimize for the case of disabled debug statements:
     // we disabled debug statements to be cheap.  If the log message is
     // enabled then this check will still be minimal perf overhead compared to
     // the overall cost of logging it.
-    if (LIKELY(levelToCheck < level_.load(std::memory_order_relaxed))) {
+    if (FOLLY_LIKELY(levelToCheck < level_.load(std::memory_order_relaxed))) {
       return false;
     }
 
@@ -590,17 +834,13 @@ class XlogCategoryInfo {
 
   LogCategory* init(folly::StringPiece categoryName, bool isOverridden);
 
-  LogCategory* getCategory(XlogFileScopeInfo*) {
-    return category_;
-  }
+  LogCategory* getCategory(XlogFileScopeInfo*) { return category_; }
 
   /**
    * Get a pointer to pass into the LogStreamProcessor constructor,
    * so that it is able to look up the LogCategory information.
    */
-  XlogCategoryInfo<IsInHeaderFile>* getInfo(XlogFileScopeInfo*) {
-    return this;
-  }
+  XlogCategoryInfo<IsInHeaderFile>* getInfo(XlogFileScopeInfo*) { return this; }
 
  private:
   // These variables will always be zero-initialized on program start.
@@ -608,7 +848,6 @@ class XlogCategoryInfo {
   LogCategory* category_;
 };
 
-#ifdef __INCLUDE_LEVEL__
 /**
  * Specialization of XlogLevelInfo for XLOG() statements in the .cpp file being
  * compiled.  In this case we only define a single file-static LogLevel object
@@ -624,7 +863,7 @@ class XlogLevelInfo<false> {
       XlogFileScopeInfo* fileScopeInfo) {
     // As above in the non-specialized XlogFileScopeInfo code, do a simple
     // relaxed check first.
-    if (LIKELY(
+    if (FOLLY_LIKELY(
             levelToCheck <
             fileScopeInfo->level.load(::std::memory_order_relaxed))) {
       return false;
@@ -661,7 +900,6 @@ class XlogCategoryInfo<false> {
     return fileScopeInfo;
   }
 };
-#endif
 
 /**
  * Get the default XLOG() category name for the given filename.
@@ -671,18 +909,18 @@ class XlogCategoryInfo<false> {
  */
 folly::StringPiece getXlogCategoryNameForFile(folly::StringPiece filename);
 
-constexpr bool xlogIsDirSeparator(char c) {
+FOLLY_CONSTEVAL bool xlogIsDirSeparator(char c) {
   return c == '/' || (kIsWindows && c == '\\');
 }
 
 namespace detail {
-constexpr const char* xlogStripFilenameRecursive(
+FOLLY_CONSTEVAL const char* xlogStripFilenameRecursive(
     const char* filename,
     const char* prefixes,
     size_t prefixIdx,
     size_t filenameIdx,
     bool match);
-constexpr const char* xlogStripFilenameMatchFound(
+FOLLY_CONSTEVAL const char* xlogStripFilenameMatchFound(
     const char* filename,
     const char* prefixes,
     size_t prefixIdx,
@@ -694,7 +932,7 @@ constexpr const char* xlogStripFilenameMatchFound(
                    filename, prefixes, prefixIdx, filenameIdx + 1)
              : (filename + filenameIdx));
 }
-constexpr const char* xlogStripFilenameRecursive(
+FOLLY_CONSTEVAL const char* xlogStripFilenameRecursive(
     const char* filename,
     const char* prefixes,
     size_t prefixIdx,
@@ -704,7 +942,8 @@ constexpr const char* xlogStripFilenameRecursive(
   // However, in order to maintain compatibility with pre-C++14 compilers we
   // have implemented it recursively to adhere to C++11 restrictions for
   // constexpr functions.
-  return (prefixes[prefixIdx] == ':' || prefixes[prefixIdx] == '\0')
+  return ((prefixes[prefixIdx] == ':' && filename[filenameIdx] != ':') ||
+          prefixes[prefixIdx] == '\0')
       ? ((match && filenameIdx > 0 &&
           (xlogIsDirSeparator(prefixes[filenameIdx - 1]) ||
            xlogIsDirSeparator(filename[filenameIdx])))
@@ -714,7 +953,10 @@ constexpr const char* xlogStripFilenameRecursive(
                     ? filename
                     : xlogStripFilenameRecursive(
                           filename, prefixes, prefixIdx + 1, 0, true)))
-      : ((match && (prefixes[prefixIdx] == filename[filenameIdx]))
+      : ((match &&
+          ((prefixes[prefixIdx] == filename[filenameIdx]) ||
+           (xlogIsDirSeparator(prefixes[prefixIdx]) &&
+            xlogIsDirSeparator(filename[filenameIdx]))))
              ? xlogStripFilenameRecursive(
                    filename, prefixes, prefixIdx + 1, filenameIdx + 1, true)
              : xlogStripFilenameRecursive(
@@ -738,12 +980,12 @@ constexpr const char* xlogStripFilenameRecursive(
  * e.g., xlogStripFilename("/my/project/src/foo.cpp", "/tmp:/my/project")
  * would return "src/foo.cpp"
  */
-constexpr const char* xlogStripFilename(
-    const char* filename,
-    const char* prefixes) {
+FOLLY_CONSTEVAL const char* xlogStripFilename(
+    const char* filename, const char* prefixes) {
   return detail::xlogStripFilenameRecursive(filename, prefixes, 0, 0, true);
 }
-} // namespace folly
+
+namespace detail {
 
 /*
  * We intentionally use an unnamed namespace inside a header file here.
@@ -751,8 +993,10 @@ constexpr const char* xlogStripFilename(
  * We want each .cpp file that uses xlog.h to get its own separate
  * implementation of the following functions and variables.
  */
-namespace xlog_detail {
+namespace custom {
 namespace {
+struct xlog_correct_usage;
+
 /**
  * The default getXlogCategoryName() function.
  *
@@ -771,9 +1015,8 @@ namespace {
  * over this one.
  */
 template <typename T>
-constexpr inline folly::StringPiece getXlogCategoryName(
-    folly::StringPiece filename,
-    T) {
+FOLLY_CONSTEVAL inline StringPiece getXlogCategoryName(
+    StringPiece filename, T) {
   return filename;
 }
 
@@ -789,7 +1032,7 @@ constexpr inline folly::StringPiece getXlogCategoryName(
  * over this one.
  */
 template <typename T>
-constexpr inline bool isXlogCategoryOverridden(T) {
+FOLLY_CONSTEVAL inline bool isXlogCategoryOverridden(T) {
   return false;
 }
 
@@ -801,6 +1044,9 @@ constexpr inline bool isXlogCategoryOverridden(T) {
  * entire .cpp file, rather than needing a separate copy for each XLOG()
  * statement.
  */
-::folly::XlogFileScopeInfo xlogFileScopeInfo;
+FOLLY_CONSTINIT XlogFileScopeInfo xlogFileScopeInfo;
 } // namespace
-} // namespace xlog_detail
+} // namespace custom
+
+} // namespace detail
+} // namespace folly

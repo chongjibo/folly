@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ FOLLY_SETTING_DEFINE(
     public_flag_to_b,
     std::string,
     "basdf",
+    folly::settings::Mutability::Mutable,
     "Public flag to b");
 
 namespace {
@@ -33,6 +34,7 @@ FOLLY_SETTING_DEFINE(
     internal_flag_to_b,
     std::string,
     "test",
+    folly::settings::Mutability::Mutable,
     "Desc of str");
 }
 

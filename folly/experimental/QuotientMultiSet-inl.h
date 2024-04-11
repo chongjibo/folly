@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 #include <folly/experimental/Select64.h>
 #include <folly/lang/Bits.h>
 #include <folly/lang/SafeAssert.h>
+
 #include <glog/logging.h>
 
 #if FOLLY_QUOTIENT_MULTI_SET_SUPPORTED
@@ -30,7 +31,7 @@ namespace folly {
 
 namespace qms_detail {
 
-/*
+/**
  * Reference: Faster Remainder by Direct Computation: Applications to Compilers
  * and Software Libraries, Software: Practice and Experience 49 (6), 2019.
  */
@@ -53,9 +54,7 @@ mul128(UInt64InverseType lowbits, uint64_t divisor) {
 }
 
 FOLLY_ALWAYS_INLINE std::pair<uint64_t, uint64_t> getQuotientAndRemainder(
-    uint64_t dividend,
-    uint64_t divisor,
-    UInt64InverseType inverse) {
+    uint64_t dividend, uint64_t divisor, UInt64InverseType inverse) {
   if (FOLLY_UNLIKELY(divisor == 1)) {
     return {dividend, 0};
   }
@@ -127,9 +126,7 @@ struct QuotientMultiSet<Instructions>::Block {
   }
 
   FOLLY_ALWAYS_INLINE uint64_t getRemainder(
-      size_t offsetInBlock,
-      size_t remainderBits,
-      size_t remainderMask) const {
+      size_t offsetInBlock, size_t remainderBits, size_t remainderMask) const {
     DCHECK_LE(remainderBits, 56);
     const size_t bitPos = offsetInBlock * remainderBits;
     const uint64_t remainderWord =
@@ -145,8 +142,8 @@ struct QuotientMultiSet<Instructions>::Block {
     runends |= uint64_t(1) << offsetInBlock;
   }
 
-  void
-  setRemainder(size_t offsetInBlock, size_t remainderBits, uint64_t remainder) {
+  void setRemainder(
+      size_t offsetInBlock, size_t remainderBits, uint64_t remainder) {
     DCHECK_LT(offsetInBlock, kBlockSize);
     if (FOLLY_UNLIKELY(remainderBits == 0)) {
       return;
@@ -253,8 +250,8 @@ auto QuotientMultiSet<Instructions>::equalRange(uint64_t key) const
 
 template <class Instructions>
 auto QuotientMultiSet<Instructions>::findRunend(
-    uint64_t occupiedRank,
-    uint64_t firstRunend) const -> std::pair<uint64_t, const Block*> {
+    uint64_t occupiedRank, uint64_t firstRunend) const
+    -> std::pair<uint64_t, const Block*> {
   // Look for the right runend.
   size_t slotBlockIndex = firstRunend / kBlockSize;
   auto block = getBlock(slotBlockIndex);
@@ -274,9 +271,10 @@ auto QuotientMultiSet<Instructions>::findRunend(
     runendWord = block->runends;
   }
 
-  return {slotBlockIndex * kBlockSize +
-              select64<Instructions>(runendWord, occupiedRank),
-          block};
+  return {
+      slotBlockIndex * kBlockSize +
+          select64<Instructions>(runendWord, occupiedRank),
+      block};
 }
 
 template <class Instructions>
@@ -289,13 +287,7 @@ uint64_t QuotientMultiSet<Instructions>::getBlockPayload(
 template <class Instructions>
 QuotientMultiSet<Instructions>::Iterator::Iterator(
     const QuotientMultiSet<Instructions>* qms)
-    : qms_(qms),
-      key_(0),
-      occBlockIndex_(-1),
-      occOffsetInBlock_(0),
-      occWord_(0),
-      occBlock_(nullptr),
-      pos_(-1) {}
+    : qms_(qms) {}
 
 template <class Instructions>
 bool QuotientMultiSet<Instructions>::Iterator::next() {
@@ -328,7 +320,7 @@ bool QuotientMultiSet<Instructions>::Iterator::next() {
 template <class Instructions>
 bool QuotientMultiSet<Instructions>::Iterator::skipTo(uint64_t key) {
   if (key > qms_->maxKey_) {
-    return false;
+    return setEnd();
   }
   const auto qr =
       qms_detail::getQuotientAndRemainder(key, qms_->divisor_, qms_->fraction_);

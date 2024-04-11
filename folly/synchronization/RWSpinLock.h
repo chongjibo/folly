@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -77,8 +77,6 @@
  *    hold it in shared mode, making the lock non-reentrant.
  *
  *    RWSpinLock handles 2^30 - 1 concurrent readers.
- *
- * @author Xin Liu <xliux@fb.com>
  */
 
 #pragma once
@@ -161,6 +159,7 @@ pthread_rwlock_t Read        728698     24us       101ns     7.28ms     194us
 #include <thread>
 
 #include <folly/Likely.h>
+#include <folly/synchronization/Lock.h>
 
 namespace folly {
 
@@ -214,9 +213,7 @@ class RWSpinLock {
     }
   }
 
-  void unlock_shared() {
-    bits_.fetch_add(-READER, std::memory_order_release);
-  }
+  void unlock_shared() { bits_.fetch_add(-READER, std::memory_order_release); }
 
   // Downgrade the lock from writer status to reader status.
   void unlock_and_lock_shared() {
@@ -278,7 +275,7 @@ class RWSpinLock {
     // fetch_add is considerably (100%) faster than compare_exchange,
     // so here we are optimizing for the common (lock success) case.
     int32_t value = bits_.fetch_add(READER, std::memory_order_acquire);
-    if (UNLIKELY(value & (WRITER | UPGRADED))) {
+    if (FOLLY_UNLIKELY(value & (WRITER | UPGRADED))) {
       bits_.fetch_add(-READER, std::memory_order_release);
       return false;
     }
@@ -304,209 +301,7 @@ class RWSpinLock {
   }
 
   // mainly for debugging purposes.
-  int32_t bits() const {
-    return bits_.load(std::memory_order_acquire);
-  }
-
-  class FOLLY_NODISCARD ReadHolder;
-  class FOLLY_NODISCARD UpgradedHolder;
-  class FOLLY_NODISCARD WriteHolder;
-
-  class FOLLY_NODISCARD ReadHolder {
-   public:
-    explicit ReadHolder(RWSpinLock* lock) : lock_(lock) {
-      if (lock_) {
-        lock_->lock_shared();
-      }
-    }
-
-    explicit ReadHolder(RWSpinLock& lock) : lock_(&lock) {
-      lock_->lock_shared();
-    }
-
-    ReadHolder(ReadHolder&& other) noexcept : lock_(other.lock_) {
-      other.lock_ = nullptr;
-    }
-
-    // down-grade
-    explicit ReadHolder(UpgradedHolder&& upgraded) : lock_(upgraded.lock_) {
-      upgraded.lock_ = nullptr;
-      if (lock_) {
-        lock_->unlock_upgrade_and_lock_shared();
-      }
-    }
-
-    explicit ReadHolder(WriteHolder&& writer) : lock_(writer.lock_) {
-      writer.lock_ = nullptr;
-      if (lock_) {
-        lock_->unlock_and_lock_shared();
-      }
-    }
-
-    ReadHolder& operator=(ReadHolder&& other) {
-      using std::swap;
-      swap(lock_, other.lock_);
-      return *this;
-    }
-
-    ReadHolder(const ReadHolder& other) = delete;
-    ReadHolder& operator=(const ReadHolder& other) = delete;
-
-    ~ReadHolder() {
-      if (lock_) {
-        lock_->unlock_shared();
-      }
-    }
-
-    void reset(RWSpinLock* lock = nullptr) {
-      if (lock == lock_) {
-        return;
-      }
-      if (lock_) {
-        lock_->unlock_shared();
-      }
-      lock_ = lock;
-      if (lock_) {
-        lock_->lock_shared();
-      }
-    }
-
-    void swap(ReadHolder* other) {
-      std::swap(lock_, other->lock_);
-    }
-
-   private:
-    friend class UpgradedHolder;
-    friend class WriteHolder;
-    RWSpinLock* lock_;
-  };
-
-  class FOLLY_NODISCARD UpgradedHolder {
-   public:
-    explicit UpgradedHolder(RWSpinLock* lock) : lock_(lock) {
-      if (lock_) {
-        lock_->lock_upgrade();
-      }
-    }
-
-    explicit UpgradedHolder(RWSpinLock& lock) : lock_(&lock) {
-      lock_->lock_upgrade();
-    }
-
-    explicit UpgradedHolder(WriteHolder&& writer) {
-      lock_ = writer.lock_;
-      writer.lock_ = nullptr;
-      if (lock_) {
-        lock_->unlock_and_lock_upgrade();
-      }
-    }
-
-    UpgradedHolder(UpgradedHolder&& other) noexcept : lock_(other.lock_) {
-      other.lock_ = nullptr;
-    }
-
-    UpgradedHolder& operator=(UpgradedHolder&& other) {
-      using std::swap;
-      swap(lock_, other.lock_);
-      return *this;
-    }
-
-    UpgradedHolder(const UpgradedHolder& other) = delete;
-    UpgradedHolder& operator=(const UpgradedHolder& other) = delete;
-
-    ~UpgradedHolder() {
-      if (lock_) {
-        lock_->unlock_upgrade();
-      }
-    }
-
-    void reset(RWSpinLock* lock = nullptr) {
-      if (lock == lock_) {
-        return;
-      }
-      if (lock_) {
-        lock_->unlock_upgrade();
-      }
-      lock_ = lock;
-      if (lock_) {
-        lock_->lock_upgrade();
-      }
-    }
-
-    void swap(UpgradedHolder* other) {
-      using std::swap;
-      swap(lock_, other->lock_);
-    }
-
-   private:
-    friend class WriteHolder;
-    friend class ReadHolder;
-    RWSpinLock* lock_;
-  };
-
-  class FOLLY_NODISCARD WriteHolder {
-   public:
-    explicit WriteHolder(RWSpinLock* lock) : lock_(lock) {
-      if (lock_) {
-        lock_->lock();
-      }
-    }
-
-    explicit WriteHolder(RWSpinLock& lock) : lock_(&lock) {
-      lock_->lock();
-    }
-
-    // promoted from an upgrade lock holder
-    explicit WriteHolder(UpgradedHolder&& upgraded) {
-      lock_ = upgraded.lock_;
-      upgraded.lock_ = nullptr;
-      if (lock_) {
-        lock_->unlock_upgrade_and_lock();
-      }
-    }
-
-    WriteHolder(WriteHolder&& other) noexcept : lock_(other.lock_) {
-      other.lock_ = nullptr;
-    }
-
-    WriteHolder& operator=(WriteHolder&& other) {
-      using std::swap;
-      swap(lock_, other.lock_);
-      return *this;
-    }
-
-    WriteHolder(const WriteHolder& other) = delete;
-    WriteHolder& operator=(const WriteHolder& other) = delete;
-
-    ~WriteHolder() {
-      if (lock_) {
-        lock_->unlock();
-      }
-    }
-
-    void reset(RWSpinLock* lock = nullptr) {
-      if (lock == lock_) {
-        return;
-      }
-      if (lock_) {
-        lock_->unlock();
-      }
-      lock_ = lock;
-      if (lock_) {
-        lock_->lock();
-      }
-    }
-
-    void swap(WriteHolder* other) {
-      using std::swap;
-      swap(lock_, other->lock_);
-    }
-
-   private:
-    friend class ReadHolder;
-    friend class UpgradedHolder;
-    RWSpinLock* lock_;
-  };
+  int32_t bits() const { return bits_.load(std::memory_order_acquire); }
 
  private:
   std::atomic<int32_t> bits_;
@@ -664,7 +459,7 @@ class RWTicketSpinLockT {
     QuarterInt val = __sync_fetch_and_add(&ticket.users, 1);
     while (val != load_acquire(&ticket.write)) {
       asm_volatile_pause();
-      if (UNLIKELY(++count > 1000)) {
+      if (FOLLY_UNLIKELY(++count > 1000)) {
         std::this_thread::yield();
       }
     }
@@ -716,7 +511,7 @@ class RWTicketSpinLockT {
     uint_fast32_t count = 0;
     while (!LIKELY(try_lock_shared())) {
       asm_volatile_pause();
-      if (UNLIKELY((++count & 1023) == 0)) {
+      if (FOLLY_UNLIKELY((++count & 1023) == 0)) {
         std::this_thread::yield();
       }
     }
@@ -739,105 +534,7 @@ class RWTicketSpinLockT {
     return __sync_bool_compare_and_swap(&ticket.whole, old.whole, t.whole);
   }
 
-  void unlock_shared() {
-    __sync_fetch_and_add(&ticket.write, 1);
-  }
-
-  class FOLLY_NODISCARD WriteHolder;
-
-  typedef RWTicketSpinLockT<kBitWidth, kFavorWriter> RWSpinLock;
-  class FOLLY_NODISCARD ReadHolder {
-   public:
-    ReadHolder(ReadHolder const&) = delete;
-    ReadHolder& operator=(ReadHolder const&) = delete;
-
-    explicit ReadHolder(RWSpinLock* lock) : lock_(lock) {
-      if (lock_) {
-        lock_->lock_shared();
-      }
-    }
-
-    explicit ReadHolder(RWSpinLock& lock) : lock_(&lock) {
-      if (lock_) {
-        lock_->lock_shared();
-      }
-    }
-
-    // atomically unlock the write-lock from writer and acquire the read-lock
-    explicit ReadHolder(WriteHolder* writer) : lock_(nullptr) {
-      std::swap(this->lock_, writer->lock_);
-      if (lock_) {
-        lock_->unlock_and_lock_shared();
-      }
-    }
-
-    ~ReadHolder() {
-      if (lock_) {
-        lock_->unlock_shared();
-      }
-    }
-
-    void reset(RWSpinLock* lock = nullptr) {
-      if (lock_) {
-        lock_->unlock_shared();
-      }
-      lock_ = lock;
-      if (lock_) {
-        lock_->lock_shared();
-      }
-    }
-
-    void swap(ReadHolder* other) {
-      std::swap(this->lock_, other->lock_);
-    }
-
-   private:
-    RWSpinLock* lock_;
-  };
-
-  class FOLLY_NODISCARD WriteHolder {
-   public:
-    WriteHolder(WriteHolder const&) = delete;
-    WriteHolder& operator=(WriteHolder const&) = delete;
-
-    explicit WriteHolder(RWSpinLock* lock) : lock_(lock) {
-      if (lock_) {
-        lock_->lock();
-      }
-    }
-    explicit WriteHolder(RWSpinLock& lock) : lock_(&lock) {
-      if (lock_) {
-        lock_->lock();
-      }
-    }
-
-    ~WriteHolder() {
-      if (lock_) {
-        lock_->unlock();
-      }
-    }
-
-    void reset(RWSpinLock* lock = nullptr) {
-      if (lock == lock_) {
-        return;
-      }
-      if (lock_) {
-        lock_->unlock();
-      }
-      lock_ = lock;
-      if (lock_) {
-        lock_->lock();
-      }
-    }
-
-    void swap(WriteHolder* other) {
-      std::swap(this->lock_, other->lock_);
-    }
-
-   private:
-    friend class ReadHolder;
-    RWSpinLock* lock_;
-  };
+  void unlock_shared() { __sync_fetch_and_add(&ticket.write, 1); }
 };
 
 typedef RWTicketSpinLockT<32> RWTicketSpinLock32;

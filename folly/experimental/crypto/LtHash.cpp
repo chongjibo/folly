@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/experimental/crypto/LtHash.h>
+
 #include <folly/CpuId.h>
 
 #ifdef __SSE2__
@@ -141,8 +142,7 @@ void MathOperation<MathEngine::AUTO>::sub(
 // static
 template <>
 void MathOperation<MathEngine::AUTO>::clearPaddingBits(
-    uint64_t dataMask,
-    folly::MutableByteRange buf) {
+    uint64_t dataMask, folly::MutableByteRange buf) {
   // Note: implementation is a function pointer that is initialized to point
   // at the fastest available implementation the first time this function is
   // called.
@@ -165,8 +165,7 @@ void MathOperation<MathEngine::AUTO>::clearPaddingBits(
 // static
 template <>
 bool MathOperation<MathEngine::AUTO>::checkPaddingBits(
-    uint64_t dataMask,
-    folly::ByteRange buf) {
+    uint64_t dataMask, folly::ByteRange buf) {
   // Note: implementation is a function pointer that is initialized to point
   // at the fastest available implementation the first time this function is
   // called.

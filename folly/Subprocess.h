@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -93,6 +93,10 @@
 
 #pragma once
 
+#ifdef _WIN32
+#error Subprocess is not supported on Windows.
+#endif
+
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -168,18 +172,10 @@ class ProcessReturnCode {
   /**
    * Helper wrappers around state().
    */
-  bool notStarted() const {
-    return state() == NOT_STARTED;
-  }
-  bool running() const {
-    return state() == RUNNING;
-  }
-  bool exited() const {
-    return state() == EXITED;
-  }
-  bool killed() const {
-    return state() == KILLED;
-  }
+  bool notStarted() const { return state() == NOT_STARTED; }
+  bool running() const { return state() == RUNNING; }
+  bool exited() const { return state() == EXITED; }
+  bool killed() const { return state() == KILLED; }
 
   /**
    * Exit status.  Only valid if state() == EXITED; throws otherwise.
@@ -197,6 +193,11 @@ class ProcessReturnCode {
    * otherwise.
    */
   bool coreDumped() const;
+
+  /**
+   * Process exited normally with a zero exit status
+   */
+  bool succeeded() const;
 
   /**
    * String representation; one of
@@ -236,10 +237,8 @@ class FOLLY_EXPORT SubprocessError : public std::runtime_error {
 class FOLLY_EXPORT CalledProcessError : public SubprocessError {
  public:
   explicit CalledProcessError(ProcessReturnCode rc);
-  ~CalledProcessError() throw() override = default;
-  ProcessReturnCode returnCode() const {
-    return returnCode_;
-  }
+  ~CalledProcessError() noexcept override = default;
+  ProcessReturnCode returnCode() const { return returnCode_; }
 
  private:
   ProcessReturnCode returnCode_;
@@ -251,10 +250,8 @@ class FOLLY_EXPORT CalledProcessError : public SubprocessError {
 class FOLLY_EXPORT SubprocessSpawnError : public SubprocessError {
  public:
   SubprocessSpawnError(const char* executable, int errCode, int errnoValue);
-  ~SubprocessSpawnError() throw() override = default;
-  int errnoValue() const {
-    return errnoValue_;
-  }
+  ~SubprocessSpawnError() noexcept override = default;
+  int errnoValue() const { return errnoValue_; }
 
  private:
   int errnoValue_;
@@ -265,10 +262,13 @@ class FOLLY_EXPORT SubprocessSpawnError : public SubprocessError {
  */
 class Subprocess {
  public:
-  static const int CLOSE = -1;
+  using TimeoutDuration = std::chrono::milliseconds;
+
+  // removed CLOSE = -1
   static const int PIPE = -2;
   static const int PIPE_IN = -3;
   static const int PIPE_OUT = -4;
+  static const int DEV_NULL = -5;
 
   /**
    * See Subprocess::Options::dangerousPostForkPreExecCallback() for usage.
@@ -320,35 +320,23 @@ class Subprocess {
     /**
      * Shortcut to change the action for standard input.
      */
-    Options& stdinFd(int action) {
-      return fd(STDIN_FILENO, action);
-    }
+    Options& stdinFd(int action) { return fd(STDIN_FILENO, action); }
 
     /**
      * Shortcut to change the action for standard output.
      */
-    Options& stdoutFd(int action) {
-      return fd(STDOUT_FILENO, action);
-    }
+    Options& stdoutFd(int action) { return fd(STDOUT_FILENO, action); }
 
     /**
      * Shortcut to change the action for standard error.
      * Note that stderr(1) will redirect the standard error to the same
      * file descriptor as standard output; the equivalent of bash's "2>&1"
      */
-    Options& stderrFd(int action) {
-      return fd(STDERR_FILENO, action);
-    }
+    Options& stderrFd(int action) { return fd(STDERR_FILENO, action); }
 
-    Options& pipeStdin() {
-      return fd(STDIN_FILENO, PIPE_IN);
-    }
-    Options& pipeStdout() {
-      return fd(STDOUT_FILENO, PIPE_OUT);
-    }
-    Options& pipeStderr() {
-      return fd(STDERR_FILENO, PIPE_OUT);
-    }
+    Options& pipeStdin() { return fd(STDIN_FILENO, PIPE_IN); }
+    Options& pipeStdout() { return fd(STDOUT_FILENO, PIPE_OUT); }
+    Options& pipeStderr() { return fd(STDERR_FILENO, PIPE_OUT); }
 
     /**
      * Close all other fds (other than standard input, output, error,
@@ -427,6 +415,55 @@ class Subprocess {
     }
 
     /**
+     * If the Subprocess object is destroyed while the process is still running,
+     * automatically kill the child with SIGKILL and wait on the pid.
+     */
+    Options& killChildOnDestruction() {
+      destroyBehavior_ = 0;
+      return *this;
+    }
+
+    /**
+     * If the Subprocess object is destroyed while the process is still running,
+     * use terminateOrKill() to stop it and wait for it to exit.
+     *
+     * Beware that this may cause the Subprocess destructor to block while
+     * waiting on the child process to exit.
+     */
+    Options& terminateChildOnDestruction(TimeoutDuration timeout) {
+      destroyBehavior_ = std::max(TimeoutDuration::rep(0), timeout.count());
+      return *this;
+    }
+
+    /**
+     * By default, if Subprocess is destroyed while the child process is
+     * still RUNNING, the destructor will log a fatal.  You can skip this
+     * behavior by setting it to true here.
+     *
+     * Note that detach()ed processes are never in RUNNING state, so this
+     * setting does not impact such processes.
+     *
+     * BEWARE: setting this flag can leave zombie processes behind on the system
+     * after the folly::Subprocess is destroyed.  In general you should avoid
+     * using this setting.  In general, prefer using one of the following
+     * options instead:
+     * - If you do not care about monitoring the child process or waiting for it
+     *   to complete, use detach().
+     * - If you want to automatically clean up the child process when the
+     *   Subprocess is destroyed, use killChildOnDestruction() or
+     *   terminateChildOnDestruction()
+     * - If you want to allow the parent process to exit without waiting on thie
+     *   child, prefer simply leaking the folly::Subprocess object when the
+     *   parent process exits.  You could exit with _exit(), or you could
+     *   explicitly leak the Subprocess using std::unique_ptr::release() or
+     *   similar mechanisms.
+     */
+    Options& allowDestructionWhileProcessRunning(bool val) {
+      destroyBehavior_ = val ? DestroyBehaviorLeak : DestroyBehaviorFatal;
+      return *this;
+    }
+
+    /**
      * *** READ THIS WHOLE DOCBLOCK BEFORE USING ***
      *
      * Run this callback in the child after the fork, just before the
@@ -486,6 +523,13 @@ class Subprocess {
     }
 #endif
 
+#if defined(__linux__)
+    Options& setCpuSet(const cpu_set_t& cpuSet) {
+      cpuSet_ = cpuSet;
+      return *this;
+    }
+#endif
+
    private:
     typedef boost::container::flat_map<int, int> FdMap;
     FdMap fdActions_;
@@ -493,6 +537,11 @@ class Subprocess {
     bool usePath_{false};
     bool processGroupLeader_{false};
     bool detach_{false};
+    // The behavior to take if the Subprocess destructor is invoked while the
+    // child process is still running.  This is either
+    // DestroyBehaviorFatal, DestroyBehaviorLeak, or a timeout value to pass to
+    // terminateOrKill() to kill the child process.
+    TimeoutDuration::rep destroyBehavior_{DestroyBehaviorFatal};
     std::string childDir_; // "" keeps the parent's working directory
 #if defined(__linux__)
     int parentDeathSignal_{0};
@@ -504,9 +553,12 @@ class Subprocess {
     // Optional<> is used because value of '0' means do clone without any flags.
     Optional<clone_flags_t> cloneFlags_;
 #endif
+#if defined(__linux__)
+    Optional<cpu_set_t> cpuSet_;
+#endif
   };
 
-  // Non-copiable, but movable
+  // Non-copyable, but movable
   Subprocess(const Subprocess&) = delete;
   Subprocess& operator=(const Subprocess&) = delete;
   Subprocess(Subprocess&&) = default;
@@ -578,9 +630,7 @@ class Subprocess {
    * waitpid() or Subprocess::poll(), but simply returns the status stored
    * in the Subprocess object.
    */
-  ProcessReturnCode returnCode() const {
-    return returnCode_;
-  }
+  ProcessReturnCode returnCode() const { return returnCode_; }
 
   /**
    * Poll the child's status and return it. Return the exit status if the
@@ -612,8 +662,6 @@ class Subprocess {
    */
   void waitChecked();
 
-  using TimeoutDuration = std::chrono::milliseconds;
-
   /**
    * Call `waitpid` non-blockingly up to `timeout`. Throws std::logic_error if
    * called on a Subprocess whose status is not RUNNING.
@@ -627,12 +675,8 @@ class Subprocess {
    * signals are below.
    */
   void sendSignal(int signal);
-  void terminate() {
-    sendSignal(SIGTERM);
-  }
-  void kill() {
-    sendSignal(SIGKILL);
-  }
+  void terminate() { sendSignal(SIGTERM); }
+  void kill() { sendSignal(SIGKILL); }
 
   /**
    * Call `waitpid` non-blockingly up to `waitTimeout`. If the process hasn't
@@ -640,14 +684,16 @@ class Subprocess {
    * `sigtermTimeoutSeconds`.
    */
   ProcessReturnCode waitOrTerminateOrKill(
-      TimeoutDuration waitTimeout,
-      TimeoutDuration sigtermTimeout);
+      TimeoutDuration waitTimeout, TimeoutDuration sigtermTimeout);
 
   /**
    * Send the SIGTERM to terminate the process, poll `waitpid` non-blockingly
    * several times up to `sigtermTimeout`. If the process hasn't terminated
    * after that, send SIGKILL to kill the process and call `waitpid` blockingly.
    * Return the exit code of process.
+   *
+   * If sigtermTimeout is 0 or negative, this will immediately send SIGKILL
+   * without first sending SIGTERM.
    */
   ProcessReturnCode terminateOrKill(TimeoutDuration sigtermTimeout);
 
@@ -791,9 +837,7 @@ class Subprocess {
     struct StreamSplitterCallback {
       StreamSplitterCallback(Callback& cb, int fd) : cb_(cb), fd_(fd) {}
       // The return value semantics are inverted vs StreamSplitter
-      bool operator()(StringPiece s) {
-        return !cb_(fd_, s);
-      }
+      bool operator()(StringPiece s) { return !cb_(fd_, s); }
       Callback& cb_;
       int fd_;
     };
@@ -908,20 +952,14 @@ class Subprocess {
   int parentFd(int childFd) const {
     return pipes_[findByChildFd(childFd)].pipe.fd();
   }
-  int stdinFd() const {
-    return parentFd(0);
-  }
-  int stdoutFd() const {
-    return parentFd(1);
-  }
-  int stderrFd() const {
-    return parentFd(2);
-  }
+  int stdinFd() const { return parentFd(0); }
+  int stdoutFd() const { return parentFd(1); }
+  int stderrFd() const { return parentFd(2); }
 
   /**
    * The child's pipes are logically separate from the process metadata
    * (they may even be kept alive by the child's descendants).  This call
-   * lets you manage the pipes' lifetime separetely from the lifetime of the
+   * lets you manage the pipes' lifetime separately from the lifetime of the
    * child process.
    *
    * After this call, the Subprocess instance will have no knowledge of
@@ -968,6 +1006,9 @@ class Subprocess {
       char** env,
       const Options& options) const;
 
+  // Closes fds inherited from parent in child process
+  static void closeInheritedFds(const Options::FdMap& fdActions);
+
   /**
    * Read from the error pipe, and throw SubprocessSpawnError if the child
    * failed before calling exec().
@@ -977,8 +1018,12 @@ class Subprocess {
   // Returns an index into pipes_. Throws std::invalid_argument if not found.
   size_t findByChildFd(const int childFd) const;
 
+  static constexpr TimeoutDuration::rep DestroyBehaviorFatal = -1;
+  static constexpr TimeoutDuration::rep DestroyBehaviorLeak = -2;
+
   pid_t pid_{-1};
   ProcessReturnCode returnCode_;
+  TimeoutDuration::rep destroyBehavior_ = DestroyBehaviorFatal;
 
   /**
    * Represents a pipe between this process, and the child process (or its
@@ -992,9 +1037,7 @@ class Subprocess {
     int direction = PIPE_IN; // one of PIPE_IN / PIPE_OUT
     bool enabled = true; // Are notifications enabled in communicate()?
 
-    bool operator<(const Pipe& other) const {
-      return childFd < other.childFd;
-    }
+    bool operator<(const Pipe& other) const { return childFd < other.childFd; }
     bool operator==(const Pipe& other) const {
       return childFd == other.childFd;
     }

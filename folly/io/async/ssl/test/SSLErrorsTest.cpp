@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,10 @@ TEST(SSLErrorsTest, TestMessage) {
   std::string expectedMsg =
       "AsyncSocketException: error:0b000069:X.509 certificate routines:"
       "OPENSSL_internal:CERT_ALREADY_IN_HASH_TABLE, type = SSL error";
+#elif FOLLY_OPENSSL_IS_3X
+  std::string expectedMsg =
+      "AsyncSocketException: error:05800065:x509 certificate routines::"
+      "cert already in hash table, type = SSL error";
 #else
   std::string expectedMsg =
       "AsyncSocketException: error:0B07C065:"

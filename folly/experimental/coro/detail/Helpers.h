@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,12 @@
 #pragma once
 
 #include <folly/Executor.h>
+#include <folly/SingletonThreadLocal.h>
+#include <folly/experimental/coro/Coroutine.h>
+#include <folly/io/async/Request.h>
+#include <folly/tracing/AsyncStack.h>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace coro {
@@ -39,6 +45,9 @@ class UnsafeResumeInlineSemiAwaitable {
  private:
   Awaitable awaitable_;
 };
+
 } // namespace detail
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

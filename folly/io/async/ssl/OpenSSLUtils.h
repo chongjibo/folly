@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@
 #pragma once
 
 #include <folly/Range.h>
+#include <folly/io/async/AsyncSocketException.h>
 #include <folly/net/NetworkSocket.h>
 #include <folly/portability/OpenSSL.h>
 #include <folly/portability/Sockets.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
+#include <folly/ssl/SSLSession.h>
 
 namespace folly {
 namespace ssl {
@@ -37,8 +39,9 @@ class OpenSSLUtils {
    * large enough
    */
   static bool getTLSMasterKey(
-      const SSL_SESSION* session,
-      MutableByteRange keyOut);
+      const SSL_SESSION* session, MutableByteRange keyOut);
+  static bool getTLSMasterKey(
+      const std::shared_ptr<SSLSession> session, MutableByteRange keyOut);
 
   /*
    * Get the TLS Client Random used to generate the TLS key material
@@ -64,8 +67,8 @@ class OpenSSLUtils {
    */
   // TODO(agartrell): Add support for things like common name when
   // necessary.
-  static bool
-  validatePeerCertNames(X509* cert, const sockaddr* addr, socklen_t addrLen);
+  static bool validatePeerCertNames(
+      X509* cert, const sockaddr* addr, socklen_t addrLen);
 
   /**
    * Get the peer socket address from an X509_STORE_CTX*.  Unlike the
@@ -78,9 +81,7 @@ class OpenSSLUtils {
    * @return true on success, false on failure
    */
   static bool getPeerAddressFromX509StoreCtx(
-      X509_STORE_CTX* ctx,
-      sockaddr_storage* addrStorage,
-      socklen_t* addrLen);
+      X509_STORE_CTX* ctx, sockaddr_storage* addrStorage, socklen_t* addrLen);
 
   /**
    * Get a stringified cipher name (e.g., ECDHE-ECDSA-CHACHA20-POLY1305) given
@@ -112,22 +113,48 @@ class OpenSSLUtils {
   static std::string getCommonName(X509* x509);
 
   /**
+   * Get a list of subject names corresponding to each certificate in a
+   * PEM encoded file.
+   *
+   * @param filename   Path to a file containing PEM encoded X509 certificates.
+   * @return A vector of X509_NAMEs corresponding to the subject of each
+   *         certificate.
+   * @throws std::exception For any errors encountered while reading in
+   *                        certificates from the file.
+   */
+  static std::vector<X509NameUniquePtr> subjectNamesInPEMFile(
+      const char* filename);
+
+  /**
+   * Get a list of subject names corresponding to each certificate in a
+   * buffer containing PEM data.
+   *
+   * @param buffer  A contiguous region of memory containing PEM encoded
+   *                certificates.
+   * @return A vector of X509_NAMEs corresponding to the subject of each
+   *         certificate.
+   * @throws std::exception For any errors encountered while reading in
+   *                        certificates from the file.
+   */
+  static std::vector<X509NameUniquePtr> subjectNamesInPEMBuffer(
+      folly::ByteRange buffer);
+
+  /**
    * Wrappers for BIO operations that may be different across different
    * versions/flavors of OpenSSL (including forks like BoringSSL)
    */
   static BioMethodUniquePtr newSocketBioMethod();
   static bool setCustomBioReadMethod(
-      BIO_METHOD* bioMeth,
-      int (*meth)(BIO*, char*, int));
+      BIO_METHOD* bioMeth, int (*meth)(BIO*, char*, int));
   static bool setCustomBioWriteMethod(
-      BIO_METHOD* bioMeth,
-      int (*meth)(BIO*, const char*, int));
+      BIO_METHOD* bioMeth, int (*meth)(BIO*, const char*, int));
   static int getBioShouldRetryWrite(int ret);
   static void setBioAppData(BIO* b, void* ptr);
   static void* getBioAppData(BIO* b);
   static NetworkSocket getBioFd(BIO* b);
   static void setBioFd(BIO* b, NetworkSocket fd, int flags);
+  static std::string encodeALPNString(
+      const std::vector<std::string>& supported_protocols);
 };
-
 } // namespace ssl
 } // namespace folly

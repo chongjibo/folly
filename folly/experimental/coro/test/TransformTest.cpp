@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,8 @@
  * limitations under the License.
  */
 
+#include <utility>
 #include <folly/Portability.h>
-
-#if FOLLY_HAS_COROUTINES
 
 #include <folly/CancellationToken.h>
 #include <folly/experimental/coro/AsyncGenerator.h>
@@ -29,9 +28,18 @@
 
 #include <folly/portability/GTest.h>
 
+#if FOLLY_HAS_COROUTINES
+
 using namespace folly::coro;
 
 class TransformTest : public testing::Test {};
+
+AsyncGenerator<int> ints(int n) {
+  for (int i = 0; i <= n; ++i) {
+    co_await co_reschedule_on_current_executor;
+    co_yield i;
+  }
+}
 
 TEST_F(TransformTest, SimpleStream) {
   struct MyError : std::exception {};
@@ -46,13 +54,6 @@ TEST_F(TransformTest, SimpleStream) {
   int totalEventCount = 0;
 
   auto selectStream = [](int index) -> AsyncGenerator<int> {
-    auto ints = [](int n) -> AsyncGenerator<int> {
-      for (int i = 0; i <= n; ++i) {
-        co_await co_reschedule_on_current_executor;
-        co_yield i;
-      }
-    };
-
     auto failing = []() -> AsyncGenerator<int> {
       co_yield 0;
       co_yield 1;
@@ -140,6 +141,94 @@ TEST_F(TransformTest, CancellationTokenPropagatesFromConsumer) {
         }());
     CHECK(done);
   }());
+}
+
+AsyncGenerator<float&> floatRefs(int n) {
+  for (int i = 0; i <= n; ++i) {
+    co_await co_reschedule_on_current_executor;
+    float f = i;
+    co_yield f;
+  }
+}
+
+template <typename T>
+auto useStream(AsyncGenerator<T> ag) {
+  std::vector<typename decltype(ag)::value_type> vals;
+  blockingWait([&](auto ag) -> Task<void> {
+    while (auto item = co_await ag.next()) {
+      vals.emplace_back(std::move(item).value());
+    }
+  }(std::move(ag)));
+  return vals;
+}
+
+TEST_F(TransformTest, TransformDeducesTypesCorrectlySyncFun) {
+  auto makeStream = []() -> AsyncGenerator<int> { return ints(2); };
+  using fv = std::vector<float>;
+  using dv = std::vector<double>;
+
+  {
+    // Function returning value
+    std::function<float(int)> fun = [](int) { return 1.f; };
+
+    // Default deduced as r-value reference
+    AsyncGenerator<float&&> s0 = transform(makeStream(), fun);
+    EXPECT_EQ(useStream(std::move(s0)), (fv{1.f, 1.f, 1.f}));
+    AsyncGenerator<float&&> s1 = transform<float&&>(makeStream(), fun);
+    EXPECT_EQ(useStream(std::move(s1)), (fv{1.f, 1.f, 1.f}));
+    AsyncGenerator<float&> s2 = transform<float&>(makeStream(), fun);
+    EXPECT_EQ(useStream(std::move(s2)), (fv{1.f, 1.f, 1.f}));
+    AsyncGenerator<float> s3 = transform<float>(makeStream(), fun);
+    EXPECT_EQ(useStream(std::move(s3)), (fv{1.f, 1.f, 1.f}));
+  }
+
+  {
+    // Function returning reference
+
+    std::function<float&(float&)> fun = [&](float& f) -> float& { return f; };
+
+    // Default deduced as l-value reference
+    AsyncGenerator<float&> s0 = transform(floatRefs(2), fun);
+    EXPECT_EQ(useStream(std::move(s0)), (fv{0.f, 1.f, 2.f}));
+    AsyncGenerator<float&&> s1 = transform<float&&>(floatRefs(2), fun);
+    EXPECT_EQ(useStream(std::move(s1)), (fv{0.f, 1.f, 2.f}));
+    AsyncGenerator<float&> s2 = transform<float&>(floatRefs(2), fun);
+    EXPECT_EQ(useStream(std::move(s2)), (fv{0.f, 1.f, 2.f}));
+    AsyncGenerator<float> s3 = transform<float>(floatRefs(2), fun);
+    EXPECT_EQ(useStream(std::move(s3)), (fv{0.f, 1.f, 2.f}));
+  }
+
+  // Conversion
+
+  {
+    // Function returning value
+    std::function<float(int)> fun = [](int) { return 1.f; };
+
+    AsyncGenerator<double&&> s1 = transform<double&&>(makeStream(), fun);
+    EXPECT_EQ(useStream(std::move(s1)), (dv{1., 1., 1.}));
+    AsyncGenerator<double&> s2 = transform<double&>(makeStream(), fun);
+    EXPECT_EQ(useStream(std::move(s2)), (dv{1., 1., 1.}));
+    AsyncGenerator<const double&> s3 =
+        transform<const double&>(makeStream(), fun);
+    EXPECT_EQ(useStream(std::move(s3)), (dv{1., 1., 1.}));
+    AsyncGenerator<double> s4 = transform<double>(makeStream(), fun);
+    EXPECT_EQ(useStream(std::move(s4)), (dv{1., 1., 1.}));
+  }
+
+  {
+    // Function returning reference
+    std::function<float&(float&)> fun = [&](float& f) -> float& { return f; };
+
+    AsyncGenerator<double&&> s1 = transform<double&&>(floatRefs(2), fun);
+    EXPECT_EQ(useStream(std::move(s1)), (dv{0., 1., 2.}));
+    AsyncGenerator<double&> s2 = transform<double&>(floatRefs(2), fun);
+    EXPECT_EQ(useStream(std::move(s2)), (dv{0., 1., 2.}));
+    AsyncGenerator<const double&> s3 =
+        transform<const double&>(floatRefs(2), fun);
+    EXPECT_EQ(useStream(std::move(s3)), (dv{0., 1., 2.}));
+    AsyncGenerator<double&&> s4 = transform<double&&>(floatRefs(2), fun);
+    EXPECT_EQ(useStream(std::move(s4)), (dv{0., 1., 2.}));
+  }
 }
 
 #endif

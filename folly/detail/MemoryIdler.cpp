@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,27 +16,52 @@
 
 #include <folly/detail/MemoryIdler.h>
 
+#include <climits>
+#include <cstdio>
+#include <cstring>
+#include <utility>
+
 #include <folly/GLog.h>
 #include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
 #include <folly/concurrency/CacheLocality.h>
 #include <folly/memory/MallctlHelper.h>
 #include <folly/memory/Malloc.h>
+#include <folly/portability/GFlags.h>
 #include <folly/portability/PThread.h>
 #include <folly/portability/SysMman.h>
 #include <folly/portability/Unistd.h>
-#include <folly/synchronization/CallOnce.h>
+#include <folly/system/Pid.h>
+#include <folly/system/ThreadId.h>
 
-#include <climits>
-#include <cstdio>
-#include <cstring>
-#include <utility>
+FOLLY_GFLAGS_DEFINE_bool(
+    folly_memory_idler_purge_arenas,
+    false,
+    "if enabled, folly memory-idler purges jemalloc arenas on thread idle");
 
 namespace folly {
 namespace detail {
 
 AtomicStruct<std::chrono::steady_clock::duration>
     MemoryIdler::defaultIdleTimeout(std::chrono::seconds(5));
+
+bool MemoryIdler::isUnmapUnusedStackAvailable() noexcept {
+  // Linux uses an automatic stack expansion mechanism to expand the main thread
+  // stack on demand. Before the main thread stack grows to its full extent, the
+  // vma corresponding to the main thread stack is not yet fully allocated. It's
+  // possible for the kernel to allocate the not-yet-allocated main thread stack
+  // vma to ramdon sbrk() or mmap() requests, and for the resulting regions from
+  // these requests to be used by other user code. If this happens, the madvise-
+  // dontneed here is dangerous - it can zero arbitrary heap buffers! So it must
+  // be skipped. In the case where this runs a fork() child in that thread which
+  // returned from fork(), the os-thread-id will coincide with the pid, which is
+  // a harmless false positive where the madvise-dontneed will be skipped.
+  if (kIsLinux && getOSThreadID() == static_cast<uint64_t>(get_cached_pid())) {
+    return false;
+  }
+
+  return true;
+}
 
 void MemoryIdler::flushLocalMallocCaches() {
   if (!usingJEMalloc()) {
@@ -47,45 +72,47 @@ void MemoryIdler::flushLocalMallocCaches() {
     return;
   }
 
-  try {
-    // Not using mallctlCall as this will fail if tcache is disabled.
-    mallctl("thread.tcache.flush", nullptr, nullptr, nullptr, 0);
+  // Not using mallctlCall as this will fail if tcache is disabled.
+  mallctl("thread.tcache.flush", nullptr, nullptr, nullptr, 0);
 
-    // By default jemalloc has 4 arenas per cpu, and then assigns each
-    // thread to one of those arenas.  This means that in any service
-    // that doesn't perform a lot of context switching, the chances that
-    // another thread will be using the current thread's arena (and hence
-    // doing the appropriate dirty-page purging) are low.  Some good
-    // tuned configurations (such as that used by hhvm) use fewer arenas
-    // and then pin threads to avoid contended access.  In that case,
-    // purging the arenas is counter-productive.  We use the heuristic
-    // that if narenas <= 2 * num_cpus then we shouldn't do anything here,
-    // which detects when the narenas has been reduced from the default
-    unsigned narenas;
-    unsigned arenaForCurrent;
-    size_t mib[3];
-    size_t miblen = 3;
+  if (FLAGS_folly_memory_idler_purge_arenas) {
+    try {
+      // By default jemalloc has 4 arenas per cpu, and then assigns each
+      // thread to one of those arenas.  This means that in any service
+      // that doesn't perform a lot of context switching, the chances that
+      // another thread will be using the current thread's arena (and hence
+      // doing the appropriate dirty-page purging) are low.  Some good
+      // tuned configurations (such as that used by hhvm) use fewer arenas
+      // and then pin threads to avoid contended access.  In that case,
+      // purging the arenas is counter-productive.  We use the heuristic
+      // that if narenas <= 2 * num_cpus then we shouldn't do anything here,
+      // which detects when the narenas has been reduced from the default
+      unsigned narenas;
+      unsigned arenaForCurrent;
+      size_t mib[3];
+      size_t miblen = 3;
 
-    mallctlRead("opt.narenas", &narenas);
-    mallctlRead("thread.arena", &arenaForCurrent);
-    if (narenas > 2 * CacheLocality::system().numCpus &&
-        mallctlnametomib("arena.0.purge", mib, &miblen) == 0) {
-      mib[1] = static_cast<size_t>(arenaForCurrent);
-      mallctlbymib(mib, miblen, nullptr, nullptr, nullptr, 0);
+      mallctlRead("opt.narenas", &narenas);
+      mallctlRead("thread.arena", &arenaForCurrent);
+      if (narenas > 2 * CacheLocality::system().numCpus &&
+          mallctlnametomib("arena.0.purge", mib, &miblen) == 0) {
+        mib[1] = static_cast<size_t>(arenaForCurrent);
+        mallctlbymib(mib, miblen, nullptr, nullptr, nullptr, 0);
+      }
+    } catch (const std::runtime_error& ex) {
+      FB_LOG_EVERY_MS(WARNING, 10000) << ex.what();
     }
-  } catch (const std::runtime_error& ex) {
-    FB_LOG_EVERY_MS(WARNING, 10000) << ex.what();
   }
 }
 
 // Stack madvise isn't Linux or glibc specific, but the system calls
 // and arithmetic (and bug compatibility) are not portable.  The set of
 // platforms could be increased if it was useful.
-#if (FOLLY_X64 || FOLLY_PPC64) && defined(_GNU_SOURCE) && \
-    defined(__linux__) && !FOLLY_MOBILE && !FOLLY_SANITIZE_ADDRESS
+#if defined(__GLIBC__) && defined(__linux__) && !FOLLY_MOBILE && \
+    !FOLLY_SANITIZE_ADDRESS
 
-static FOLLY_TLS uintptr_t tls_stackLimit;
-static FOLLY_TLS size_t tls_stackSize;
+static thread_local uintptr_t tls_stackLimit;
+static thread_local size_t tls_stackSize;
 
 static size_t pageSize() {
   static const size_t s_pageSize = sysconf(_SC_PAGESIZE);
@@ -97,23 +124,17 @@ static void fetchStackLimits() {
   pthread_attr_t attr;
   if ((err = pthread_getattr_np(pthread_self(), &attr))) {
     // some restricted environments can't access /proc
-    static folly::once_flag flag;
-    folly::call_once(flag, [err]() {
-      LOG(WARNING) << "pthread_getaddr_np failed errno=" << err;
-    });
-
+    FB_LOG_ONCE(ERROR) << "pthread_getaddr_np failed errno=" << err;
     tls_stackSize = 1;
     return;
   }
-  SCOPE_EXIT {
-    pthread_attr_destroy(&attr);
-  };
+  SCOPE_EXIT { pthread_attr_destroy(&attr); };
 
   void* addr;
   size_t rawSize;
   if ((err = pthread_attr_getstack(&attr, &addr, &rawSize))) {
     // unexpected, but it is better to continue in prod than do nothing
-    FB_LOG_EVERY_MS(ERROR, 10000) << "pthread_attr_getstack error " << err;
+    FB_LOG_ONCE(ERROR) << "pthread_attr_getstack error " << err;
     assert(false);
     tls_stackSize = 1;
     return;
@@ -129,14 +150,16 @@ static void fetchStackLimits() {
     //
     // Very large stack size is a bug (hence the assert), but we can
     // carry on if we are in prod.
-    FB_LOG_EVERY_MS(ERROR, 10000)
-        << "pthread_attr_getstack returned insane stack size " << rawSize;
+    FB_LOG_ONCE(ERROR) << "pthread_attr_getstack returned insane stack size "
+                       << rawSize;
     assert(false);
     tls_stackSize = 1;
     return;
   }
   assert(addr != nullptr);
-  assert(rawSize >= PTHREAD_STACK_MIN);
+  assert(
+      0 < PTHREAD_STACK_MIN &&
+      rawSize >= static_cast<size_t>(PTHREAD_STACK_MIN));
 
   // glibc subtracts guard page from stack size, even though pthread docs
   // seem to imply the opposite
@@ -160,6 +183,10 @@ FOLLY_NOINLINE static uintptr_t getStackPtr() {
 }
 
 void MemoryIdler::unmapUnusedStack(size_t retain) {
+  if (!isUnmapUnusedStackAvailable()) {
+    return;
+  }
+
   if (tls_stackSize == 0) {
     fetchStackLimits();
   }

@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,8 +13,10 @@
 # limitations under the License.
 
 include(CheckCXXSourceCompiles)
+include(CheckCXXSymbolExists)
 include(CheckIncludeFileCXX)
 include(CheckFunctionExists)
+include(CMakePushCheckState)
 
 set(
   BOOST_LINK_STATIC "auto"
@@ -55,8 +57,8 @@ set(FOLLY_HAVE_LIBGFLAGS ${LIBGFLAGS_FOUND})
 if(LIBGFLAGS_FOUND)
   list(APPEND FOLLY_LINK_LIBRARIES ${LIBGFLAGS_LIBRARY})
   list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBGFLAGS_INCLUDE_DIR})
-  list(APPEND CMAKE_REQUIRED_LIBRARIES ${LIBGFLAGS_LIBRARY})
-  list(APPEND CMAKE_REQUIRED_INCLUDES ${LIBGFLAGS_INCLUDE_DIR})
+  set(FOLLY_LIBGFLAGS_LIBRARY ${LIBGFLAGS_LIBRARY})
+  set(FOLLY_LIBGFLAGS_INCLUDE ${LIBGFLAGS_INCLUDE_DIR})
 endif()
 
 find_package(Glog MODULE)
@@ -68,18 +70,23 @@ find_package(LibEvent MODULE REQUIRED)
 list(APPEND FOLLY_LINK_LIBRARIES ${LIBEVENT_LIB})
 list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBEVENT_INCLUDE_DIR})
 
-find_package(OpenSSL MODULE REQUIRED)
-list(APPEND FOLLY_LINK_LIBRARIES ${OPENSSL_LIBRARIES})
-list(APPEND FOLLY_INCLUDE_DIRECTORIES ${OPENSSL_INCLUDE_DIR})
-list(APPEND CMAKE_REQUIRED_LIBRARIES ${OPENSSL_LIBRARIES})
-list(APPEND CMAKE_REQUIRED_INCLUDES ${OPENSSL_INCLUDE_DIR})
-check_function_exists(ASN1_TIME_diff FOLLY_HAVE_OPENSSL_ASN1_TIME_DIFF)
-
 find_package(ZLIB MODULE)
 set(FOLLY_HAVE_LIBZ ${ZLIB_FOUND})
 if (ZLIB_FOUND)
   list(APPEND FOLLY_INCLUDE_DIRECTORIES ${ZLIB_INCLUDE_DIRS})
   list(APPEND FOLLY_LINK_LIBRARIES ${ZLIB_LIBRARIES})
+  list(APPEND CMAKE_REQUIRED_LIBRARIES ${ZLIB_LIBRARIES})
+endif()
+
+find_package(OpenSSL 1.1.1 MODULE REQUIRED)
+list(APPEND FOLLY_LINK_LIBRARIES ${OPENSSL_LIBRARIES})
+list(APPEND FOLLY_INCLUDE_DIRECTORIES ${OPENSSL_INCLUDE_DIR})
+list(APPEND CMAKE_REQUIRED_LIBRARIES ${OPENSSL_LIBRARIES})
+list(APPEND CMAKE_REQUIRED_INCLUDES ${OPENSSL_INCLUDE_DIR})
+list(REMOVE_ITEM CMAKE_REQUIRED_LIBRARIES ${OPENSSL_LIBRARIES})
+list(REMOVE_ITEM CMAKE_REQUIRED_INCLUDES ${OPENSSL_INCLUDE_DIR})
+if (ZLIB_FOUND)
+    list(REMOVE_ITEM CMAKE_REQUIRED_LIBRARIES ${ZLIB_LIBRARIES})
 endif()
 
 find_package(BZip2 MODULE)
@@ -145,25 +152,39 @@ if (PYTHON_EXTENSIONS)
   find_package(Cython 0.26 REQUIRED)
 endif ()
 
-set(FOLLY_USE_SYMBOLIZER OFF)
-CHECK_INCLUDE_FILE_CXX(elf.h FOLLY_HAVE_ELF_H)
-find_library(UNWIND_LIBRARIES NAMES unwind)
-if (UNWIND_LIBRARIES)
-  list(APPEND FOLLY_LINK_LIBRARIES ${UNWIND_LIBRARIES})
-  list(APPEND CMAKE_REQUIRED_LIBRARIES ${UNWIND_LIBRARIES})
+find_package(LibUnwind)
+list(APPEND FOLLY_LINK_LIBRARIES ${LIBUNWIND_LIBRARIES})
+list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBUNWIND_INCLUDE_DIRS})
+if (LIBUNWIND_FOUND)
+  set(FOLLY_HAVE_LIBUNWIND ON)
 endif()
+if (CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
+  list(APPEND FOLLY_LINK_LIBRARIES "execinfo")
+endif ()
+
+cmake_push_check_state()
+set(CMAKE_REQUIRED_DEFINITIONS -D_XOPEN_SOURCE)
+check_cxx_symbol_exists(swapcontext ucontext.h FOLLY_HAVE_SWAPCONTEXT)
+cmake_pop_check_state()
+
+set(FOLLY_USE_SYMBOLIZER OFF)
+CHECK_INCLUDE_FILE_CXX(elf.h FOLLY_HAVE_ELF)
 find_package(Backtrace)
+
 set(FOLLY_HAVE_BACKTRACE ${Backtrace_FOUND})
-if (FOLLY_HAVE_ELF_H AND FOLLY_HAVE_BACKTRACE AND LIBDWARF_FOUND)
+set(FOLLY_HAVE_DWARF ${LIBDWARF_FOUND})
+if (NOT WIN32 AND NOT APPLE)
   set(FOLLY_USE_SYMBOLIZER ON)
 endif()
 message(STATUS "Setting FOLLY_USE_SYMBOLIZER: ${FOLLY_USE_SYMBOLIZER}")
+message(STATUS "Setting FOLLY_HAVE_ELF: ${FOLLY_HAVE_ELF}")
+message(STATUS "Setting FOLLY_HAVE_DWARF: ${FOLLY_HAVE_DWARF}")
 
 # Using clang with libstdc++ requires explicitly linking against libatomic
 check_cxx_source_compiles("
   #include <atomic>
   int main(int argc, char** argv) {
-    struct Test { int val; };
+    struct Test { bool val; };
     std::atomic<Test> s;
     return static_cast<int>(s.is_lock_free());
   }"
@@ -175,7 +196,7 @@ if(NOT FOLLY_CPP_ATOMIC_BUILTIN)
   check_cxx_source_compiles("
     #include <atomic>
     int main(int argc, char** argv) {
-      struct Test { int val; };
+      struct Test { bool val; };
       std::atomic<Test> s2;
       return static_cast<int>(s2.is_lock_free());
     }"
@@ -189,11 +210,67 @@ if(NOT FOLLY_CPP_ATOMIC_BUILTIN)
   endif()
 endif()
 
+check_cxx_source_compiles("
+  #include <type_traits>
+  #if _GLIBCXX_RELEASE
+  int main() {}
+  #endif"
+  FOLLY_STDLIB_LIBSTDCXX
+)
+check_cxx_source_compiles("
+  #include <type_traits>
+  #if _GLIBCXX_RELEASE >= 9
+  int main() {}
+  #endif"
+  FOLLY_STDLIB_LIBSTDCXX_GE_9
+)
+check_cxx_source_compiles("
+  #include <type_traits>
+  #if _LIBCPP_VERSION
+  int main() {}
+  #endif"
+  FOLLY_STDLIB_LIBCXX
+)
+check_cxx_source_compiles("
+  #include <type_traits>
+  #if _LIBCPP_VERSION >= 9000
+  int main() {}
+  #endif"
+  FOLLY_STDLIB_LIBCXX_GE_9
+)
+check_cxx_source_compiles("
+  #include <type_traits>
+  #if _CPPLIB_VER
+  int main() {}
+  #endif"
+  FOLLY_STDLIB_LIBCPP
+)
+
+if (APPLE)
+  list (APPEND CMAKE_REQUIRED_LIBRARIES c++abi)
+  list (APPEND FOLLY_LINK_LIBRARIES c++abi)
+endif ()
+
+if (FOLLY_STDLIB_LIBSTDCXX AND NOT FOLLY_STDLIB_LIBSTDCXX_GE_9)
+  list (APPEND CMAKE_REQUIRED_LIBRARIES stdc++fs)
+  list (APPEND FOLLY_LINK_LIBRARIES stdc++fs)
+endif()
+if (FOLLY_STDLIB_LIBCXX AND NOT FOLLY_STDLIB_LIBCXX_GE_9)
+  list (APPEND CMAKE_REQUIRED_LIBRARIES c++fs)
+  list (APPEND FOLLY_LINK_LIBRARIES c++fs)
+endif ()
+
 option(
   FOLLY_LIBRARY_SANITIZE_ADDRESS
   "Build folly with Address Sanitizer enabled."
   OFF
 )
+
+if ($ENV{WITH_ASAN})
+  message(STATUS "ENV WITH_ASAN is set")
+  set (FOLLY_LIBRARY_SANITIZE_ADDRESS ON)
+endif()
+
 if (FOLLY_LIBRARY_SANITIZE_ADDRESS)
   if ("${CMAKE_CXX_COMPILER_ID}" MATCHES GNU)
     set(FOLLY_LIBRARY_SANITIZE_ADDRESS ON)
@@ -224,7 +301,7 @@ add_library(folly_deps INTERFACE)
 find_package(fmt CONFIG)
 if (NOT DEFINED fmt_CONFIG)
     # Fallback on a normal search on the current system
-    find_package(fmt MODULE REQUIRED)
+    find_package(Fmt MODULE REQUIRED)
 endif()
 target_link_libraries(folly_deps INTERFACE fmt::fmt)
 
@@ -235,4 +312,3 @@ target_link_libraries(folly_deps INTERFACE
   ${FOLLY_SHINY_DEPENDENCIES}
   ${FOLLY_ASAN_FLAGS}
 )
-

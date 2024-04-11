@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -89,16 +89,15 @@ namespace detail {
 using folly::toAppend;
 
 template <typename Arg>
-auto appendObjectToString(std::string& str, const Arg* arg, int) -> decltype(
-    toAppend(std::declval<Arg>(), std::declval<std::string*>()),
-    std::declval<void>()) {
-  ::folly::catch_exception<const std::exception&>(
+auto appendObjectToString(std::string& str, const Arg* arg, int)
+    -> decltype(toAppend(std::declval<Arg>(), std::declval<std::string*>()), std::declval<void>()) {
+  ::folly::catch_exception(
       [&] { toAppend(*arg, &str); },
-      [&](const std::exception&) {
-        // If anything goes wrong in `toAppend()` fall back to
-        // appendRawObjectInfo()
-        ::folly::logging::appendRawObjectInfo(str, arg);
-      });
+      // If anything goes wrong in `toAppend()` fall back to
+      // appendRawObjectInfo()
+      ::folly::logging::appendRawObjectInfo<Arg>,
+      str,
+      arg);
 }
 
 template <typename Arg>
@@ -132,13 +131,17 @@ void appendToString(std::string& result, const Arg& arg) {
  */
 template <typename Arg1, typename... Args>
 void appendToString(
-    std::string& result,
-    const Arg1& arg1,
-    const Args&... remainder) {
+    std::string& result, const Arg1& arg1, const Args&... remainder) {
   ::folly::logging::detail::appendObjectToString(result, &arg1, 0);
   result.append(", ");
   ::folly::logging::appendToString(result, remainder...);
 }
+
+/**
+ * Overload when there are no objects to append.
+ */
+template <typename Arg = void>
+void appendToString(std::string& /*result*/) {}
 
 } // namespace logging
 } // namespace folly

@@ -13,17 +13,24 @@ builder = nop
 [build]
 builder = cmake
 subdir = .
+job_weight_mib = 3072
 
-[cmake.defines]
-BUILD_QUIC=ON
-BUILD_TESTS=OFF
+[cmake.defines.test=on]
+BUILD_TESTS = ON
+
+[cmake.defines.test=off]
+BUILD_TESTS = OFF
 
 [dependencies]
+zlib
 gperf
 folly
 fizz
 wangle
 mvfst
+
+[dependencies.test=on]
+googletest
 
 [shipit.pathmap]
 fbcode/proxygen/public_tld = .

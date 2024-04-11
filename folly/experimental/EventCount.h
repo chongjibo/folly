@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -141,7 +141,7 @@ inline void EventCount::notifyAll() noexcept {
 
 inline void EventCount::doNotify(int n) noexcept {
   uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_acq_rel);
-  if (UNLIKELY(prev & kWaiterMask)) {
+  if (FOLLY_UNLIKELY(prev & kWaiterMask)) {
     detail::futexWake(
         reinterpret_cast<detail::Futex<std::atomic>*>(&val_) + kEpochOffset, n);
   }

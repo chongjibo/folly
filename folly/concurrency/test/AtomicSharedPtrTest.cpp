@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,20 @@
 
 // AtomicSharedPtr-detail.h only works with libstdc++, so skip these tests for
 // other vendors
-#ifdef FOLLY_USE_LIBSTDCPP
+// PackedSyncPtr requires x64, ppc64 or aarch64, skip these tests for
+// other arches
+#include <folly/Portability.h>
+#include <folly/portability/Config.h>
+#if defined(__GLIBCXX__) && (FOLLY_X64 || FOLLY_PPC64 || FOLLY_AARCH64)
+
+#include <folly/concurrency/test/AtomicSharedPtrCounted.h>
 
 #include <atomic>
 #include <memory>
 #include <thread>
 
 #include <folly/concurrency/AtomicSharedPtr.h>
-#include <folly/concurrency/test/AtomicSharedPtrCounted.h>
+#include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
 
 #include <folly/test/DeterministicSchedule.h>
@@ -40,12 +46,8 @@ DEFINE_int64(seed, 0, "Seed for random number generators");
 DEFINE_int32(num_threads, 32, "Number of threads");
 
 struct foo {
-  foo() {
-    c_count++;
-  }
-  ~foo() {
-    d_count++;
-  }
+  foo() { c_count++; }
+  ~foo() { d_count++; }
 };
 
 TEST(AtomicSharedPtr, operators) {
@@ -124,6 +126,7 @@ TEST(AtomicSharedPtr, ConstTest) {
 
   atomic_shared_ptr<const foo> catom;
 }
+
 TEST(AtomicSharedPtr, AliasingConstructorTest) {
   c_count = 0;
   d_count = 0;
@@ -148,6 +151,21 @@ TEST(AtomicSharedPtr, AliasingConstructorTest) {
   delete b;
   EXPECT_EQ(2, c_count);
   EXPECT_EQ(2, d_count);
+}
+
+TEST(AtomicSharedPtr, AliasingWithNoControlBlockConstructorTest) {
+  long value = 0;
+  atomic_shared_ptr<long> ptr{shared_ptr<long>{shared_ptr<long>{}, &value}};
+  EXPECT_EQ(ptr.load().get(), &value);
+}
+
+TEST(AtomicSharedPtr, AliasingWithNullptrConstructorTest) {
+  atomic_shared_ptr<foo> ptr{shared_ptr<foo>{std::make_shared<foo>(), nullptr}};
+  EXPECT_EQ(ptr.load().get(), nullptr);
+  // Verify that atomic_shared_ptr is holding the underlying object.
+  EXPECT_EQ(d_count, 0);
+  ptr.store({});
+  EXPECT_EQ(d_count, 1);
 }
 
 TEST(AtomicSharedPtr, MaxPtrs) {
@@ -187,4 +205,53 @@ TEST(AtomicSharedPtr, DeterministicTest) {
     DSched::join(t);
   }
 }
-#endif // #ifdef FOLLY_USE_LIBSTDCPP
+
+TEST(AtomicSharedPtr, StressTest) {
+  constexpr size_t kExternalOffset = 0x2000;
+
+  atomic_shared_ptr<bool> ptr;
+  std::atomic<size_t> num_loads = 0;
+  std::atomic<size_t> num_stores = 0;
+
+  // DeterministicSchedule is too slow for the number of iterations required
+  // here, and we need a test that exercises the native atomics.
+  std::vector<std::thread> threads;
+  for (int tid = 0; tid < FLAGS_num_threads; ++tid) {
+    threads.emplace_back([&] {
+      shared_ptr<bool> v;
+      for (size_t i = 0; i < 16 * kExternalOffset; ++i) {
+        // Each time we've gone through a few local -> global batches, replace
+        // the pointer to contend with other load()s. This also does the first
+        // initialization, and a few threads may see nullptr for a while.
+        if (num_loads++ % (kExternalOffset * 2) == 0) {
+          auto newv = std::make_shared<bool>();
+          // Alternate between store and CAS.
+          if (num_stores++ % 2 == 0) {
+            ptr.store(std::move(newv), std::memory_order_release);
+          } else {
+            v = ptr.load(std::memory_order_relaxed);
+            ptr.compare_exchange_strong(
+                v,
+                std::move(newv),
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed);
+          }
+        }
+        // Increments the local count and decrements the external one,
+        // eventually forcing a batch transfer.
+        v = ptr.load(std::memory_order_acquire);
+      }
+    });
+  }
+  for (auto& t : threads) {
+    t.join();
+  }
+}
+
+TEST(AtomicSharedPtr, Leak) {
+  static auto& ptr = *new atomic_shared_ptr<int>();
+  ptr.store(std::make_shared<int>(3), std::memory_order_relaxed);
+  EXPECT_EQ(3, *ptr.load(std::memory_order_relaxed));
+}
+
+#endif // defined(__GLIBCXX__)

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,16 +18,15 @@
 
 #include <folly/Exception.h>
 #include <folly/FileUtil.h>
-#include <folly/detail/AtFork.h>
+#include <folly/Portability.h>
 #include <folly/logging/LoggerDB.h>
+#include <folly/system/AtFork.h>
 #include <folly/system/ThreadName.h>
 
 namespace folly {
 
-constexpr size_t AsyncLogWriter::kDefaultMaxBufferSize;
-
 AsyncLogWriter::AsyncLogWriter() {
-  folly::detail::AtFork::registerHandler(
+  folly::AtFork::registerHandler(
       this,
       [this] { return preFork(); },
       [this] { postForkParent(); },
@@ -58,7 +57,20 @@ AsyncLogWriter::~AsyncLogWriter() {
   // Unregister the atfork handler after stopping the I/O thread.
   // preFork(), postForkParent(), and postForkChild() calls can run
   // concurrently with the destructor until unregisterHandler() returns.
-  folly::detail::AtFork::unregisterHandler(this);
+  folly::AtFork::unregisterHandler(this);
+}
+
+FOLLY_CONSTINIT std::atomic<AsyncLogWriter::DiscardCallback>
+    AsyncLogWriter::discardCallback_{};
+
+void AsyncLogWriter::setDiscardCallback(DiscardCallback callback) {
+  discardCallback_.store(callback, std::memory_order_relaxed);
+}
+
+void AsyncLogWriter::invokeDiscardCallback(size_t numDiscarded) {
+  if (auto cb = discardCallback_.load(std::memory_order_relaxed)) {
+    (*cb)(numDiscarded);
+  }
 }
 
 void AsyncLogWriter::cleanup() {
@@ -74,6 +86,9 @@ void AsyncLogWriter::cleanup() {
     // remaining messages to write them below.
     ioQueue = data->getCurrentQueue();
     numDiscarded = data->numDiscarded;
+  }
+  if (numDiscarded > 0) {
+    invokeDiscardCallback(numDiscarded);
   }
 
   // If there are still any pending messages, flush them now.
@@ -117,7 +132,7 @@ void AsyncLogWriter::flush() {
     messageReady_.notify_one();
 
     // Wait for notification from the I/O thread that it has done work.
-    ioCV_.wait(data.getUniqueLock());
+    ioCV_.wait(data.as_lock());
   }
 }
 
@@ -145,7 +160,7 @@ void AsyncLogWriter::ioThread() {
       ioQueue = data->getCurrentQueue();
       while (ioQueue->empty() && !(data->flags & FLAG_STOP)) {
         // Wait for a message or one of the above flags to be set.
-        messageReady_.wait(data.getUniqueLock());
+        messageReady_.wait(data.as_lock());
       }
 
       if (data->flags & FLAG_STOP) {
@@ -170,6 +185,10 @@ void AsyncLogWriter::ioThread() {
 
     // Write the log messages now that we have released the lock
     performIO(*ioQueue, numDiscarded);
+
+    if (numDiscarded > 0) {
+      invokeDiscardCallback(numDiscarded);
+    }
 
     // clear() empties the vector, but the allocated capacity remains so we can
     // just reuse it without having to re-allocate in most cases.
@@ -219,7 +238,7 @@ void AsyncLogWriter::stopIoThread(
     uint32_t extraFlags) {
   data->flags |= (FLAG_STOP | extraFlags);
   messageReady_.notify_one();
-  ioCV_.wait(data.getUniqueLock(), [&] {
+  ioCV_.wait(data.as_lock(), [&] {
     return bool(data->flags & FLAG_IO_THREAD_STOPPED);
   });
 

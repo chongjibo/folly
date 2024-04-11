@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/io/async/HHWheelTimer.h>
+
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/test/UndelayedDestruction.h>
 #include <folly/io/async/test/Util.h>
@@ -90,6 +91,46 @@ TEST_F(HHWheelTimerTest, FireOnce) {
   T_CHECK_TIMEOUT(start, t2.timestamps[0], milliseconds(5));
   T_CHECK_TIMEOUT(start, t3.timestamps[0], milliseconds(10));
   T_CHECK_TIMEOUT(start, end, milliseconds(10));
+}
+
+TEST_F(HHWheelTimerTest, NoRequestContextLeak) {
+  StackWheelTimer t(&eventBase, milliseconds(1));
+  std::set<int> destructed;
+
+  class TestData : public RequestData {
+   public:
+    TestData(int data, std::set<int>& destructed)
+        : data_(data), destructed_(destructed) {}
+    ~TestData() override { destructed_.insert(data_); }
+
+    bool hasCallback() override { return false; }
+
+   private:
+    int data_;
+    std::set<int>& destructed_;
+  };
+
+  folly::Optional<TestTimeout> t1 = TestTimeout{};
+  folly::Optional<TestTimeout> t2 = TestTimeout{};
+
+  {
+    RequestContextScopeGuard g;
+    RequestContext::get()->setContextData(
+        "k", std::make_unique<TestData>(1, destructed));
+    t.scheduleTimeout(&*t1, milliseconds(5));
+  }
+
+  {
+    RequestContextScopeGuard g;
+    RequestContext::get()->setContextData(
+        "k", std::make_unique<TestData>(2, destructed));
+    t.scheduleTimeout(&*t2, milliseconds(5));
+  }
+
+  EXPECT_EQ(0, destructed.size());
+  t1.reset();
+  EXPECT_EQ(1, destructed.count(1));
+  EXPECT_EQ(0, destructed.count(2));
 }
 
 /*
@@ -516,4 +557,58 @@ TEST_F(HHWheelTimerTest, NegativeTimeout) {
   TimePoint end;
   ASSERT_EQ(tt2.timestamps.size(), 1);
   T_CHECK_TIMEOUT(start, end, milliseconds(1));
+}
+
+TEST(HHWheelTimerDetailsTest, Divider) {
+  auto no_overflow_add = [](uint64_t& base, int offset) -> bool {
+    if (offset >= 0 || static_cast<unsigned int>(-offset) < base) {
+      base += offset;
+      return true;
+    }
+    return false;
+  };
+
+  for (uint64_t denShift = 1; denShift <= 60; denShift++) {
+    for (int denOffset = -10; denOffset <= 10; denOffset++) {
+      uint64_t den = uint64_t(1) << denShift;
+
+      if (!no_overflow_add(den, denOffset)) {
+        continue;
+      }
+
+      folly::detail::HHWheelTimerDurationInterval<
+          std::chrono::milliseconds>::Divider divider{den};
+      for (uint64_t numShift = 3; numShift <= 58; numShift++) {
+        for (int numOffset = -10; numOffset <= 10; numOffset++) {
+          uint64_t num = (1LLU << numShift);
+          if (!no_overflow_add(num, numOffset)) {
+            continue;
+          }
+          int allowedError = 0;
+          if (numShift >= 32 || denShift >= 32) {
+            allowedError = 1;
+          }
+          auto expected = num / den;
+          auto calc = divider.divide(num);
+
+          // either it is accurate or the result is overstated by allowedError
+          EXPECT_TRUE(
+              expected == calc ||
+              (calc >= expected && calc <= expected + allowedError))
+              << "expected=" << expected << " calc=" << calc
+              << " allowedError=" << allowedError << ": " << num << "/" << den
+              << " ns=" << numShift << " + " << numOffset << " ds=" << denShift
+              << " + " << denOffset;
+        }
+      }
+    }
+  }
+
+  for (uint64_t den = 1; den <= 10000; den++) {
+    folly::detail::HHWheelTimerDurationInterval<
+        std::chrono::milliseconds>::Divider divider{den};
+    for (uint64_t num = 0; num <= 10000; num++) {
+      EXPECT_EQ(num / den, divider.divide(num)) << num << "/" << den;
+    }
+  }
 }

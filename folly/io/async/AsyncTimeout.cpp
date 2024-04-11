@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,19 @@
  */
 
 #include <folly/io/async/AsyncTimeout.h>
-#include <folly/io/async/EventBase.h>
-#include <folly/io/async/EventUtil.h>
-#include <folly/io/async/Request.h>
-#include <folly/net/NetworkSocket.h>
+
+#include <cassert>
 
 #include <glog/logging.h>
-#include <cassert>
+
+#include <folly/io/async/EventBase.h>
+#include <folly/io/async/EventUtil.h>
+#include <folly/net/NetworkSocket.h>
 
 namespace folly {
 
-AsyncTimeout::AsyncTimeout(TimeoutManager* timeoutManager)
+AsyncTimeout::AsyncTimeout(
+    TimeoutManager* timeoutManager, InternalEnum internal)
     : timeoutManager_(timeoutManager) {
   event_.eb_event_set(
       NetworkSocket::invalid_handle_value,
@@ -33,75 +35,47 @@ AsyncTimeout::AsyncTimeout(TimeoutManager* timeoutManager)
       &AsyncTimeout::libeventCallback,
       this);
   event_.eb_ev_base(nullptr);
-  timeoutManager_->attachTimeoutManager(
-      this, TimeoutManager::InternalEnum::NORMAL);
-}
-
-AsyncTimeout::AsyncTimeout(EventBase* eventBase) : timeoutManager_(eventBase) {
-  event_.eb_event_set(
-      NetworkSocket::invalid_handle_value,
-      EV_TIMEOUT,
-      &AsyncTimeout::libeventCallback,
-      this);
-  event_.eb_ev_base(nullptr);
-  if (eventBase) {
-    timeoutManager_->attachTimeoutManager(
-        this, TimeoutManager::InternalEnum::NORMAL);
+  if (timeoutManager) {
+    timeoutManager_->attachTimeoutManager(this, internal);
   }
 }
 
-AsyncTimeout::AsyncTimeout(
-    TimeoutManager* timeoutManager,
-    InternalEnum internal)
-    : timeoutManager_(timeoutManager) {
-  event_.eb_event_set(
-      NetworkSocket::invalid_handle_value,
-      EV_TIMEOUT,
-      &AsyncTimeout::libeventCallback,
-      this);
-  event_.eb_ev_base(nullptr);
-  timeoutManager_->attachTimeoutManager(this, internal);
-}
+AsyncTimeout::AsyncTimeout(TimeoutManager* timeoutManager)
+    : AsyncTimeout(timeoutManager, TimeoutManager::InternalEnum::NORMAL) {}
+
+AsyncTimeout::AsyncTimeout(EventBase* eventBase)
+    : AsyncTimeout(eventBase, TimeoutManager::InternalEnum::NORMAL) {}
 
 AsyncTimeout::AsyncTimeout(EventBase* eventBase, InternalEnum internal)
-    : timeoutManager_(eventBase) {
-  event_.eb_event_set(
-      NetworkSocket::invalid_handle_value,
-      EV_TIMEOUT,
-      &AsyncTimeout::libeventCallback,
-      this);
-  event_.eb_ev_base(nullptr);
-  timeoutManager_->attachTimeoutManager(this, internal);
-}
+    : AsyncTimeout(static_cast<TimeoutManager*>(eventBase), internal) {}
 
-AsyncTimeout::AsyncTimeout() : timeoutManager_(nullptr) {
-  event_.eb_event_set(
-      NetworkSocket::invalid_handle_value,
-      EV_TIMEOUT,
-      &AsyncTimeout::libeventCallback,
-      this);
-  event_.eb_ev_base(nullptr);
-}
+AsyncTimeout::AsyncTimeout()
+    : AsyncTimeout(static_cast<TimeoutManager*>(nullptr)) {}
 
 AsyncTimeout::~AsyncTimeout() {
   cancelTimeout();
 }
 
-bool AsyncTimeout::scheduleTimeout(TimeoutManager::timeout_type timeout) {
+bool AsyncTimeout::scheduleTimeout(
+    TimeoutManager::timeout_type timeout,
+    std::shared_ptr<RequestContext>&& rctx) {
   assert(timeoutManager_ != nullptr);
-  context_ = RequestContext::saveContext();
+  context_ = std::move(rctx);
   return timeoutManager_->scheduleTimeout(this, timeout);
 }
 
 bool AsyncTimeout::scheduleTimeoutHighRes(
-    TimeoutManager::timeout_type_high_res timeout) {
+    TimeoutManager::timeout_type_high_res timeout,
+    std::shared_ptr<RequestContext>&& rctx) {
   assert(timeoutManager_ != nullptr);
-  context_ = RequestContext::saveContext();
+  context_ = std::move(rctx);
   return timeoutManager_->scheduleTimeoutHighRes(this, timeout);
 }
 
-bool AsyncTimeout::scheduleTimeout(uint32_t milliseconds) {
-  return scheduleTimeout(TimeoutManager::timeout_type(milliseconds));
+bool AsyncTimeout::scheduleTimeout(
+    uint32_t milliseconds, std::shared_ptr<RequestContext>&& rctx) {
+  return scheduleTimeout(
+      TimeoutManager::timeout_type(milliseconds), std::move(rctx));
 }
 
 void AsyncTimeout::cancelTimeout() {
@@ -116,8 +90,7 @@ bool AsyncTimeout::isScheduled() const {
 }
 
 void AsyncTimeout::attachTimeoutManager(
-    TimeoutManager* timeoutManager,
-    InternalEnum internal) {
+    TimeoutManager* timeoutManager, InternalEnum internal) {
   // This also implies no timeout is scheduled.
   assert(timeoutManager_ == nullptr);
   assert(timeoutManager->isInTimeoutManagerThread());
@@ -127,8 +100,7 @@ void AsyncTimeout::attachTimeoutManager(
 }
 
 void AsyncTimeout::attachEventBase(
-    EventBase* eventBase,
-    InternalEnum internal) {
+    EventBase* eventBase, InternalEnum internal) {
   attachTimeoutManager(eventBase, internal);
 }
 

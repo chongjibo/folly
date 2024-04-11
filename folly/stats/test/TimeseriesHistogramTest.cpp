@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -102,7 +102,7 @@ TEST(TimeseriesHistogram, Percentile) {
     EXPECT_EQ(110, h.getPercentileBucketMin(99, IntMTMHTS::ALLTIME));
 
     EXPECT_EQ(-2, h.getPercentileEstimate(0, IntMTMHTS::ALLTIME));
-    EXPECT_EQ(-1, h.getPercentileEstimate(1, IntMTMHTS::ALLTIME));
+    EXPECT_EQ(0, h.getPercentileEstimate(2, IntMTMHTS::ALLTIME));
     EXPECT_EQ(119, h.getPercentileEstimate(99, IntMTMHTS::ALLTIME));
     EXPECT_EQ(120, h.getPercentileEstimate(100, IntMTMHTS::ALLTIME));
   }
@@ -530,48 +530,5 @@ TEST(TimeseriesHistogram, QueryByInterval) {
     size_t estimatedCount = mhts.count(itv.start, itv.end);
     EXPECT_GE(actualCount, estimatedCount);
     EXPECT_LE(actualCount - tolerance, estimatedCount);
-  }
-}
-
-TEST(TimeseriesHistogram, SingleUniqueValue) {
-  int values[] = {-1, 0, 500, 1000, 1500};
-  for (int ii = 0; ii < 5; ++ii) {
-    int value = values[ii];
-    TimeseriesHistogram<int> h(
-        10,
-        0,
-        1000,
-        MultiLevelTimeSeries<int>(
-            60, IntMTMHTS::NUM_LEVELS, IntMTMHTS::kDurations));
-
-    const int kNumIters = 1000;
-    for (int jj = 0; jj < kNumIters; ++jj) {
-      h.addValue(mkTimePoint(1), value);
-    }
-    h.update(mkTimePoint(1));
-    // since we've only added one unique value, all percentiles should
-    // be that value
-    EXPECT_EQ(h.getPercentileEstimate(10, 0), value);
-    EXPECT_EQ(h.getPercentileEstimate(50, 0), value);
-    EXPECT_EQ(h.getPercentileEstimate(99, 0), value);
-
-    // Things get trickier if there are multiple unique values.
-    const int kNewValue = 750;
-    for (int kk = 0; kk < 2 * kNumIters; ++kk) {
-      h.addValue(mkTimePoint(1), kNewValue);
-    }
-    h.update(mkTimePoint(1));
-    EXPECT_NEAR(h.getPercentileEstimate(50, 0), kNewValue + 5, 5);
-    if (value >= 0 && value <= 1000) {
-      // only do further testing if value is within our bucket range,
-      // else estimates can be wildly off
-      if (kNewValue > value) {
-        EXPECT_NEAR(h.getPercentileEstimate(10, 0), value + 5, 5);
-        EXPECT_NEAR(h.getPercentileEstimate(99, 0), kNewValue + 5, 5);
-      } else {
-        EXPECT_NEAR(h.getPercentileEstimate(10, 0), kNewValue + 5, 5);
-        EXPECT_NEAR(h.getPercentileEstimate(99, 0), value + 5, 5);
-      }
-    }
   }
 }

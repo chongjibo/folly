@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,9 @@
 #include <functional>
 #include <string>
 
-#include <folly/synchronization/RWSpinLock.h>
-
 #include <folly/io/async/AsyncServerSocket.h>
 #include <folly/io/async/AsyncSocket.h>
+#include <folly/synchronization/RWSpinLock.h>
 
 namespace folly {
 namespace test {
@@ -39,88 +38,89 @@ class TestConnectionEventCallback
   void onConnectionAccepted(
       const NetworkSocket /* socket */,
       const SocketAddress& /* addr */) noexcept override {
-    folly::RWSpinLock::WriteHolder holder(spinLock_);
+    std::unique_lock holder(spinLock_);
     connectionAccepted_++;
   }
 
   void onConnectionAcceptError(const int /* err */) noexcept override {
-    folly::RWSpinLock::WriteHolder holder(spinLock_);
+    std::unique_lock holder(spinLock_);
     connectionAcceptedError_++;
   }
 
   void onConnectionDropped(
       const NetworkSocket /* socket */,
-      const SocketAddress& /* addr */) noexcept override {
-    folly::RWSpinLock::WriteHolder holder(spinLock_);
+      const SocketAddress& /* addr */,
+      const std::string& /* errorMsg */) noexcept override {
+    std::unique_lock holder(spinLock_);
     connectionDropped_++;
   }
 
   void onConnectionEnqueuedForAcceptorCallback(
       const NetworkSocket /* socket */,
       const SocketAddress& /* addr */) noexcept override {
-    folly::RWSpinLock::WriteHolder holder(spinLock_);
+    std::unique_lock holder(spinLock_);
     connectionEnqueuedForAcceptCallback_++;
   }
 
   void onConnectionDequeuedByAcceptorCallback(
       const NetworkSocket /* socket */,
       const SocketAddress& /* addr */) noexcept override {
-    folly::RWSpinLock::WriteHolder holder(spinLock_);
+    std::unique_lock holder(spinLock_);
     connectionDequeuedByAcceptCallback_++;
   }
 
   void onBackoffStarted() noexcept override {
-    folly::RWSpinLock::WriteHolder holder(spinLock_);
+    std::unique_lock holder(spinLock_);
     backoffStarted_++;
   }
 
   void onBackoffEnded() noexcept override {
-    folly::RWSpinLock::WriteHolder holder(spinLock_);
+    std::unique_lock holder(spinLock_);
     backoffEnded_++;
   }
 
   void onBackoffError() noexcept override {
-    folly::RWSpinLock::WriteHolder holder(spinLock_);
+    std::unique_lock holder(spinLock_);
     backoffError_++;
   }
 
   unsigned int getConnectionAccepted() const {
-    folly::RWSpinLock::ReadHolder holder(spinLock_);
+    std::shared_lock holder(spinLock_);
     return connectionAccepted_;
   }
 
   unsigned int getConnectionAcceptedError() const {
-    folly::RWSpinLock::ReadHolder holder(spinLock_);
+    std::shared_lock holder(spinLock_);
     return connectionAcceptedError_;
   }
 
   unsigned int getConnectionDropped() const {
-    folly::RWSpinLock::ReadHolder holder(spinLock_);
+    std::shared_lock holder(spinLock_);
     return connectionDropped_;
   }
 
   unsigned int getConnectionEnqueuedForAcceptCallback() const {
-    folly::RWSpinLock::ReadHolder holder(spinLock_);
+    std::shared_lock holder(spinLock_);
     return connectionEnqueuedForAcceptCallback_;
   }
 
   unsigned int getConnectionDequeuedByAcceptCallback() const {
-    folly::RWSpinLock::ReadHolder holder(spinLock_);
+    std::shared_lock holder(spinLock_);
     return connectionDequeuedByAcceptCallback_;
   }
 
   unsigned int getBackoffStarted() const {
-    folly::RWSpinLock::ReadHolder holder(spinLock_);
+    std::shared_lock holder(spinLock_);
     return backoffStarted_;
   }
 
   unsigned int getBackoffEnded() const {
-    folly::RWSpinLock::ReadHolder holder(spinLock_);
+    std::shared_lock holder(spinLock_);
     return backoffEnded_;
   }
 
   unsigned int getBackoffError() const {
-    folly::RWSpinLock::ReadHolder holder(spinLock_);
+    std::shared_lock holder(spinLock_);
     return backoffError_;
   }
 
@@ -164,9 +164,7 @@ class TestAcceptCallback : public AsyncServerSocket::AcceptCallback {
         acceptStoppedFn_(),
         events_() {}
 
-  std::deque<EventInfo>* getEvents() {
-    return &events_;
-  }
+  std::deque<EventInfo>* getEvents() { return &events_; }
 
   void setConnectionAcceptedFn(
       const std::function<void(NetworkSocket, const folly::SocketAddress&)>&
@@ -185,18 +183,19 @@ class TestAcceptCallback : public AsyncServerSocket::AcceptCallback {
 
   void connectionAccepted(
       NetworkSocket fd,
-      const folly::SocketAddress& clientAddr) noexcept override {
+      const folly::SocketAddress& clientAddr,
+      AcceptInfo /* info */) noexcept override {
     events_.emplace_back(fd, clientAddr);
 
     if (connectionAcceptedFn_) {
       connectionAcceptedFn_(fd, clientAddr);
     }
   }
-  void acceptError(const std::exception& ex) noexcept override {
-    events_.emplace_back(ex.what());
+  void acceptError(folly::exception_wrapper ex) noexcept override {
+    events_.emplace_back(ex.what().toStdString());
 
     if (acceptErrorFn_) {
-      acceptErrorFn_(ex);
+      acceptErrorFn_(*ex.get_exception());
     }
   }
   void acceptStarted() noexcept override {

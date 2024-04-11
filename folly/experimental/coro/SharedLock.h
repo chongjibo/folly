@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,9 @@
 #include <glog/logging.h>
 
 #include <folly/Portability.h>
+#include <folly/experimental/coro/Coroutine.h>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace coro {
@@ -73,22 +76,16 @@ class FOLLY_NODISCARD SharedLock {
     return *this;
   }
 
-  Mutex* mutex() const noexcept {
-    return mutex_;
-  }
+  Mutex* mutex() const noexcept { return mutex_; }
 
   Mutex* release() noexcept {
     locked_ = false;
     return std::exchange(mutex_, nullptr);
   }
 
-  bool owns_lock() const noexcept {
-    return locked_;
-  }
+  bool owns_lock() const noexcept { return locked_; }
 
-  explicit operator bool() const noexcept {
-    return owns_lock();
-  }
+  explicit operator bool() const noexcept { return owns_lock(); }
 
   bool try_lock() noexcept(noexcept(mutex_->try_lock_shared())) {
     DCHECK(!locked_);
@@ -115,3 +112,5 @@ class FOLLY_NODISCARD SharedLock {
 
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

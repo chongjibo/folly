@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,16 +31,11 @@ namespace {
 class StringAppender {
  public:
   /* implicit */ StringAppender(std::string& s) : s_(s) {}
-  void operator()(StringPiece sp) {
-    s_.append(sp.data(), sp.size());
-  }
+  void operator()(StringPiece sp) { s_.append(sp.data(), sp.size()); }
 
  private:
   std::string& s_;
 };
-
-typedef GroupVarintEncoder<uint32_t, StringAppender> GroupVarint32Encoder;
-typedef GroupVarintEncoder<uint64_t, StringAppender> GroupVarint64Encoder;
 
 // Expected bytes follow, terminate with -1
 void testGroupVarint32(uint32_t a, uint32_t b, uint32_t c, uint32_t d, ...) {
@@ -83,12 +78,7 @@ void testGroupVarint32(uint32_t a, uint32_t b, uint32_t c, uint32_t d, ...) {
 }
 
 void testGroupVarint64(
-    uint64_t a,
-    uint64_t b,
-    uint64_t c,
-    uint64_t d,
-    uint64_t e,
-    ...) {
+    uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, ...) {
   va_list ap;
   va_start(ap, e);
   std::vector<char> expectedBytes;
@@ -178,6 +168,7 @@ TEST(GroupVarint, GroupVarint64) {
 }
 
 TEST(GroupVarint, GroupVarintEncoder) {
+  using GroupVarint32Encoder = GroupVarintEncoder<uint32_t, StringAppender>;
   std::string s;
   {
     GroupVarint32Encoder gv(s);

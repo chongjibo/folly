@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,12 +46,8 @@ struct LoggingAlloc {
     std::allocator<T>{}.deallocate(ptr, n);
   }
 
-  bool operator==(LoggingAlloc<T> const&) const {
-    return true;
-  }
-  bool operator!=(LoggingAlloc<T> const&) const {
-    return false;
-  }
+  bool operator==(LoggingAlloc<T> const&) const { return true; }
+  bool operator!=(LoggingAlloc<T> const&) const { return false; }
 
   // Everything below here is optional when properly using
   // allocator_traits, but dense_hash_map doesn't use allocator_traits yet
@@ -68,12 +64,8 @@ struct LoggingAlloc {
     using other = LoggingAlloc<U>;
   };
 
-  T* address(T& v) const {
-    return &v;
-  }
-  T const* address(T const& v) const {
-    return &v;
-  }
+  T* address(T& v) const { return &v; }
+  T const* address(T const& v) const { return &v; }
   std::size_t max_size() const {
     return std::numeric_limits<std::size_t>::max();
   }
@@ -131,58 +123,46 @@ void runSingleInserts(std::string const& name) {
 }
 
 FOLLY_NOINLINE int codeSize_find_Std(
-    std::unordered_map<int16_t, float>& m,
-    int16_t k) {
+    std::unordered_map<int16_t, float>& m, int16_t k) {
   auto i = m.find(k);
   return i != m.end() ? 1 : 0;
 }
 
 FOLLY_NOINLINE int codeSize_find_F14Value(
-    F14ValueMap<int16_t, float>& m,
-    int16_t k) {
+    F14ValueMap<int16_t, float>& m, int16_t k) {
   auto i = m.find(k);
   return i != m.end() ? 1 : 0;
 }
 
 FOLLY_NOINLINE int codeSize_find_F14Node(
-    F14NodeMap<int16_t, float>& m,
-    int16_t k) {
+    F14NodeMap<int16_t, float>& m, int16_t k) {
   auto i = m.find(k);
   return i != m.end() ? 1 : 0;
 }
 
 FOLLY_NOINLINE int codeSize_find_F14Vector(
-    F14VectorMap<int16_t, float>& m,
-    int16_t k) {
+    F14VectorMap<int16_t, float>& m, int16_t k) {
   auto i = m.find(k);
   return i != m.end() ? 1 : 0;
 }
 
 FOLLY_NOINLINE void codeSize_bracket_Std(
-    std::unordered_map<int16_t, uint32_t>& m,
-    int16_t k,
-    uint32_t v) {
+    std::unordered_map<int16_t, uint32_t>& m, int16_t k, uint32_t v) {
   m[k] = v;
 }
 
 FOLLY_NOINLINE void codeSize_bracket_F14Value(
-    F14ValueMap<int16_t, uint32_t>& m,
-    int16_t k,
-    uint32_t v) {
+    F14ValueMap<int16_t, uint32_t>& m, int16_t k, uint32_t v) {
   m[k] = v;
 }
 
 FOLLY_NOINLINE void codeSize_bracket_F14Node(
-    F14NodeMap<int16_t, uint32_t>& m,
-    int16_t k,
-    uint32_t v) {
+    F14NodeMap<int16_t, uint32_t>& m, int16_t k, uint32_t v) {
   m[k] = v;
 }
 
 FOLLY_NOINLINE void codeSize_bracket_F14Vector(
-    F14VectorMap<int16_t, uint32_t>& m,
-    int16_t k,
-    uint32_t v) {
+    F14VectorMap<int16_t, uint32_t>& m, int16_t k, uint32_t v) {
   m[k] = v;
 }
 

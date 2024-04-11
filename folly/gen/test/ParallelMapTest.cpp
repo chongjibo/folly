@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
+#include <folly/gen/ParallelMap.h>
+
 #include <vector>
 
 #include <glog/logging.h>
 
 #include <folly/Memory.h>
 #include <folly/gen/Base.h>
-#include <folly/gen/ParallelMap.h>
 #include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
 
@@ -155,12 +156,15 @@ TEST(Pmap, Rvalues) {
 }
 
 TEST(Pmap, Exception) {
-  std::vector<char const*> input{"a"};
-  EXPECT_THROW(from(input) | pmap(To<int>()) | count, std::runtime_error);
-}
+  // Exception from source
+  EXPECT_THROW(
+      just("a") | eachTo<int>() | pmap(To<float>()) | sum, std::runtime_error);
 
-int main(int argc, char* argv[]) {
-  testing::InitGoogleTest(&argc, argv);
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
-  return RUN_ALL_TESTS();
+  // Exception from predicate
+  EXPECT_THROW(just("b") | pmap(To<int>()) | sum, std::runtime_error);
+
+  // Exception from downstream
+  EXPECT_THROW(
+      just("c") | pmap(To<std::string>()) | eachTo<int>() | sum,
+      std::runtime_error);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,11 @@
 
 #pragma once
 
+#include <exception>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
+
 #include <folly/ExceptionWrapper.h>
 #include <folly/Likely.h>
 #include <folly/Memory.h>
@@ -24,10 +29,6 @@
 #include <folly/Utility.h>
 #include <folly/functional/Invoke.h>
 #include <folly/lang/Exception.h>
-#include <exception>
-#include <stdexcept>
-#include <type_traits>
-#include <utility>
 
 namespace folly {
 
@@ -41,19 +42,13 @@ class FOLLY_EXPORT UsingUninitializedTry : public TryException {
   UsingUninitializedTry() : TryException("Using uninitialized try") {}
 };
 
-/*
- * Try<T> is a wrapper that contains either an instance of T, an exception, or
- * nothing. Exceptions are stored as exception_wrappers so that the user can
- * minimize rethrows if so desired.
- *
- * To represent success or a captured exception, use Try<Unit>.
- */
 template <class T>
-class Try {
-  static_assert(
-      !std::is_reference<T>::value,
-      "Try may not be used with reference types");
+class Try;
 
+namespace detail {
+template <class T>
+class TryBase {
+ protected:
   enum class Contains {
     VALUE,
     EXCEPTION,
@@ -62,21 +57,16 @@ class Try {
 
  public:
   /*
-   * The value type for the Try
-   */
-  typedef T element_type;
-
-  /*
    * Construct an empty Try
    */
-  Try() noexcept : contains_(Contains::NOTHING) {}
+  TryBase() noexcept : contains_(Contains::NOTHING) {}
 
   /*
    * Construct a Try with a value by copy
    *
    * @param v The value to copy in
    */
-  explicit Try(const T& v) noexcept(
+  explicit TryBase(const T& v) noexcept(
       std::is_nothrow_copy_constructible<T>::value)
       : contains_(Contains::VALUE), value_(v) {}
 
@@ -85,41 +75,77 @@ class Try {
    *
    * @param v The value to move in
    */
-  explicit Try(T&& v) noexcept(std::is_nothrow_move_constructible<T>::value)
+  explicit TryBase(T&& v) noexcept(std::is_nothrow_move_constructible<T>::value)
       : contains_(Contains::VALUE), value_(std::move(v)) {}
 
   template <typename... Args>
-  explicit Try(in_place_t, Args&&... args) noexcept(
+  explicit TryBase(std::in_place_t, Args&&... args) noexcept(
       std::is_nothrow_constructible<T, Args&&...>::value)
       : contains_(Contains::VALUE), value_(static_cast<Args&&>(args)...) {}
 
   /// Implicit conversion from Try<void> to Try<Unit>
   template <class T2 = T>
-  /* implicit */
-  Try(typename std::enable_if<std::is_same<Unit, T2>::value, Try<void> const&>::
-          type t) noexcept;
+  /* implicit */ TryBase(typename std::enable_if<
+                         std::is_same<Unit, T2>::value,
+                         Try<void> const&>::type t) noexcept;
 
   /*
    * Construct a Try with an exception_wrapper
    *
    * @param e The exception_wrapper
    */
-  explicit Try(exception_wrapper e) noexcept
+  explicit TryBase(exception_wrapper e) noexcept
       : contains_(Contains::EXCEPTION), e_(std::move(e)) {}
 
+  ~TryBase();
+
   // Move constructor
-  Try(Try<T>&& t) noexcept(std::is_nothrow_move_constructible<T>::value);
+  TryBase(TryBase&& t) noexcept(std::is_nothrow_move_constructible<T>::value);
   // Move assigner
-  Try& operator=(Try<T>&& t) noexcept(
+  TryBase& operator=(TryBase&& t) noexcept(
       std::is_nothrow_move_constructible<T>::value);
 
   // Copy constructor
-  Try(const Try& t) noexcept(std::is_nothrow_copy_constructible<T>::value);
+  TryBase(const TryBase& t) noexcept(
+      std::is_nothrow_copy_constructible<T>::value);
   // Copy assigner
-  Try& operator=(const Try& t) noexcept(
+  TryBase& operator=(const TryBase& t) noexcept(
       std::is_nothrow_copy_constructible<T>::value);
 
-  ~Try();
+ protected:
+  void destroy() noexcept;
+
+  Contains contains_;
+  union {
+    T value_;
+    exception_wrapper e_;
+  };
+};
+} // namespace detail
+
+/*
+ * Try<T> is a wrapper that contains either an instance of T, an exception, or
+ * nothing. Exceptions are stored as exception_wrappers so that the user can
+ * minimize rethrows if so desired.
+ *
+ * To represent success or a captured exception, use Try<Unit>.
+ */
+template <class T>
+class Try : detail::TryBase<T>,
+            moveonly_::EnableCopyMove<
+                std::is_copy_constructible<T>::value,
+                std::is_move_constructible<T>::value> {
+  static_assert(
+      !std::is_reference<T>::value, "Try may not be used with reference types");
+  using typename detail::TryBase<T>::Contains;
+
+ public:
+  using detail::TryBase<T>::TryBase;
+
+  /*
+   * The value type for the Try
+   */
+  using element_type = T;
 
   /*
    * In-place construct the value in the Try object.
@@ -150,140 +176,137 @@ class Try {
       std::is_nothrow_constructible<exception_wrapper, Args&&...>::value);
 
   /*
-   * Get a mutable reference to the contained value. If the Try contains an
-   * exception it will be rethrown.
+   * Get a mutable reference to the contained value.
+   * [Re]throws if the Try contains an exception or is empty.
    *
    * @returns mutable reference to the contained value
    */
   T& value() &;
   /*
-   * Get a rvalue reference to the contained value. If the Try contains an
-   * exception it will be rethrown.
+   * Get a rvalue reference to the contained value.
+   * [Re]throws if the Try contains an exception or is empty.
    *
    * @returns rvalue reference to the contained value
    */
   T&& value() &&;
   /*
-   * Get a const reference to the contained value. If the Try contains an
-   * exception it will be rethrown.
+   * Get a const reference to the contained value.
+   * [Re]throws if the Try contains an exception or is empty.
    *
    * @returns const reference to the contained value
    */
   const T& value() const&;
   /*
-   * Get a const rvalue reference to the contained value. If the Try contains an
-   * exception it will be rethrown.
+   * Get a const rvalue reference to the contained value.
+   * [Re]throws if the Try contains an exception or is empty.
    *
    * @returns const rvalue reference to the contained value
    */
   const T&& value() const&&;
 
   /*
-   * If the Try contains an exception, rethrow it. Otherwise do nothing.
+   * Returns a copy of the contained value if *this has a value,
+   * otherwise returns a value constructed from defaultValue.
+   *
+   * The selected constructor of the return value may throw exceptions.
    */
-  void throwIfFailed() const;
+  template <class U>
+  T value_or(U&& defaultValue) const&;
+  template <class U>
+  T value_or(U&& defaultValue) &&;
 
   /*
-   * Const dereference operator. If the Try contains an exception it will be
-   * rethrown.
+   * [Re]throw if the Try contains an exception or is empty. Otherwise do
+   * nothing.
+   */
+  void throwUnlessValue() const;
+  [[deprecated("Replaced by throwUnlessValue")]] void throwIfFailed() const;
+
+  /*
+   * Const dereference operator.
+   * [Re]throws if the Try contains an exception or is empty.
    *
    * @returns const reference to the contained value
    */
-  const T& operator*() const& {
-    return value();
-  }
+  const T& operator*() const& { return value(); }
   /*
    * Dereference operator. If the Try contains an exception it will be rethrown.
    *
    * @returns mutable reference to the contained value
    */
-  T& operator*() & {
-    return value();
-  }
+  T& operator*() & { return value(); }
   /*
    * Mutable rvalue dereference operator.  If the Try contains an exception it
    * will be rethrown.
    *
    * @returns rvalue reference to the contained value
    */
-  T&& operator*() && {
-    return std::move(value());
-  }
+  T&& operator*() && { return std::move(value()); }
   /*
    * Const rvalue dereference operator.  If the Try contains an exception it
    * will be rethrown.
    *
    * @returns rvalue reference to the contained value
    */
-  const T&& operator*() const&& {
-    return std::move(value());
-  }
+  const T&& operator*() const&& { return std::move(value()); }
 
   /*
-   * Const arrow operator. If the Try contains an exception it will be
-   * rethrown.
+   * Const arrow operator.
+   * [Re]throws if the Try contains an exception or is empty.
    *
    * @returns const reference to the contained value
    */
-  const T* operator->() const {
-    return &value();
-  }
+  const T* operator->() const { return &value(); }
   /*
    * Arrow operator. If the Try contains an exception it will be rethrown.
    *
    * @returns mutable reference to the contained value
    */
-  T* operator->() {
-    return &value();
-  }
+  T* operator->() { return &value(); }
 
   /*
    * @returns True if the Try contains a value, false otherwise
    */
-  bool hasValue() const {
-    return contains_ == Contains::VALUE;
-  }
+  bool hasValue() const { return this->contains_ == Contains::VALUE; }
   /*
    * @returns True if the Try contains an exception, false otherwise
    */
-  bool hasException() const {
-    return contains_ == Contains::EXCEPTION;
-  }
+  bool hasException() const { return this->contains_ == Contains::EXCEPTION; }
 
   /*
    * @returns True if the Try contains an exception of type Ex, false otherwise
    */
   template <class Ex>
   bool hasException() const {
-    return hasException() && e_.is_compatible_with<Ex>();
+    return hasException() && this->e_.template is_compatible_with<Ex>();
   }
 
   exception_wrapper& exception() & {
     if (!hasException()) {
       throw_exception<TryException>("Try does not contain an exception");
     }
-    return e_;
+    return this->e_;
   }
 
   exception_wrapper&& exception() && {
     if (!hasException()) {
       throw_exception<TryException>("Try does not contain an exception");
     }
-    return std::move(e_);
+    return std::move(this->e_);
   }
 
   const exception_wrapper& exception() const& {
     if (!hasException()) {
       throw_exception<TryException>("Try does not contain an exception");
     }
-    return e_;
+    return this->e_;
   }
 
   const exception_wrapper&& exception() const&& {
     if (!hasException()) {
       throw_exception<TryException>("Try does not contain an exception");
     }
-    return std::move(e_);
+    return std::move(this->e_);
   }
 
   /*
@@ -291,10 +314,10 @@ class Try {
    *          otherwise, returns `nullptr`.
    */
   std::exception* tryGetExceptionObject() {
-    return hasException() ? e_.get_exception() : nullptr;
+    return hasException() ? this->e_.get_exception() : nullptr;
   }
   std::exception const* tryGetExceptionObject() const {
-    return hasException() ? e_.get_exception() : nullptr;
+    return hasException() ? this->e_.get_exception() : nullptr;
   }
 
   /*
@@ -302,13 +325,13 @@ class Try {
    *          type `From` permits `std::is_convertible<From*, Ex*>`; otherwise,
    *          returns `nullptr`.
    */
-  template <class E>
-  E* tryGetExceptionObject() {
-    return hasException() ? e_.get_exception<E>() : nullptr;
+  template <class Ex>
+  Ex* tryGetExceptionObject() {
+    return hasException() ? this->e_.template get_exception<Ex>() : nullptr;
   }
-  template <class E>
-  E const* tryGetExceptionObject() const {
-    return hasException() ? e_.get_exception<E>() : nullptr;
+  template <class Ex>
+  Ex const* tryGetExceptionObject() const {
+    return hasException() ? this->e_.template get_exception<Ex>() : nullptr;
   }
 
   /*
@@ -323,14 +346,14 @@ class Try {
     if (!hasException()) {
       return false;
     }
-    return e_.with_exception<Ex>(std::move(func));
+    return this->e_.template with_exception<Ex>(std::move(func));
   }
   template <class Ex, class F>
   bool withException(F func) const {
     if (!hasException()) {
       return false;
     }
-    return e_.with_exception<Ex>(std::move(func));
+    return this->e_.template with_exception<Ex>(std::move(func));
   }
 
   /*
@@ -346,14 +369,14 @@ class Try {
     if (!hasException()) {
       return false;
     }
-    return e_.with_exception(std::move(func));
+    return this->e_.with_exception(std::move(func));
   }
   template <class F>
   bool withException(F func) const {
     if (!hasException()) {
       return false;
     }
-    return e_.with_exception(std::move(func));
+    return this->e_.with_exception(std::move(func));
   }
 
   template <bool isTry, typename R>
@@ -365,15 +388,6 @@ class Try {
   typename std::enable_if<!isTry, R>::type get() {
     return std::forward<R>(value());
   }
-
- private:
-  void destroy() noexcept;
-
-  Contains contains_;
-  union {
-    T value_;
-    exception_wrapper e_;
-  };
 };
 
 /*
@@ -398,6 +412,9 @@ class Try<void> {
    */
   explicit Try(exception_wrapper e) noexcept
       : hasValue_(false), e_(std::move(e)) {}
+
+  /// Implicit conversion from Try<Unit> to Try<void>
+  /* implicit */ inline Try(const Try<Unit>& t) noexcept;
 
   // Copy assigner
   inline Try& operator=(const Try<void>& t) noexcept;
@@ -445,25 +462,18 @@ class Try<void> {
       std::is_nothrow_constructible<exception_wrapper, Args&&...>::value);
 
   // If the Try contains an exception, throws it
-  void value() const {
-    throwIfFailed();
-  }
+  void value() const { throwIfFailed(); }
   // Dereference operator. If the Try contains an exception, throws it
-  void operator*() const {
-    return value();
-  }
+  void operator*() const { return value(); }
 
   // If the Try contains an exception, throws it
   inline void throwIfFailed() const;
+  inline void throwUnlessValue() const;
 
   // @returns False if the Try contains an exception, true otherwise
-  bool hasValue() const {
-    return hasValue_;
-  }
+  bool hasValue() const { return hasValue_; }
   // @returns True if the Try contains an exception, false otherwise
-  bool hasException() const {
-    return !hasValue_;
-  }
+  bool hasException() const { return !hasValue_; }
 
   // @returns True if the Try contains an exception of type Ex, false otherwise
   template <class Ex>
@@ -694,6 +704,18 @@ bool tryEmplaceWith(Try<void>& t, Func&& func) noexcept;
  */
 template <typename Tuple>
 auto unwrapTryTuple(Tuple&&);
+
+/*
+ * Try to move the value/exception from another Try object.
+ *
+ * If T's constructor throws an exception then this is caught and the Try<T>
+ * object is initialised to hold that exception.
+ */
+template <typename T>
+void tryAssign(Try<T>& t, Try<T>&& other) noexcept;
+
+template <typename T>
+Try(T&&) -> Try<std::decay_t<T>>;
 
 } // namespace folly
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,20 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+#include <stdexcept>
+#include <type_traits>
+
+#include <glog/logging.h>
+
 struct counted_shared_tag {};
 template <template <typename> class Atom = std::atomic>
 struct intrusive_shared_count {
-  intrusive_shared_count() {
-    counts.store(0);
-  }
-  void add_ref(uint64_t count = 1) {
-    counts.fetch_add(count);
-  }
+  intrusive_shared_count() { counts.store(0); }
+  void add_ref(uint64_t count = 1) { counts.fetch_add(count); }
 
-  uint64_t release_ref(uint64_t count = 1) {
-    return counts.fetch_sub(count);
-  }
+  uint64_t release_ref(uint64_t count = 1) { return counts.fetch_sub(count); }
   Atom<uint64_t> counts;
 };
 
@@ -71,28 +72,18 @@ class counted_ptr : public counted_ptr_base<Atom> {
     }
     return *this;
   }
-  explicit counted_ptr(T* p) : p_(p) {
-    CHECK(!p);
-  }
+  explicit counted_ptr(T* p) : p_(p) { CHECK(!p); }
   ~counted_ptr() {
     if (p_ && counted_ptr_base<Atom>::getRef(p_)->release_ref() == 1) {
       p_->~T();
       free(counted_ptr_base<Atom>::getRef(p_));
     }
   }
-  typename std::add_lvalue_reference<T>::type operator*() const {
-    return *p_;
-  }
+  typename std::add_lvalue_reference<T>::type operator*() const { return *p_; }
 
-  T* get() const {
-    return p_;
-  }
-  T* operator->() const {
-    return p_;
-  }
-  explicit operator bool() const {
-    return p_ == nullptr ? false : true;
-  }
+  T* get() const { return p_; }
+  T* operator->() const { return p_; }
+  explicit operator bool() const { return p_ == nullptr ? false : true; }
   bool operator==(const counted_ptr<T, Atom>& p) const {
     return get() == p.get();
   }
@@ -143,8 +134,7 @@ class counted_ptr_internals : public counted_ptr_base<Atom> {
 
   template <typename T>
   static counted_ptr<T, Atom> get_shared_ptr_from_counted_base(
-      counted_base* base,
-      bool inc = true) {
+      counted_base* base, bool inc = true) {
     auto res = counted_ptr<T, Atom>(counted_shared_tag(), (T*)(base));
     if (!inc) {
       release_shared<T>(base, 1);

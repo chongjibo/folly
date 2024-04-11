@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -166,8 +166,7 @@ void MathOperation<MathEngine::SIMPLE>::sub(
 
 template <>
 void MathOperation<MathEngine::SIMPLE>::clearPaddingBits(
-    uint64_t dataMask,
-    MutableByteRange buf) {
+    uint64_t dataMask, MutableByteRange buf) {
   if (dataMask == 0xffffffffffffffffULL) {
     return;
   }
@@ -191,8 +190,7 @@ void MathOperation<MathEngine::SIMPLE>::clearPaddingBits(
 
 template <>
 bool MathOperation<MathEngine::SIMPLE>::checkPaddingBits(
-    uint64_t dataMask,
-    ByteRange buf) {
+    uint64_t dataMask, ByteRange buf) {
   if (dataMask == 0xffffffffffffffffULL) {
     return true;
   }

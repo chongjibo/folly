@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 
 #pragma once
 
-#include <folly/ConstexprMath.h>
 #include <chrono>
 #include <cstdint>
 #include <type_traits>
+
+#include <folly/ConstexprMath.h>
 
 namespace folly {
 namespace detail {
@@ -31,17 +32,24 @@ namespace detail {
 
 // If the input is long double, divide using long double to avoid losing
 // precision.
+//
+// If the ReturnType is integral, the result might be clamped to avoid overflow.
 template <typename ReturnType>
 ReturnType avgHelper(long double sum, uint64_t count) {
   if (count == 0) {
     return ReturnType(0);
   }
   const long double countf = count;
+  if constexpr (std::is_integral<ReturnType>::value) {
+    return constexpr_clamp_cast<ReturnType>(sum / countf);
+  }
   return static_cast<ReturnType>(sum / countf);
 }
 
 // In all other cases divide using double precision.
 // This should be relatively fast, and accurate enough for most use cases.
+//
+// If the ReturnType is integral, the result might be clamped to avoid overflow.
 template <typename ReturnType, typename ValueType>
 typename std::enable_if<
     !std::is_same<typename std::remove_cv<ValueType>::type, long double>::value,
@@ -52,6 +60,9 @@ avgHelper(ValueType sum, uint64_t count) {
   }
   const double sumf = double(sum);
   const double countf = double(count);
+  if constexpr (std::is_integral<ReturnType>::value) {
+    return constexpr_clamp_cast<ReturnType>(sumf / countf);
+  }
   return static_cast<ReturnType>(sumf / countf);
 }
 

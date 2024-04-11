@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,16 @@
  * limitations under the License.
  */
 
+#include <folly/io/async/AsyncSocket.h>
+
 #include <iostream>
 
 #include <folly/io/async/AsyncServerSocket.h>
-#include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GTest.h>
 
-namespace folly {
+using namespace folly;
+using namespace testing;
 
 #ifndef TCP_SAVE_SYN
 #define TCP_SAVE_SYN 27
@@ -65,6 +67,49 @@ TEST(AsyncSocketTest, REUSEPORT) {
   serverSocket2->bind(port);
   serverSocket2->listen(0);
   serverSocket2->startAccepting();
+}
+
+TEST(AsyncSocketTest, DisableReuseAddr) {
+  EventBase base;
+  auto serverSocket = AsyncServerSocket::newSocket(&base);
+  serverSocket->setEnableReuseAddr(false /* enable */);
+  // idempotent
+  serverSocket->setEnableReuseAddr(false /* enable */);
+  serverSocket->setEnableReuseAddr(false /* enable */);
+  serverSocket->bind(0);
+
+  SocketAddress address;
+  serverSocket->getAddress(&address);
+  int port = address.getPort();
+
+  auto serverSocket2 = AsyncServerSocket::newSocket(&base);
+  serverSocket2->setEnableReuseAddr(false /* enable */);
+  // idempotent
+  serverSocket2->setEnableReuseAddr(false /* enable */);
+  serverSocket2->setEnableReuseAddr(false /* enable */);
+  EXPECT_THROW(serverSocket2->bind(port), std::system_error);
+  // it's ok to bind to a different port
+  serverSocket2->bind(0);
+}
+
+TEST(AsyncSocketTest, EnableThenDisableReuseAddr) {
+  EventBase base;
+  auto serverSocket = AsyncServerSocket::newSocket(&base);
+  serverSocket->bind(0);
+
+  SocketAddress address;
+  serverSocket->getAddress(&address);
+  int port = address.getPort();
+
+  auto serverSocket2 = AsyncServerSocket::newSocket(&base);
+  // defaulty SO_REUSEADDR enabled so can bind to same port
+  serverSocket2->bind(port);
+  serverSocket2->setEnableReuseAddr(false /* enable */);
+  serverSocket->setEnableReuseAddr(false /* enable */);
+
+  EXPECT_THROW(serverSocket2->bind(port), std::system_error);
+  // it's ok to bind to a different port
+  serverSocket2->bind(0);
 }
 
 TEST(AsyncSocketTest, v4v6samePort) {
@@ -120,4 +165,56 @@ TEST(AsyncSocketTest, tosReflect) {
   ASSERT_EQ(value, 1);
 }
 
-} // namespace folly
+TEST(AsyncSocketTest, listenerTosV6) {
+  EventBase base;
+  auto server1 = AsyncServerSocket::newSocket(&base);
+  server1->bind(0);
+  server1->listen(10);
+  auto fd = server1->getNetworkSocket();
+
+  // Verify if Listener TOS is disabled by default
+  EXPECT_FALSE(server1->getListenerTos());
+  int value;
+  socklen_t valueLength = sizeof(value);
+  int rc =
+      netops::getsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &value, &valueLength);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(value, 0);
+
+  // Set listener Tos to 116 (0x74, represents dscp 29)
+  server1->setListenerTos(116);
+
+  // Verify if listener DSCP is set now
+  EXPECT_TRUE(server1->getListenerTos());
+  rc = netops::getsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &value, &valueLength);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(value, 116);
+}
+
+TEST(AsyncSocketTest, listenerTosV4) {
+  EventBase base;
+  auto server1 = AsyncServerSocket::newSocket(&base);
+  folly::IPAddress ip("127.0.0.1");
+  std::vector<folly::IPAddress> serverIp;
+  serverIp.push_back(ip);
+  server1->bind(serverIp, 0);
+  server1->listen(10);
+  auto fd = server1->getNetworkSocket();
+
+  // Verify if Listener TOS is disabled by default
+  EXPECT_FALSE(server1->getListenerTos());
+  int value;
+  socklen_t valueLength = sizeof(value);
+  int rc = netops::getsockopt(fd, IPPROTO_IP, IP_TOS, &value, &valueLength);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(value, 0);
+
+  // Set listener Tos to 140 (0x8c, represents dscp 35)
+  server1->setListenerTos(140);
+
+  // Verify if listener DSCP is set now
+  EXPECT_TRUE(server1->getListenerTos());
+  rc = netops::getsockopt(fd, IPPROTO_IP, IP_TOS, &value, &valueLength);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(value, 140);
+}

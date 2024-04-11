@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,14 @@
 
 #include <boost/thread/barrier.hpp>
 
+#include <folly/DefaultKeepAliveExecutor.h>
 #include <folly/Random.h>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/executors/ManualExecutor.h>
 #include <folly/futures/Future.h>
 #include <folly/portability/GTest.h>
 #include <folly/small_vector.h>
+#include <folly/synchronization/Baton.h>
 
 using namespace folly;
 
@@ -253,6 +256,66 @@ TEST(Collect, collectAllInline) {
   }
 }
 
+TEST(Collect, collectInline) {
+  // inline future collection on same executor
+  {
+    ManualExecutor x;
+    std::vector<Future<int>> futures;
+    futures.emplace_back(makeFuture(42).via(&x));
+    futures.emplace_back(makeFuture(42).via(&x));
+    futures.emplace_back(makeFuture(42).via(&x));
+
+    auto allf = collect(futures).via(&x).thenTryInline([](auto&&) {});
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(3, x.run());
+    EXPECT_TRUE(allf.isReady());
+  }
+  // inline defered semi-future collection on same executor
+  {
+    ManualExecutor x;
+    std::vector<SemiFuture<int>> futures;
+    futures.emplace_back(makeSemiFuture(42).defer([](auto&&) { return 42; }));
+    futures.emplace_back(makeSemiFuture(42).defer([](auto&&) { return 42; }));
+    futures.emplace_back(makeSemiFuture(42).defer([](auto&&) { return 42; }));
+
+    auto allf = collect(futures).defer([](auto&&) {}).via(&x);
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(3, x.run());
+    EXPECT_TRUE(allf.isReady());
+  }
+  // inline future collection lastly fullfilled on same executor
+  {
+    ManualExecutor x1, x2;
+    std::vector<Future<int>> futures;
+    futures.emplace_back(makeFuture(42).via(&x1));
+    futures.emplace_back(makeFuture(42).via(&x2));
+
+    auto allf = collect(futures).defer([](auto&&) {}).via(&x1);
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(1, x2.run());
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(1, x1.run());
+    EXPECT_TRUE(allf.isReady());
+  }
+  // prevent inlining of future collection lastly fullfilled on different
+  // executor
+  {
+    ManualExecutor x1, x2;
+    std::vector<Future<int>> futures;
+    futures.emplace_back(makeFuture(42).via(&x1));
+    futures.emplace_back(makeFuture(42).via(&x2));
+
+    auto allf = collect(futures).defer([](auto&&) {}).via(&x1);
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(1, x1.run());
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(1, x2.run());
+    EXPECT_FALSE(allf.isReady());
+    EXPECT_EQ(1, x1.run());
+    EXPECT_TRUE(allf.isReady());
+  }
+}
+
 TEST(Collect, collect) {
   // success case
   {
@@ -446,33 +509,6 @@ TEST(Collect, collectAny) {
   }
   {
     std::vector<Promise<int>> promises(10);
-    std::vector<Future<int>> futures;
-
-    for (auto& p : promises) {
-      futures.push_back(p.getFuture());
-    }
-
-    for (auto& f : futures) {
-      EXPECT_FALSE(f.isReady());
-    }
-
-    auto anyf = collectAnyUnsafe(futures);
-
-    /* futures were moved in, so these are invalid now */
-    EXPECT_FALSE(anyf.isReady());
-
-    promises[7].setValue(42);
-    EXPECT_TRUE(anyf.isReady());
-    auto& idx_fut = anyf.value();
-
-    auto i = idx_fut.first;
-    EXPECT_EQ(7, i);
-
-    auto& f = idx_fut.second;
-    EXPECT_EQ(42, f.value());
-  }
-  {
-    std::vector<Promise<int>> promises(10);
     std::vector<SemiFuture<int>> futures;
 
     for (auto& p : promises) {
@@ -519,22 +555,6 @@ TEST(Collect, collectAny) {
     promises[3].setException(eggs);
     EXPECT_TRUE(anyf.isReady());
     EXPECT_TRUE(anyf.value().second.hasException());
-  }
-
-  // thenValue()
-  {
-    std::vector<Promise<int>> promises(10);
-    std::vector<Future<int>> futures;
-
-    for (auto& p : promises) {
-      futures.push_back(p.getFuture());
-    }
-
-    auto anyf = collectAnyUnsafe(futures).thenValue(
-        [](std::pair<size_t, Try<int>> p) { EXPECT_EQ(42, p.second.value()); });
-
-    promises[3].setValue(42);
-    EXPECT_TRUE(anyf.isReady());
   }
 }
 
@@ -859,10 +879,10 @@ TEST(Collect, collectNParallel) {
 /// Ensure that we can compile collectAll/Any with folly::small_vector
 TEST(Collect, smallVector) {
   static_assert(
-      !folly::is_trivially_copyable<Future<Unit>>::value,
+      !std::is_trivially_copyable<Future<Unit>>::value,
       "Futures should not be trivially copyable");
   static_assert(
-      !folly::is_trivially_copyable<Future<int>>::value,
+      !std::is_trivially_copyable<Future<int>>::value,
       "Futures should not be trivially copyable");
 
   {
@@ -1030,4 +1050,55 @@ TEST(Collect, noDefaultConstructor) {
   auto f2 = makeFuture(A(2));
 
   auto f = collect(std::move(f1), std::move(f2));
+}
+
+TEST(Collect, CollectVariadicWithDestroyedWeakRef) {
+  auto one = std::make_unique<folly::CPUThreadPoolExecutor>(1);
+  auto two = std::make_unique<folly::CPUThreadPoolExecutor>(1);
+  auto reachedFirstCallback = folly::Baton<>{};
+  auto hasExecutorBeenDestroyed = folly::Baton<>{};
+
+  auto future = folly::collect(
+      folly::makeSemiFuture(),
+      folly::makeSemiFuture()
+          .via(one.get())
+          .thenValue([&](auto) {
+            reachedFirstCallback.post();
+            hasExecutorBeenDestroyed.wait();
+          })
+          .via(two->weakRef())
+          .thenValue([](auto) {}),
+      folly::makeSemiFuture());
+
+  reachedFirstCallback.wait();
+  two.reset();
+  hasExecutorBeenDestroyed.post();
+
+  EXPECT_THROW(std::move(future).get(), folly::BrokenPromise);
+}
+
+TEST(Collect, CollectRangeWithDestroyedWeakRef) {
+  auto one = std::make_unique<folly::CPUThreadPoolExecutor>(1);
+  auto two = std::make_unique<folly::CPUThreadPoolExecutor>(1);
+  auto reachedFirstCallback = folly::Baton<>{};
+  auto hasExecutorBeenDestroyed = folly::Baton<>{};
+
+  auto futures = std::vector<folly::SemiFuture<folly::Unit>>{};
+  futures.push_back(folly::makeSemiFuture());
+  futures.push_back(folly::makeSemiFuture()
+                        .via(one.get())
+                        .thenValue([&](auto) {
+                          reachedFirstCallback.post();
+                          hasExecutorBeenDestroyed.wait();
+                        })
+                        .via(two->weakRef())
+                        .thenValue([](auto) {}));
+  futures.push_back(folly::makeSemiFuture());
+  auto future = folly::collect(futures.begin(), futures.end());
+
+  reachedFirstCallback.wait();
+  two.reset();
+  hasExecutorBeenDestroyed.post();
+
+  EXPECT_THROW(std::move(future).get(), folly::BrokenPromise);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -145,8 +145,7 @@ class RecordBuffer {
 
  protected:
   size_t getOldestAllowed(
-      std::memory_order mo,
-      const ThreadTimestamps& acqRelOrder) {
+      std::memory_order mo, const ThreadTimestamps& acqRelOrder) {
     assert(isInitialized());
     for (size_t i = 0; i < history_.size() - 1; i++) {
       Record& rec = history_[i];
@@ -171,9 +170,7 @@ class RecordBuffer {
  private:
   static constexpr size_t kMaxRecordBufferSize = 64;
 
-  bool isInitialized() const {
-    return !history_.empty();
-  }
+  bool isInitialized() const { return !history_.empty(); }
 };
 
 template <typename T>
@@ -203,14 +200,10 @@ struct BufferedAtomic {
     DeterministicSchedule::afterSharedAccess();
   }
 
-  bool is_lock_free() const noexcept {
-    return false;
-  }
+  bool is_lock_free() const noexcept { return false; }
 
   bool compare_exchange_strong(
-      T& v0,
-      T v1,
-      std::memory_order mo = std::memory_order_seq_cst) noexcept {
+      T& v0, T v1, std::memory_order mo = std::memory_order_seq_cst) noexcept {
     return compare_exchange_strong(
         v0, v1, mo, folly::detail::default_failure_memory_order(mo));
   }
@@ -223,9 +216,7 @@ struct BufferedAtomic {
   }
 
   bool compare_exchange_weak(
-      T& v0,
-      T v1,
-      std::memory_order mo = std::memory_order_seq_cst) noexcept {
+      T& v0, T v1, std::memory_order mo = std::memory_order_seq_cst) noexcept {
     return compare_exchange_weak(
         v0, v1, mo, ::folly::detail::default_failure_memory_order(mo));
   }

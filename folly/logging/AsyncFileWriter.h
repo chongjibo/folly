@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
 
 #pragma once
 
-#include <folly/logging/AsyncLogWriter.h>
-
 #include <vector>
+
+#include <folly/logging/AsyncLogWriter.h>
 
 namespace folly {
 /**
@@ -50,17 +50,14 @@ class AsyncFileWriter : public AsyncLogWriter {
   /**
    * Get the output file.
    */
-  const folly::File& getFile() const {
-    return file_;
-  }
+  const folly::File& getFile() const { return file_; }
 
  private:
   void writeToFile(
-      const std::vector<std::string>& ioQueue,
-      size_t numDiscarded);
+      const std::vector<std::string>& ioQueue, size_t numDiscarded);
 
-  void performIO(const std::vector<std::string>& ioQueue, size_t numDiscarded)
-      override;
+  void performIO(
+      const std::vector<std::string>& ioQueue, size_t numDiscarded) override;
 
   std::string getNumDiscardedMsg(size_t numDiscarded);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,6 +51,8 @@ struct MemoryIdler {
     kDefaultStackToRetain = 1024,
   };
 
+  static bool isUnmapUnusedStackAvailable() noexcept;
+
   /// Uses madvise to discard the portion of the thread's stack that
   /// currently doesn't hold any data, trying to ensure that no page
   /// faults will occur during the next retain bytes of stack allocation
@@ -83,8 +85,10 @@ struct MemoryIdler {
 
     // multiplying the duration by a floating point doesn't work, grr
     auto extraFrac = timeoutVariationFrac /
-        static_cast<float>(std::numeric_limits<uint64_t>::max()) * h;
-    auto tics = uint64_t(idleTimeout.count() * (1 + extraFrac));
+        static_cast<float>(std::numeric_limits<uint64_t>::max()) *
+        static_cast<float>(h);
+    auto tics =
+        uint64_t(static_cast<float>(idleTimeout.count()) * (1 + extraFrac));
     return IdleTime(tics);
   }
 
@@ -195,6 +199,9 @@ struct MemoryIdler {
           _ret = rv;
           return true;
         }
+      } else {
+        // deadline is before the idle timeout, never flush in this case
+        return false;
       }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,9 @@
 #include <folly/CPortability.h>
 #include <folly/Indestructible.h>
 #include <folly/Likely.h>
+#include <folly/Utility.h>
 #include <folly/detail/Singleton.h>
+#include <folly/lang/Thunk.h>
 #include <folly/lang/TypeInfo.h>
 
 namespace folly {
@@ -30,22 +32,78 @@ namespace detail {
 
 // Does not support dynamic loading but works without rtti.
 class StaticSingletonManagerSansRtti {
+ private:
+  using Self = StaticSingletonManagerSansRtti;
+  using Cache = std::atomic<void*>;
+  using Make = void*();
+  struct Arg {
+    Cache cache{}; // should be first field
+    Make* make;
+    void** debug;
+
+    template <typename T, typename Tag>
+    /* implicit */ constexpr Arg(tag_t<T, Tag>) noexcept
+        : make{thunk::make<T>},
+          debug{reinterpret_cast<void**>(&Self::debug<T, Tag>)} {}
+  };
+
+  template <bool Noexcept>
+  static void* create_(Arg&) noexcept(Noexcept); // no defn; only for decltype
+
+  template <bool Noexcept>
+  using Create = decltype(&create_<Noexcept>);
+
+  template <typename T, typename Tag>
+  static T* debug; // visible to debugger
+
  public:
+  template <bool Noexcept>
+  struct ArgCreate : private Arg {
+    friend class StaticSingletonManagerSansRtti;
+
+    template <typename T, typename Tag>
+    /* implicit */ constexpr ArgCreate(tag_t<T, Tag> t) noexcept
+        : Arg{t}, create{create_<T, Tag>} {
+      static_assert(Noexcept == noexcept(T()), "mismatched noexcept");
+    }
+
+   private:
+    Create<Noexcept> create;
+  };
+
   template <typename T, typename Tag>
   FOLLY_EXPORT FOLLY_ALWAYS_INLINE static T& create() {
-    static std::atomic<T*> cache{};
-    auto const pointer = cache.load(std::memory_order_acquire);
-    return FOLLY_LIKELY(!!pointer) ? *pointer : create_<T, Tag>(cache);
+    static Arg arg{tag<T, Tag>};
+    return create<T, Tag>(arg);
+  }
+
+  template <typename T, typename..., bool Noexcept = noexcept(T())>
+  FOLLY_ERASE static T& create(ArgCreate<Noexcept>& arg) {
+    auto const v = arg.cache.load(std::memory_order_acquire);
+    auto const p = FOLLY_LIKELY(!!v) ? v : arg.create(arg);
+    return *static_cast<T*>(p);
   }
 
  private:
   template <typename T, typename Tag>
-  FOLLY_EXPORT FOLLY_NOINLINE static T& create_(std::atomic<T*>& cache) {
+  FOLLY_ERASE static T& create(Arg& arg) {
+    auto const v = arg.cache.load(std::memory_order_acquire);
+    auto const p = FOLLY_LIKELY(!!v) ? v : create_<T, Tag>(arg);
+    return *static_cast<T*>(p);
+  }
+
+  template <typename T, typename Tag>
+  FOLLY_EXPORT FOLLY_NOINLINE static void* create_(Arg& arg) noexcept(
+      noexcept(T())) {
     static Indestructible<T> instance;
-    cache.store(&*instance, std::memory_order_release);
-    return *instance;
+    arg.cache.store(&*instance, std::memory_order_release);
+    *arg.debug = &*instance;
+    return &*instance;
   }
 };
+
+template <typename T, typename Tag>
+T* StaticSingletonManagerSansRtti::debug;
 
 // This internal-use-only class is used to create all leaked Meyers singletons.
 // It guarantees that only one instance of every such singleton will ever be
@@ -54,38 +112,76 @@ class StaticSingletonManagerSansRtti {
 //
 // Supports dynamic loading but requires rtti.
 class StaticSingletonManagerWithRtti {
- public:
+ private:
+  using Self = StaticSingletonManagerWithRtti;
+  using Key = std::type_info;
+  using Make = void*();
+  using Cache = std::atomic<void*>;
   template <typename T, typename Tag>
-  FOLLY_EXPORT FOLLY_ALWAYS_INLINE static T& create() {
+  struct FOLLY_EXPORT Src {};
+  struct Arg {
+    Cache cache{}; // should be first field
+    Key const* key;
+    Make* make;
+    void** debug;
+
     // gcc and clang behave poorly if typeid is hidden behind a non-constexpr
     // function, but typeid is not constexpr under msvc
-    static Arg arg{{nullptr}, FOLLY_TYPE_INFO_OF(tag_t<T, Tag>), make<T>};
+    template <typename T, typename Tag>
+    /* implicit */ constexpr Arg(tag_t<T, Tag>) noexcept
+        : key{FOLLY_TYPE_INFO_OF(Src<T, Tag>)},
+          make{thunk::make<T>},
+          debug{reinterpret_cast<void**>(&Self::debug<T, Tag>)} {}
+  };
+
+  template <bool Noexcept>
+  FOLLY_NOINLINE static void* create_(Arg&) noexcept(Noexcept);
+
+  template <bool Noexcept>
+  using Create = decltype(&create_<Noexcept>);
+
+  template <typename T, typename Tag>
+  static T* debug; // visible to debugger
+
+ public:
+  template <bool Noexcept>
+  struct ArgCreate : private Arg {
+    friend class StaticSingletonManagerWithRtti;
+
+    template <typename T, typename Tag>
+    /* implicit */ constexpr ArgCreate(tag_t<T, Tag> t) noexcept
+        : Arg{t}, create{create_<Noexcept>} {
+      static_assert(Noexcept == noexcept(T()), "mismatched noexcept");
+    }
+
+   private:
+    Create<Noexcept> create;
+  };
+
+  template <typename T, typename Tag>
+  FOLLY_EXPORT FOLLY_ALWAYS_INLINE static T& create() {
+    static Arg arg{tag<T, Tag>};
+    return create<T, Tag>(arg);
+  }
+
+  template <typename T, typename..., bool Noexcept = noexcept(T())>
+  FOLLY_ERASE static T& create(ArgCreate<Noexcept>& arg) {
     auto const v = arg.cache.load(std::memory_order_acquire);
-    auto const p = FOLLY_LIKELY(!!v) ? v : create_<noexcept(T())>(arg);
+    auto const p = FOLLY_LIKELY(!!v) ? v : arg.create(arg);
     return *static_cast<T*>(p);
   }
 
  private:
-  using Key = std::type_info;
-  using Make = void*();
-  using Cache = std::atomic<void*>;
-  struct Arg {
-    Cache cache; // should be first field
-    Key const* key;
-    Make& make;
-  };
-
-  template <typename T>
-  static void* make() {
-    return new T();
+  template <typename T, typename Tag>
+  FOLLY_ERASE static T& create(Arg& arg) {
+    auto const v = arg.cache.load(std::memory_order_acquire);
+    auto const p = FOLLY_LIKELY(!!v) ? v : create_<noexcept(T())>(arg);
+    return *static_cast<T*>(p);
   }
-
-  template <bool Noexcept>
-  FOLLY_ERASE static void* create_(Arg& arg) noexcept(Noexcept) {
-    return create_(arg);
-  }
-  FOLLY_NOINLINE static void* create_(Arg& arg);
 };
+
+template <typename T, typename Tag>
+T* StaticSingletonManagerWithRtti::debug;
 
 using StaticSingletonManager = std::conditional_t<
     kHasRtti,

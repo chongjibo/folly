@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,22 +20,48 @@
 #include <folly/experimental/coro/Baton.h>
 #include <folly/experimental/coro/CurrentExecutor.h>
 
+#if FOLLY_HAS_COROUTINES
+
 namespace folly {
 namespace coro {
 
-inline Task<void> sleep(Duration d, Timekeeper* tk) {
+inline Task<void> sleep(HighResDuration d, Timekeeper* tk) {
+  bool cancelled{false};
   folly::coro::Baton baton;
-  auto future =
-      folly::futures::sleep(d, tk).toUnsafeFuture().ensure([&]() noexcept {
+  Try<Unit> result;
+  auto future = folly::futures::sleep(d, tk).toUnsafeFuture();
+  future.setCallback_(
+      [&result, &baton](Executor::KeepAlive<>&&, Try<Unit>&& t) {
+        result = std::move(t);
         baton.post();
-      });
+      },
+      // No user logic runs in the callback, we can avoid the cost of switching
+      // the context.
+      /* context */ nullptr);
 
-  CancellationCallback cancelCallback(
-      co_await co_current_cancellation_token, [&]() noexcept {
-        future.cancel();
-      });
-  co_await baton;
+  {
+    CancellationCallback cancelCallback(
+        co_await co_current_cancellation_token, [&]() noexcept {
+          cancelled = true;
+          future.cancel();
+        });
+    co_await baton;
+  }
+  if (cancelled) {
+    co_yield co_cancelled;
+  }
+  co_yield co_result(std::move(result));
+}
+
+inline Task<void> sleepReturnEarlyOnCancel(HighResDuration d, Timekeeper* tk) {
+  auto result = co_await co_awaitTry(sleep(d, tk));
+  if (result.hasException<OperationCancelled>()) {
+    co_return;
+  }
+  co_yield co_result(std::move(result));
 }
 
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

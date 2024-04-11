@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <folly/stats/detail/DigestBuilder.h>
+#include <folly/stats/DigestBuilder.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -24,25 +24,37 @@
 
 #include <folly/Benchmark.h>
 #include <folly/Range.h>
+#include <folly/lang/Keep.h>
 #include <folly/portability/GFlags.h>
 
 DEFINE_int32(digest_merge_time_ns, 5500, "Time to merge into the digest");
 
 using namespace folly;
-using namespace folly::detail;
 
 class FreeDigest {
  public:
-  explicit FreeDigest(size_t) {}
+  explicit FreeDigest(size_t = 0) {}
 
-  FreeDigest merge(Range<const double*>) const {
+  FreeDigest merge(Range<const double*> values) const {
     auto start = std::chrono::steady_clock::now();
     auto finish = start + std::chrono::nanoseconds{FLAGS_digest_merge_time_ns};
     while (std::chrono::steady_clock::now() < finish) {
     }
-    return FreeDigest(100);
+    FreeDigest ret;
+    ret.empty_ = empty_ && values.empty();
+    return ret;
   }
+
+  bool empty() const { return empty_; }
+
+ private:
+  bool empty_ = true;
 };
+
+extern "C" FOLLY_KEEP void check_folly_digest_builder_append(
+    DigestBuilder<FreeDigest>& builder, double value) {
+  builder.append(value);
+}
 
 unsigned int append(unsigned int iters, size_t bufSize, size_t nThreads) {
   iters = 1000000;

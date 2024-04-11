@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,7 +44,7 @@ folly::Range<folly::AsyncBase::Op**> TestUtil::readerWait(
 }
 
 TestUtil::ManagedBuffer TestUtil::allocateAligned(size_t size) {
-  void* buf;
+  void* buf = unsafe_default_initialized; // skip a write to stack
   int rc = posix_memalign(&buf, kODirectAlign, size);
   CHECK_EQ(rc, 0) << folly::errnoStr(rc);
   return ManagedBuffer(reinterpret_cast<char*>(buf), free);

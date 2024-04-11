@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 #include <folly/io/IOBufQueue.h>
 
 #include <cstring>
-
 #include <stdexcept>
 
 using std::make_pair;
@@ -32,31 +31,39 @@ const size_t MIN_ALLOC_SIZE = 2000;
 const size_t MAX_ALLOC_SIZE = 8000;
 
 /**
- * Convenience function to append chain src to chain dst.
+ * Convenience functions to append chain src to chain dst.
  */
+template <class Src, class Next>
+void packInto(IOBuf* tail, Src& src, Next next) {
+  if (tail->isSharedOne()) {
+    return;
+  }
+
+  // Copy up to kMaxPackCopy bytes if we can free buffers; this helps reduce
+  // waste (the tail's tailroom and the head's headroom) when joining two
+  // IOBufQueues together.
+  size_t copyRemaining = folly::IOBufQueue::kMaxPackCopy;
+  std::size_t n;
+  while (src && (n = src->length()) <= copyRemaining && n <= tail->tailroom()) {
+    if (n > 0) {
+      memcpy(tail->writableTail(), src->data(), n);
+      tail->append(n);
+      copyRemaining -= n;
+    }
+    src = next(std::move(src));
+  }
+}
+
 void appendToChain(unique_ptr<IOBuf>& dst, unique_ptr<IOBuf>&& src, bool pack) {
   if (dst == nullptr) {
     dst = std::move(src);
   } else {
     IOBuf* tail = dst->prev();
     if (pack) {
-      // Copy up to kMaxPackCopy bytes if we can free buffers; this helps
-      // reduce wastage (the tail's tailroom and the head's headroom) when
-      // joining two IOBufQueues together.
-      size_t copyRemaining = folly::IOBufQueue::kMaxPackCopy;
-      std::size_t n;
-      while (src && (n = src->length()) <= copyRemaining &&
-             n <= tail->tailroom()) {
-        if (n > 0) {
-          memcpy(tail->writableTail(), src->data(), n);
-          tail->append(n);
-          copyRemaining -= n;
-        }
-        src = src->pop();
-      }
+      packInto(tail, src, [](auto&& cur) { return cur->pop(); });
     }
     if (src) {
-      tail->appendChain(std::move(src));
+      tail->insertAfterThisOne(std::move(src));
     }
   }
 }
@@ -77,16 +84,15 @@ IOBufQueue::~IOBufQueue() {
 IOBufQueue::IOBufQueue(IOBufQueue&& other) noexcept
     : options_(other.options_), cachePtr_(&localCache_) {
   other.clearWritableRangeCache();
+
   head_ = std::move(other.head_);
-  chainLength_ = other.chainLength_;
+  chainLength_ = std::exchange(other.chainLength_, 0);
+  reusableTail_ = std::exchange(other.reusableTail_, nullptr);
 
-  tailStart_ = other.tailStart_;
-  localCache_.cachedRange = other.localCache_.cachedRange;
+  tailStart_ = std::exchange(other.tailStart_, nullptr);
+  localCache_.cachedRange =
+      std::exchange(other.localCache_.cachedRange, {nullptr, nullptr});
   localCache_.attached = true;
-
-  other.chainLength_ = 0;
-  other.tailStart_ = nullptr;
-  other.localCache_.cachedRange = {nullptr, nullptr};
 }
 
 IOBufQueue& IOBufQueue::operator=(IOBufQueue&& other) {
@@ -96,15 +102,13 @@ IOBufQueue& IOBufQueue::operator=(IOBufQueue&& other) {
 
     options_ = other.options_;
     head_ = std::move(other.head_);
-    chainLength_ = other.chainLength_;
+    chainLength_ = std::exchange(other.chainLength_, 0);
+    reusableTail_ = std::exchange(other.reusableTail_, nullptr);
 
-    tailStart_ = other.tailStart_;
-    localCache_.cachedRange = other.localCache_.cachedRange;
+    tailStart_ = std::exchange(other.tailStart_, nullptr);
+    localCache_.cachedRange =
+        std::exchange(other.localCache_.cachedRange, {nullptr, nullptr});
     localCache_.attached = true;
-
-    other.chainLength_ = 0;
-    other.tailStart_ = nullptr;
-    other.localCache_.cachedRange = {nullptr, nullptr};
   }
   return *this;
 }
@@ -141,7 +145,8 @@ void IOBufQueue::prepend(const void* buf, std::size_t n) {
   chainLength_ += n;
 }
 
-void IOBufQueue::append(unique_ptr<IOBuf>&& buf, bool pack) {
+void IOBufQueue::append(
+    unique_ptr<IOBuf>&& buf, bool pack, bool allowTailReuse) {
   if (!buf) {
     return;
   }
@@ -150,9 +155,13 @@ void IOBufQueue::append(unique_ptr<IOBuf>&& buf, bool pack) {
     chainLength_ += buf->computeChainDataLength();
   }
   appendToChain(head_, std::move(buf), pack);
+  if (allowTailReuse) {
+    maybeReuseTail();
+  }
 }
 
-void IOBufQueue::append(const folly::IOBuf& buf, bool pack) {
+void IOBufQueue::append(
+    const folly::IOBuf& buf, bool pack, bool allowTailReuse) {
   if (!head_ || !pack) {
     append(buf.clone(), pack);
     return;
@@ -163,22 +172,14 @@ void IOBufQueue::append(const folly::IOBuf& buf, bool pack) {
     chainLength_ += buf.computeChainDataLength();
   }
 
-  size_t copyRemaining = kMaxPackCopy;
-  std::size_t n;
-  const folly::IOBuf* src = &buf;
   folly::IOBuf* tail = head_->prev();
-  while ((n = src->length()) <= copyRemaining && n <= tail->tailroom()) {
-    if (n > 0) {
-      memcpy(tail->writableTail(), src->data(), n);
-      tail->append(n);
-      copyRemaining -= n;
-    }
-    src = src->next();
-
-    // Consumed full input.
-    if (src == &buf) {
-      return;
-    }
+  const folly::IOBuf* src = &buf;
+  packInto(tail, src, [&](auto&& cur) {
+    auto next = cur->next();
+    return next != &buf ? next : nullptr;
+  });
+  if (!src) {
+    return; // Consumed full input.
   }
 
   // Clone the rest.
@@ -186,9 +187,12 @@ void IOBufQueue::append(const folly::IOBuf& buf, bool pack) {
     head_->prependChain(src->cloneOne());
     src = src->next();
   } while (src != &buf);
+  if (allowTailReuse) {
+    maybeReuseTail();
+  }
 }
 
-void IOBufQueue::append(IOBufQueue& other, bool pack) {
+void IOBufQueue::append(IOBufQueue& other, bool pack, bool allowTailReuse) {
   if (!other.head_) {
     return;
   }
@@ -203,6 +207,9 @@ void IOBufQueue::append(IOBufQueue& other, bool pack) {
     }
   }
   appendToChain(head_, std::move(other.head_), pack);
+  if (allowTailReuse) {
+    maybeReuseTail();
+  }
   other.chainLength_ = 0;
 }
 
@@ -229,9 +236,7 @@ void IOBufQueue::append(const void* buf, size_t len) {
 }
 
 void IOBufQueue::wrapBuffer(
-    const void* buf,
-    size_t len,
-    std::size_t blockSize) {
+    const void* buf, size_t len, std::size_t blockSize) {
   auto src = static_cast<const uint8_t*>(buf);
   while (len != 0) {
     size_t n = std::min(len, size_t(blockSize));
@@ -242,9 +247,7 @@ void IOBufQueue::wrapBuffer(
 }
 
 pair<void*, std::size_t> IOBufQueue::preallocateSlow(
-    std::size_t min,
-    std::size_t newAllocationSize,
-    std::size_t max) {
+    std::size_t min, std::size_t newAllocationSize, std::size_t max) {
   // Avoid grabbing update guard, since we're manually setting the cache ptrs.
   flushCache();
   // Allocate a new buffer of the requested max size.
@@ -253,8 +256,47 @@ pair<void*, std::size_t> IOBufQueue::preallocateSlow(
   tailStart_ = newBuf->writableTail();
   cachePtr_->cachedRange = std::pair<uint8_t*, uint8_t*>(
       tailStart_, tailStart_ + newBuf->tailroom());
+  reusableTail_ = newBuf.get();
   appendToChain(head_, std::move(newBuf), false);
   return make_pair(writableTail(), std::min<std::size_t>(max, tailroom()));
+}
+
+void IOBufQueue::maybeReuseTail() {
+  if (reusableTail_ == nullptr || reusableTail_->isSharedOne() ||
+      // Includes the reusableTail_ == head_->prev() case.
+      reusableTail_->tailroom() <= head_->prev()->tailroom()) {
+    return;
+  }
+  std::unique_ptr<IOBuf> newTail;
+  if (reusableTail_->length() == 0) {
+    // Nothing was written to the old tail, we can just move it to the end.
+    if (reusableTail_ == head_.get()) {
+      newTail = std::exchange(head_, head_->pop());
+    } else {
+      newTail = reusableTail_->unlink();
+    }
+  } else {
+    auto freeFn = [](void*, void* p) { delete reinterpret_cast<IOBuf*>(p); };
+    // We know the tail is not shared, so we can clone it and wrap it in a
+    // new (unshared) IOBuf that owns its writable tail to reuse it.
+
+    // For the case when we're already dealing with a reused tail, we can
+    // use its parent IOBuf to avoid chaining IOBuf objects in the destructor.
+    auto tailBuf = reusableTail_->getFreeFn() == freeFn
+        ? reinterpret_cast<IOBuf*>(reusableTail_->getUserData())
+        : reusableTail_;
+    DCHECK_EQ(tailBuf->bufferEnd(), reusableTail_->bufferEnd());
+    newTail = IOBuf::takeOwnership(
+        reusableTail_->writableTail(),
+        reusableTail_->tailroom(),
+        0,
+        freeFn,
+        tailBuf->cloneOne().release());
+    // Adjust the capacity of the old buffer to release ownership of its tail.
+    reusableTail_->trimWritableTail(reusableTail_->tailroom());
+    reusableTail_ = newTail.get();
+  }
+  head_->prependChain(std::move(newTail));
 }
 
 unique_ptr<IOBuf> IOBufQueue::split(size_t n, bool throwOnUnderflow) {
@@ -283,7 +325,7 @@ unique_ptr<IOBuf> IOBufQueue::split(size_t n, bool throwOnUnderflow) {
       break;
     }
   }
-  if (UNLIKELY(result == nullptr)) {
+  if (FOLLY_UNLIKELY(result == nullptr)) {
     return IOBuf::create(0);
   }
   return result;
@@ -361,16 +403,20 @@ std::unique_ptr<folly::IOBuf> IOBufQueue::pop_front() {
   return retBuf;
 }
 
-void IOBufQueue::clear() {
-  if (!head_) {
-    return;
-  }
+void IOBufQueue::clearAndTryReuseLargestBuffer() {
   auto guard = updateGuard();
-  IOBuf* buf = head_.get();
-  do {
-    buf->clear();
-    buf = buf->next();
-  } while (buf != head_.get());
+  std::unique_ptr<folly::IOBuf> best;
+  while (head_) {
+    auto buf = std::exchange(head_, head_->pop());
+    if (!buf->isSharedOne() &&
+        (best == nullptr || buf->capacity() > best->capacity())) {
+      best = std::move(buf);
+    }
+  }
+  if (best != nullptr) {
+    best->clear();
+    head_ = std::move(best);
+  }
   chainLength_ = 0;
 }
 

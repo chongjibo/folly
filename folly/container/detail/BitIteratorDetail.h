@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@
 
 #include <boost/iterator/iterator_adaptor.hpp>
 
+#include <folly/portability/SysTypes.h>
+
 namespace folly {
 
 template <class BaseIter>
@@ -37,9 +39,7 @@ class BitReference {
  public:
   BitReference(Ref r, size_t bit) : ref_(r), bit_(bit) {}
 
-  /* implicit */ operator bool() const {
-    return ref_ & (one_ << bit_);
-  }
+  /* implicit */ operator bool() const { return ref_ & (one_ << bit_); }
 
   BitReference& operator=(bool b) {
     if (b) {
@@ -50,17 +50,11 @@ class BitReference {
     return *this;
   }
 
-  void set() {
-    ref_ |= (one_ << bit_);
-  }
+  void set() { ref_ |= (one_ << bit_); }
 
-  void clear() {
-    ref_ &= ~(one_ << bit_);
-  }
+  void clear() { ref_ &= ~(one_ << bit_); }
 
-  void flip() {
-    ref_ ^= (one_ << bit_);
-  }
+  void flip() { ref_ ^= (one_ << bit_); }
 
  private:
   // shortcut to avoid writing static_cast everywhere

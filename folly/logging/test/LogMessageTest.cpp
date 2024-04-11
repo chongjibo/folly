@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,20 +27,24 @@ using namespace folly;
   {                                                                           \
     SCOPED_TRACE(                                                             \
         "input string: \"" + folly::backslashify<std::string>(value) + "\""); \
-    LogMessage checkMsg{category,                                             \
-                        LogLevel::ERR,                                        \
-                        __FILE__,                                             \
-                        __LINE__,                                             \
-                        __func__,                                             \
-                        std::string{value}};                                  \
+    LogMessage checkMsg{                                                      \
+        category,                                                             \
+        LogLevel::ERR,                                                        \
+        __FILE__,                                                             \
+        __LINE__,                                                             \
+        __func__,                                                             \
+        std::string{value}};                                                  \
     EXPECT_EQ(expected, checkMsg.getMessage());                               \
     EXPECT_EQ(static_cast<int>(hasNewlines), checkMsg.containsNewlines());    \
     EXPECT_EQ(__FILE__, checkMsg.getFileName());                              \
     EXPECT_EQ(__LINE__, checkMsg.getLineNumber());                            \
+    EXPECT_EQ(" context string", checkMsg.getContextString());                \
   }
 
 TEST(LogMessage, sanitize) {
   LoggerDB db{LoggerDB::TESTING};
+  db.addContextCallback([]() { return "context"; });
+  db.addContextCallback([]() { return "string"; });
   Logger logger{&db, "test"};
   auto* category = logger.getCategory();
 

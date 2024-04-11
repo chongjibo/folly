@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,6 @@
  *    Endian::little(x)   little <-> native
  *    Endian::swap(x)     big <-> little
  *
- * @author Tudor Bosman (tudorb@fb.com)
  */
 
 #pragma once
@@ -67,13 +66,13 @@
 #include <folly/lang/Assume.h>
 #include <folly/portability/Builtins.h>
 
-#if __has_include(<bit>)
+#if __has_include(<bit>) && (__cplusplus >= 202002L || (defined(__cpp_lib_bit_cast) && __cpp_lib_bit_cast >= 201806L))
 #include <bit>
 #endif
 
 namespace folly {
 
-#if __cpp_lib_bit_cast
+#if defined(__cpp_lib_bit_cast) && __cpp_lib_bit_cast >= 201806L
 
 using std::bit_cast;
 
@@ -84,8 +83,8 @@ template <
     typename To,
     typename From,
     std::enable_if_t<
-        sizeof(From) == sizeof(To) && is_trivially_copyable<To>::value &&
-            is_trivially_copyable<From>::value,
+        sizeof(From) == sizeof(To) && std::is_trivially_copyable<To>::value &&
+            std::is_trivially_copyable<From>::value,
         int> = 0>
 To bit_cast(const From& src) noexcept {
   aligned_storage_for_t<To> storage;
@@ -148,8 +147,8 @@ inline constexpr unsigned int findLastSet(T const v) {
   // If X is a power of two X - Y = 1 + ((X - 1) ^ Y). Doing this transformation
   // allows GCC to remove its own xor that it adds to implement clz using bsr.
   // clang-format off
-  using size = index_constant<constexpr_max(sizeof(T), sizeof(U0))>;
-  return v ? 1u + static_cast<unsigned int>((8u * size{} - 1u) ^ (
+  constexpr auto size = constexpr_max(sizeof(T), sizeof(U0));
+  return v ? 1u + static_cast<unsigned int>((8u * size - 1u) ^ (
       sizeof(T) <= sizeof(U0) ? __builtin_clz(bits_to_unsigned<U0>(v)) :
       sizeof(T) <= sizeof(U1) ? __builtin_clzl(bits_to_unsigned<U1>(v)) :
       sizeof(T) <= sizeof(U2) ? __builtin_clzll(bits_to_unsigned<U2>(v)) :
@@ -231,13 +230,11 @@ namespace detail {
 template <size_t Size>
 struct uint_types_by_size;
 
-#define FB_GEN(sz, fn)                                      \
-  static inline uint##sz##_t byteswap_gen(uint##sz##_t v) { \
-    return fn(v);                                           \
-  }                                                         \
-  template <>                                               \
-  struct uint_types_by_size<sz / 8> {                       \
-    using type = uint##sz##_t;                              \
+#define FB_GEN(sz, fn)                                                      \
+  static inline uint##sz##_t byteswap_gen(uint##sz##_t v) { return fn(v); } \
+  template <>                                                               \
+  struct uint_types_by_size<sz / 8> {                                       \
+    using type = uint##sz##_t;                                              \
   };
 
 FB_GEN(8, uint8_t)
@@ -266,12 +263,8 @@ struct EndianInt {
     using B = typename uint_types_by_size<s>::type;
     return bit_cast<T>(byteswap_gen(bit_cast<B>(x)));
   }
-  static T big(T x) {
-    return kIsLittleEndian ? EndianInt::swap(x) : x;
-  }
-  static T little(T x) {
-    return kIsBigEndian ? EndianInt::swap(x) : x;
-  }
+  static T big(T x) { return kIsLittleEndian ? EndianInt::swap(x) : x; }
+  static T little(T x) { return kIsBigEndian ? EndianInt::swap(x) : x; }
 };
 
 } // namespace detail
@@ -283,9 +276,7 @@ struct EndianInt {
 // ntohs, htons == big16
 // ntohl, htonl == big32
 #define FB_GEN1(fn, t, sz) \
-  static t fn##sz(t x) {   \
-    return fn<t>(x);       \
-  }
+  static t fn##sz(t x) { return fn<t>(x); }
 
 #define FB_GEN2(t, sz) \
   FB_GEN1(swap, t, sz) \
@@ -340,7 +331,10 @@ FOLLY_PUSH_WARNING
 FOLLY_CLANG_DISABLE_WARNING("-Wpacked")
 FOLLY_PACK_PUSH
 template <class T>
-struct Unaligned<T, typename std::enable_if<std::is_pod<T>::value>::type> {
+struct Unaligned<
+    T,
+    typename std::enable_if<
+        std::is_standard_layout<T>::value && std::is_trivial<T>::value>::type> {
   Unaligned() = default; // uninitialized
   /* implicit */ Unaligned(T v) : value(v) {}
   T value;
@@ -352,13 +346,15 @@ FOLLY_POP_WARNING
  * Read an unaligned value of type T and return it.
  */
 template <class T>
-inline T loadUnaligned(const void* p) {
+inline constexpr T loadUnaligned(const void* p) {
   static_assert(sizeof(Unaligned<T>) == sizeof(T), "Invalid unaligned size");
   static_assert(alignof(Unaligned<T>) == 1, "Invalid alignment");
-  if (kHasUnalignedAccess) {
+  if constexpr (kHasUnalignedAccess) {
     return static_cast<const Unaligned<T>*>(p)->value;
+  } else if constexpr (alignof(T) == 1) {
+    return *static_cast<const T*>(p);
   } else {
-    T value;
+    T value{};
     memcpy(&value, p, sizeof(T));
     return value;
   }
@@ -381,7 +377,7 @@ inline T partialLoadUnaligned(const void* p, size_t l) {
 
   auto cp = static_cast<const char*>(p);
   T value = 0;
-  if (!kHasUnalignedAccess || !kIsLittleEndian) {
+  if constexpr (!kHasUnalignedAccess || !kIsLittleEndian) {
     // Unsupported, use memcpy.
     memcpy(&value, cp, l);
     return value;
@@ -409,7 +405,7 @@ template <class T>
 inline void storeUnaligned(void* p, T value) {
   static_assert(sizeof(Unaligned<T>) == sizeof(T), "Invalid unaligned size");
   static_assert(alignof(Unaligned<T>) == 1, "Invalid alignment");
-  if (kHasUnalignedAccess) {
+  if constexpr (kHasUnalignedAccess) {
     // Prior to C++14, the spec says that a placement new like this
     // is required to check that p is not nullptr, and to do nothing
     // if p is a nullptr. By assuming it's not a nullptr, we get a
@@ -417,6 +413,10 @@ inline void storeUnaligned(void* p, T value) {
     // than just silently doing nothing.
     assume(p != nullptr);
     new (p) Unaligned<T>(value);
+  } else if constexpr (alignof(T) == 1) {
+    // See above comment about assuming not a nullptr
+    assume(p != nullptr);
+    new (p) T(value);
   } else {
     memcpy(p, &value, sizeof(T));
   }

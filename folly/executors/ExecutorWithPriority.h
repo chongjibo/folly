@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,19 @@
 
 #pragma once
 
-#include <folly/Executor.h>
 #include <atomic>
+
+#include <folly/Executor.h>
 
 namespace folly {
 class ExecutorWithPriority {
  public:
   template <typename Callback>
   static Executor::KeepAlive<> createDynamic(
-      Executor::KeepAlive<Executor> executor,
-      Callback&& callback);
+      Executor::KeepAlive<Executor> executor, Callback&& callback);
 
   static Executor::KeepAlive<> create(
-      Executor::KeepAlive<Executor> executor,
-      int8_t priority);
+      Executor::KeepAlive<Executor> executor, int8_t priority);
 };
 } // namespace folly
 

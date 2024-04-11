@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,18 +29,14 @@ struct MockClock {
   using duration = std::chrono::steady_clock::duration;
   using time_point = std::chrono::steady_clock::time_point;
 
-  static time_point now() {
-    return Now;
-  }
+  static time_point now() { return Now; }
 
   static time_point Now;
 };
 
 class SimpleDigest {
  public:
-  explicit SimpleDigest(size_t sz) {
-    EXPECT_EQ(kDigestSize, sz);
-  }
+  explicit SimpleDigest(size_t sz) { EXPECT_EQ(kDigestSize, sz); }
 
   SimpleDigest merge(Range<const double*> r) const {
     SimpleDigest digest(100);
@@ -62,13 +58,9 @@ class SimpleDigest {
     return digest;
   }
 
-  std::vector<double> getValues() const {
-    return values_;
-  }
+  std::vector<double> getValues() const { return values_; }
 
-  bool empty() const {
-    return values_.empty();
-  }
+  bool empty() const { return values_.empty(); }
 
  private:
   std::vector<double> values_;
@@ -186,8 +178,8 @@ TEST_F(BufferedSlidingWindowTest, PartiallyPassedExpiry) {
   EXPECT_EQ(1, digests.size());
   EXPECT_EQ(3, digests[0].getValues().size());
 
-  for (double i = 0; i < 3; ++i) {
-    EXPECT_EQ(i, digests[0].getValues()[i]);
+  for (size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(double(i), digests[0].getValues()[i]);
   }
 }
 
@@ -205,8 +197,8 @@ TEST_F(BufferedSlidingWindowTest, ForceUpdate) {
   digests = bsw->get();
   EXPECT_EQ(1, digests.size());
   EXPECT_EQ(3, digests[0].getValues().size());
-  for (double i = 0; i < 3; ++i) {
-    EXPECT_EQ(i, digests[0].getValues()[i]);
+  for (size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(double(i), digests[0].getValues()[i]);
   }
 
   // append 3 and flush again; 3 will be merged with
@@ -216,8 +208,8 @@ TEST_F(BufferedSlidingWindowTest, ForceUpdate) {
   digests = bsw->get();
   EXPECT_EQ(1, digests.size());
   EXPECT_EQ(4, digests[0].getValues().size());
-  for (double i = 0; i < 4; ++i) {
-    EXPECT_EQ(i, digests[0].getValues()[i]);
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(double(i), digests[0].getValues()[i]);
   }
 
   // append 4 and do a regular get. previous values
@@ -226,8 +218,8 @@ TEST_F(BufferedSlidingWindowTest, ForceUpdate) {
   digests = bsw->get();
   EXPECT_EQ(1, digests.size());
   EXPECT_EQ(4, digests[0].getValues().size());
-  for (double i = 0; i < 4; ++i) {
-    EXPECT_EQ(i, digests[0].getValues()[i]);
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(double(i), digests[0].getValues()[i]);
   }
 
   // pass expiry
@@ -239,8 +231,8 @@ TEST_F(BufferedSlidingWindowTest, ForceUpdate) {
   EXPECT_EQ(4, digests[0].getValues().front());
 
   EXPECT_EQ(4, digests[1].getValues().size());
-  for (double i = 0; i < 4; ++i) {
-    EXPECT_EQ(i, digests[1].getValues()[i]);
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(double(i), digests[1].getValues()[i]);
   }
 }
 

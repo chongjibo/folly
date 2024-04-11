@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 
 #include <atomic>
 
-TEST(PThreadTest, pthread_create_and_join) {
+TEST(PThreadTest, pthreadCreateAndJoin) {
   static std::atomic<bool> hasRun{false};
   static std::atomic<int32_t> argPassedIn{0};
   auto mainFunc = [](void* arg) -> void* {
@@ -36,7 +36,7 @@ TEST(PThreadTest, pthread_create_and_join) {
   EXPECT_EQ(argPassedIn, 53);
 }
 
-TEST(PThreadTest, pthread_join_return_value) {
+TEST(PThreadTest, pthreadJoinReturnValue) {
   static std::atomic<bool> hasRun{false};
   auto mainFunc = [](void*) -> void* {
     hasRun = true;
@@ -51,7 +51,7 @@ TEST(PThreadTest, pthread_join_return_value) {
   EXPECT_TRUE(hasRun);
 }
 
-TEST(PThreadTest, pthread_equal) {
+TEST(PThreadTest, pthreadEqual) {
   auto self = pthread_self();
   EXPECT_NE(pthread_equal(self, self), 0);
 
@@ -59,9 +59,11 @@ TEST(PThreadTest, pthread_equal) {
   pthread_t thread;
   EXPECT_EQ(pthread_create(&thread, nullptr, mainFunc, nullptr), 0);
   EXPECT_EQ(pthread_equal(thread, self), 0);
+  void* exitCode = nullptr;
+  pthread_join(thread, &exitCode);
 }
 
-TEST(PThreadTest, pthread_self_on_pthread_thread) {
+TEST(PThreadTest, pthreadSelfOnPthreadThread) {
   static std::atomic<bool> hasRun{false};
   static pthread_t otherSelf;
   auto mainFunc = [](void*) -> void* {

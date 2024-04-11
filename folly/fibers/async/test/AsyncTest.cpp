@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,11 @@
  * limitations under the License.
  */
 
-#include <folly/portability/GMock.h>
-#include <folly/portability/GTest.h>
+#include <folly/fibers/async/Async.h>
 
 #include <folly/fibers/FiberManager.h>
 #include <folly/fibers/FiberManagerMap.h>
-#include <folly/fibers/async/Async.h>
+#include <folly/fibers/async/AsyncStack.h>
 #include <folly/fibers/async/Baton.h>
 #include <folly/fibers/async/Collect.h>
 #include <folly/fibers/async/FiberManager.h>
@@ -27,11 +26,12 @@
 #include <folly/fibers/async/Promise.h>
 #include <folly/fibers/async/WaitUtils.h>
 #include <folly/io/async/EventBase.h>
+#include <folly/portability/GMock.h>
+#include <folly/portability/GTest.h>
 
-#if FOLLY_HAS_COROUTINES
+#include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/Sleep.h>
 #include <folly/fibers/async/Task.h>
-#endif
 
 using namespace ::testing;
 using namespace folly::fibers;
@@ -56,6 +56,9 @@ async::Async<std::tuple<int, float, std::string>> getTuple() {
 }
 
 struct NonCopyableNonMoveable {
+  constexpr NonCopyableNonMoveable() noexcept = default;
+  ~NonCopyableNonMoveable() = default;
+
   NonCopyableNonMoveable(const NonCopyableNonMoveable&) = delete;
   NonCopyableNonMoveable(NonCopyableNonMoveable&&) = delete;
   NonCopyableNonMoveable& operator=(NonCopyableNonMoveable const&) = delete;
@@ -84,8 +87,7 @@ TEST(AsyncTest, asyncAwait) {
           static_assert(
               std::is_same<decltype(ref), NonCopyableNonMoveable const&>::value,
               "");
-        })
-          .getVia(&evb));
+        }).getVia(&evb));
 }
 
 TEST(AsyncTest, asyncBaton) {
@@ -116,8 +118,7 @@ TEST(AsyncTest, asyncBaton) {
             EXPECT_FALSE(res);
             EXPECT_LE(start + kTimeout, std::chrono::steady_clock::now());
           }
-        })
-          .getVia(&evb));
+        }).getVia(&evb));
 }
 
 TEST(AsyncTest, asyncPromise) {
@@ -128,8 +129,7 @@ TEST(AsyncTest, asyncPromise) {
       auto res = async::await(
           async::promiseWait([](Promise<int> p) { p.setValue(42); }));
       EXPECT_EQ(res, 42);
-    })
-      .getVia(&evb);
+    }).getVia(&evb);
 }
 
 TEST(AsyncTest, asyncFuture) {
@@ -177,8 +177,7 @@ TEST(AsyncTest, asyncFuture) {
         EXPECT_TRUE(std::get<1>(res));
         EXPECT_FALSE(std::get<2>(res));
       }
-    })
-      .getVia(&evb);
+    }).getVia(&evb);
 }
 
 #if FOLLY_HAS_COROUTINES
@@ -192,6 +191,10 @@ TEST(AsyncTest, asyncTask) {
         onFiber());
   };
 
+  auto voidCoroFn = []() -> folly::coro::Task<void> {
+    co_await folly::coro::sleep(std::chrono::milliseconds(1));
+  };
+
   folly::EventBase evb;
   auto& fm = getFiberManager(evb);
 
@@ -200,8 +203,8 @@ TEST(AsyncTest, asyncTask) {
       EXPECT_EQ(
           std::make_tuple(std::this_thread::get_id(), true, false),
           async::init_await(async::taskWait(coroFn())));
-    })
-      .getVia(&evb);
+      async::init_await(async::taskWait(voidCoroFn()));
+    }).getVia(&evb);
 }
 #endif
 
@@ -214,7 +217,6 @@ TEST(AsyncTest, asyncTraits) {
       std::is_same<int&, async::async_inner_type_t<async::Async<int&>>>::value);
 }
 
-#if __cpp_deduction_guides >= 201703
 TEST(AsyncTest, asyncConstructorGuides) {
   auto getLiteral = []() { return async::Async(1); };
   // int&& -> int
@@ -242,7 +244,6 @@ TEST(AsyncTest, asyncConstructorGuides) {
   static_assert(
       std::is_same<int&, async::async_inner_type_t<decltype(getRef())>>::value);
 }
-#endif
 
 TEST(FiberManager, asyncFiberManager) {
   {
@@ -311,7 +312,7 @@ TEST(AsyncTest, collect) {
   };
   async::executeOnFiberAndWait([&]() -> async::Async<void> {
     {
-      std::array<bool, 3> cs{false, false, false};
+      std::array<bool, 3> cs{{false, false, false}};
       std::vector<folly::Function<async::Async<void>()>> tasks;
       tasks.emplace_back(makeVoidTask(cs[0]));
       tasks.emplace_back(makeVoidTask(cs[1]));
@@ -329,7 +330,7 @@ TEST(AsyncTest, collect) {
     }
 
     {
-      std::array<bool, 3> cs{false, false, false};
+      std::array<bool, 3> cs{{false, false, false}};
       async::await(async::collectAll(
           makeVoidTask(cs[0]), makeVoidTask(cs[1]), makeVoidTask(cs[2])));
       EXPECT_THAT(cs, ElementsAre(true, true, true));
@@ -381,3 +382,190 @@ TEST(FiberManager, remoteFiberManager) {
   EXPECT_TRUE(test1Finished);
   EXPECT_TRUE(test2Finished);
 }
+
+folly::AsyncStackFrame* FOLLY_NULLABLE currentFrame() {
+  auto* root = folly::tryGetCurrentAsyncStackRoot();
+  return root ? root->getTopFrame() : nullptr;
+}
+
+FOLLY_NOINLINE std::vector<std::uintptr_t> getAsyncStack() {
+  static constexpr size_t maxFrames = 100;
+  std::array<std::uintptr_t, maxFrames> result;
+
+  result[0] =
+      reinterpret_cast<std::uintptr_t>(FOLLY_ASYNC_STACK_RETURN_ADDRESS());
+  auto numFrames = folly::getAsyncStackTraceFromInitialFrame(
+      currentFrame(), result.data() + 1, maxFrames - 1);
+
+  return std::vector<std::uintptr_t>(
+      std::make_move_iterator(result.begin()),
+      std::make_move_iterator(result.begin()) + numFrames + 1);
+}
+
+template <typename F>
+void expectStackSize(size_t size, F&& func) {
+  EXPECT_EQ(size, func().size());
+}
+
+TEST(AsyncStack, fiberEntryPoint) {
+  // Only frame will be getAsyncStack. No connection to callers
+  expectStackSize(1, []() {
+    return async::executeOnFiberAndWait(
+        []() -> async::Async<std::vector<std::uintptr_t>> {
+          // fiber
+          return getAsyncStack();
+        });
+  });
+
+  // [0] - getAsyncStack
+  // [1] - fiber
+  expectStackSize(2, []() {
+    return async::executeOnFiberAndWait([]() {
+      return async::executeWithNewRoot(
+          [&]() -> async::Async<std::vector<std::uintptr_t>> {
+            // fiber
+            return getAsyncStack();
+          },
+          currentFrame());
+    });
+  });
+}
+
+TEST(AsyncStack, awaitTry) {
+  async::executeOnFiberAndWait([]() -> async::Async<void> {
+    auto res =
+        async::await(async::awaitTry([]() -> async::Async<int> { return 1; }));
+    EXPECT_EQ(*res, 1);
+    res = async::await(async::awaitTry(
+        []() -> async::Async<int> { throw std::logic_error(""); }));
+    EXPECT_THROW(*res, std::logic_error);
+
+    auto void_res = async::await(
+        async::awaitTry([]() -> async::Async<void> { return {}; }));
+    EXPECT_NO_THROW(*void_res);
+    void_res = async::await(async::awaitTry(
+        []() -> async::Async<void> { throw std::logic_error(""); }));
+    EXPECT_THROW(*void_res, std::logic_error);
+
+    auto try_res = async::await(
+        async::awaitTry([]() -> async::Async<folly::Try<int>> { return 1; }));
+    EXPECT_EQ(**try_res, 1);
+    try_res =
+        async::await(async::awaitTry([]() -> async::Async<folly::Try<int>> {
+          return folly::makeTryWith(
+              []() -> int { throw std::logic_error(""); });
+        }));
+    EXPECT_NO_THROW(*try_res);
+    EXPECT_THROW(**try_res, std::logic_error);
+    return {};
+  });
+}
+
+TEST(AsyncStack, fiberToFiber) {
+  // Only frame will be getAsyncStack. No connection to callers
+  expectStackSize(1, []() {
+    return async::executeOnFiberAndWait([]() {
+      // fiber1
+      return async::executeOnNewFiber(
+          []() -> async::Async<std::vector<std::uintptr_t>> {
+            // fiber2
+            return getAsyncStack();
+          });
+    });
+  });
+
+  // [0] - getAsyncStack
+  // [1] - fiber2
+  // [2] - fiber1
+  expectStackSize(3, []() {
+    return async::executeOnFiberAndWait([]() {
+      return async::executeWithNewRoot(
+          [&]() {
+            // fiber1
+            auto* cf = CHECK_NOTNULL(currentFrame());
+            return async::executeOnNewFiber([cf]() {
+              return async::executeWithNewRoot(
+                  []() -> async::Async<std::vector<std::uintptr_t>> {
+                    // fiber2
+                    return getAsyncStack();
+                  },
+                  cf);
+            });
+          },
+          currentFrame());
+    });
+  });
+}
+
+TEST(AsyncStack, fiberToMainContext) {
+  // Only frame will be getAsyncStack. No connection to callers
+  expectStackSize(1, []() {
+    return async::executeOnFiberAndWait(
+        []() -> async::Async<std::vector<std::uintptr_t>> {
+          // fiber
+          return runInMainContext([]() { return getAsyncStack(); });
+        });
+  });
+
+  // [0] - getAsyncStack
+  // [1] - mainContext
+  // [2] - fiber
+  expectStackSize(3, []() {
+    return async::executeOnFiberAndWait([]() {
+      return async::executeWithNewRoot(
+          [&]() -> async::Async<std::vector<std::uintptr_t>> {
+            // fiber
+            return async::runInMainContextWithTracing([]() {
+              // mainContext
+              return getAsyncStack();
+            });
+          },
+          currentFrame());
+    });
+  });
+}
+
+#if FOLLY_HAS_COROUTINES
+TEST(AsyncStack, coroToFiber) {
+  // Only frame will be getAsyncStack. No connection to callers
+  expectStackSize(1, [&]() {
+    folly::EventBase evb;
+    return folly::coro::blockingWait(
+        [&]() -> folly::coro::Task<std::vector<std::uintptr_t>> {
+          // coro
+          co_return co_await async::addFiberFuture(
+              []() -> async::Async<std::vector<std::uintptr_t>> {
+                // fiber
+                return getAsyncStack();
+              },
+              getFiberManager(evb));
+        }(),
+        &evb);
+  });
+
+  // [0] - getAsyncStack
+  // [1] - fiber
+  // [2] - coro
+  // [3] - BlockingWaitTask
+  // [4] - blockingWait
+  expectStackSize(5, [&]() {
+    folly::EventBase evb;
+    return folly::coro::blockingWait(
+        [&]() -> folly::coro::Task<std::vector<std::uintptr_t>> {
+          // coro
+          auto* cf = currentFrame();
+          co_return co_await async::addFiberFuture(
+              [cf]() {
+                return async::executeWithNewRoot(
+                    []() -> async::Async<std::vector<std::uintptr_t>> {
+                      // fiber
+                      return getAsyncStack();
+                    },
+                    cf);
+              },
+              getFiberManager(evb));
+        }(),
+        &evb);
+  });
+}
+#endif

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,16 +56,12 @@ class WaitOptions {
     static constexpr bool logging_enabled = true;
   };
 
-  constexpr std::chrono::nanoseconds spin_max() const {
-    return spin_max_;
-  }
+  constexpr std::chrono::nanoseconds spin_max() const { return spin_max_; }
   constexpr WaitOptions& spin_max(std::chrono::nanoseconds dur) {
     spin_max_ = dur;
     return *this;
   }
-  constexpr bool logging_enabled() const {
-    return logging_enabled_;
-  }
+  constexpr bool logging_enabled() const { return logging_enabled_; }
   constexpr WaitOptions& logging_enabled(bool enable) {
     logging_enabled_ = enable;
     return *this;

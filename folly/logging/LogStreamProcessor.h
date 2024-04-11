@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <cstdlib>
+
 #include <fmt/core.h>
 #include <folly/CPortability.h>
 #include <folly/Conv.h>
@@ -26,7 +28,6 @@
 #include <folly/logging/LogMessage.h>
 #include <folly/logging/LogStream.h>
 #include <folly/logging/ObjectToString.h>
-#include <cstdlib>
 
 namespace folly {
 
@@ -185,7 +186,6 @@ class LogStreamProcessor {
             INTERNAL,
             formatLogString(fmt, std::forward<Args>(args)...)) {}
 
-#ifdef __INCLUDE_LEVEL__
   /*
    * Versions of the above constructors to use in XLOG() macros that appear in
    * .cpp files.  These are only used if the compiler supports the
@@ -213,12 +213,7 @@ class LogStreamProcessor {
       folly::StringPiece functionName,
       AppendType) noexcept
       : LogStreamProcessor(
-            fileScopeInfo,
-            level,
-            filename,
-            lineNumber,
-            functionName,
-            APPEND) {}
+            fileScopeInfo, level, filename, lineNumber, functionName, APPEND) {}
   template <typename... Args>
   LogStreamProcessor(
       XlogFileScopeInfo* fileScopeInfo,
@@ -258,7 +253,6 @@ class LogStreamProcessor {
             functionName,
             INTERNAL,
             formatLogString(fmt, std::forward<Args>(args)...)) {}
-#endif
 
   ~LogStreamProcessor() noexcept;
 
@@ -276,9 +270,7 @@ class LogStreamProcessor {
    */
   void operator&(LogStream&& stream) noexcept;
 
-  std::ostream& stream() noexcept {
-    return stream_;
-  }
+  std::ostream& stream() noexcept { return stream_; }
 
   void logNow() noexcept;
 
@@ -339,9 +331,7 @@ class LogStreamProcessor {
   }
 
   FOLLY_NOINLINE std::string vformatLogString(
-      folly::StringPiece fmt,
-      fmt::format_args args,
-      bool& failed) noexcept {
+      folly::StringPiece fmt, fmt::format_args args, bool& failed) noexcept {
     return folly::catch_exception<const std::exception&>(
         [&] {
           return fmt::vformat(fmt::string_view(fmt.data(), fmt.size()), args);
@@ -375,8 +365,7 @@ class LogStreamProcessor {
    */
   template <typename... Args>
   FOLLY_NOINLINE std::string formatLogString(
-      folly::StringPiece fmt,
-      const Args&... args) noexcept {
+      folly::StringPiece fmt, const Args&... args) noexcept {
     bool failed = false;
     std::string result =
         vformatLogString(fmt, fmt::make_format_args(args...), failed);
@@ -435,7 +424,7 @@ class LogStreamVoidify {
    * eliminated by the compiler, leaving only the LogStreamProcessor destructor
    * invocation, which cannot be eliminated.
    */
-  void operator&(std::ostream&)noexcept {}
+  void operator&(std::ostream&) noexcept {}
 };
 
 template <>

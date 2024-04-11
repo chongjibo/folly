@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,12 @@
  */
 
 #include <folly/io/async/AsyncPipe.h>
+
+#include <fcntl.h>
+
 #include <folly/Memory.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GTest.h>
-
-#include <fcntl.h>
 
 using namespace testing;
 
@@ -27,12 +28,8 @@ namespace {
 
 class TestReadCallback : public folly::AsyncReader::ReadCallback {
  public:
-  bool isBufferMovable() noexcept override {
-    return movable_;
-  }
-  void setMovable(bool movable) {
-    movable_ = movable;
-  }
+  bool isBufferMovable() noexcept override { return movable_; }
+  void setMovable(bool movable) { movable_ = movable; }
 
   void readBufferAvailable(
       std::unique_ptr<folly::IOBuf> readBuf) noexcept override {
@@ -64,7 +61,7 @@ class TestReadCallback : public folly::AsyncReader::ReadCallback {
   void reset() {
     movable_ = false;
     error_ = false;
-    readBuffer_.clear();
+    readBuffer_.reset();
   }
 
   folly::IOBufQueue readBuffer_{folly::IOBufQueue::cacheChainLength()};
@@ -74,9 +71,7 @@ class TestReadCallback : public folly::AsyncReader::ReadCallback {
 
 class TestWriteCallback : public folly::AsyncWriter::WriteCallback {
  public:
-  void writeSuccess() noexcept override {
-    writes_++;
-  }
+  void writeSuccess() noexcept override { writes_++; }
 
   void writeErr(size_t, const folly::AsyncSocketException&) noexcept override {
     error_ = true;

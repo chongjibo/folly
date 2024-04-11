@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,14 +41,16 @@ class SimpleQuantileEstimator {
   SimpleQuantileEstimator();
 
   QuantileEstimates estimateQuantiles(
-      Range<const double*> quantiles,
-      TimePoint now = ClockT::now());
+      Range<const double*> quantiles, TimePoint now = ClockT::now());
 
   void addValue(double value, TimePoint now = ClockT::now());
 
   /// Flush buffered values
-  void flush() {
-    bufferedDigest_.flush();
+  void flush() { bufferedDigest_.flush(); }
+
+  // Get point-in-time TDigest
+  TDigest getDigest(TimePoint now = ClockT::now()) {
+    return bufferedDigest_.get(now);
   }
 
  private:
@@ -63,20 +65,21 @@ template <typename ClockT = std::chrono::steady_clock>
 class SlidingWindowQuantileEstimator {
  public:
   using TimePoint = typename ClockT::time_point;
+  using Duration = typename ClockT::duration;
 
-  SlidingWindowQuantileEstimator(
-      std::chrono::seconds windowDuration,
-      size_t nWindows = 60);
+  SlidingWindowQuantileEstimator(Duration windowDuration, size_t nWindows = 60);
 
   QuantileEstimates estimateQuantiles(
-      Range<const double*> quantiles,
-      TimePoint now = ClockT::now());
+      Range<const double*> quantiles, TimePoint now = ClockT::now());
 
   void addValue(double value, TimePoint now = ClockT::now());
 
   /// Flush buffered values
-  void flush() {
-    bufferedSlidingWindow_.flush();
+  void flush() { bufferedSlidingWindow_.flush(); }
+
+  // Get point-in-time TDigest
+  TDigest getDigest(TimePoint now = ClockT::now()) {
+    return TDigest::merge(bufferedSlidingWindow_.get(now));
   }
 
  private:

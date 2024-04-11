@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,31 +28,37 @@ struct from_any {
   /* implicit */ from_any(T&&) {}
 };
 
+struct Cv {
+  /* implicit */ [[maybe_unused]] operator std::false_type() const;
+  /* implicit */ [[maybe_unused]] operator std::true_type() const noexcept;
+};
+
+struct ImmCv : Cv {
+  ImmCv(ImmCv const&) = delete;
+  ImmCv(ImmCv&&) = delete;
+  void operator=(ImmCv const&) = delete;
+  void operator=(ImmCv&&) = delete;
+};
+
 struct Fn {
-  char operator()(int, int) noexcept {
-    return 'a';
-  }
-  int volatile&& operator()(int, char const*) {
-    return std::move(x_);
-  }
-  float operator()(float, float) {
-    return 3.14;
-  }
+  char operator()(int, int) noexcept { return 'a'; }
+  int volatile&& operator()(int, char const*) { return std::move(x_); }
+  float operator()(float, float) { return 3.14; }
+  /* implicit */ [[maybe_unused]] Cv operator()(Cv*) noexcept;
+  /* implicit */ [[maybe_unused]] ImmCv operator()(ImmCv*) noexcept;
   int volatile x_ = 17;
 };
 
-FOLLY_CREATE_MEMBER_INVOKER(test_invoker, test);
+namespace invoker {
+
+FOLLY_CREATE_MEMBER_INVOKER_SUITE(test);
+
+}
 
 struct Obj {
-  char test(int, int) noexcept {
-    return 'a';
-  }
-  int volatile&& test(int, char const*) {
-    return std::move(x_);
-  }
-  float test(float, float) {
-    return 3.14;
-  }
+  char test(int, int) noexcept { return 'a'; }
+  int volatile&& test(int, char const*) { return std::move(x_); }
+  float test(float, float) { return 3.14; }
   int volatile x_ = 17;
 };
 
@@ -73,7 +79,7 @@ char go(Obj const&, char const*) {
 namespace z {
 struct Obj {};
 } // namespace z
-FOLLY_MAYBE_UNUSED float go(z::Obj const&, int) {
+[[maybe_unused]] float go(z::Obj const&, int) {
   return 9;
 }
 
@@ -84,15 +90,20 @@ struct Obj {
 void swap(Obj&, Obj&) noexcept {} // no-op
 } // namespace swappable
 
-struct AltSwappable;
+struct AltSwappable {};
 struct AltSwappableRet {};
 namespace unswappable {
-FOLLY_MAYBE_UNUSED AltSwappableRet swap(AltSwappable&, AltSwappable&);
+[[maybe_unused]] AltSwappableRet swap(AltSwappable&, AltSwappable&);
 } // namespace unswappable
 
-FOLLY_CREATE_FREE_INVOKER(go_invoker, go);
-FOLLY_CREATE_FREE_INVOKER(swap_invoker, swap, std, unswappable);
-FOLLY_CREATE_FREE_INVOKER(unused_invoker, definitely_unused_name_);
+namespace invoker {
+
+FOLLY_CREATE_FREE_INVOKER_SUITE(go);
+FOLLY_CREATE_FREE_INVOKER_SUITE(swap, std, unswappable);
+FOLLY_CREATE_FREE_INVOKER_SUITE(no_such_thing);
+FOLLY_CREATE_QUAL_INVOKER_SUITE(std_swap, ::std::swap);
+
+} // namespace invoker
 
 } // namespace
 
@@ -123,28 +134,47 @@ TEST_F(InvokeTest, is_invocable) {
   EXPECT_TRUE((folly::is_invocable_v<Fn, int, char>));
   EXPECT_TRUE((folly::is_invocable_v<Fn, int, char*>));
   EXPECT_FALSE((folly::is_invocable_v<Fn, int>));
+  EXPECT_TRUE((folly::is_invocable_v<Fn, Cv*>));
+  EXPECT_TRUE((folly::is_invocable_v<Fn, ImmCv*>));
 }
 
 TEST_F(InvokeTest, is_invocable_r) {
   EXPECT_TRUE((folly::is_invocable_r_v<int, Fn, int, char>));
   EXPECT_TRUE((folly::is_invocable_r_v<int, Fn, int, char*>));
   EXPECT_FALSE((folly::is_invocable_r_v<int, Fn, int>));
+  EXPECT_TRUE((folly::is_invocable_r_v<std::false_type, Fn, Cv*>));
+  EXPECT_TRUE((folly::is_invocable_r_v<std::true_type, Fn, Cv*>));
+  EXPECT_TRUE((folly::is_invocable_r_v<void, Fn, Cv*>));
+  EXPECT_TRUE((folly::is_invocable_r_v<ImmCv, Fn, ImmCv*>));
+  EXPECT_TRUE((folly::is_invocable_r_v<void, Fn, ImmCv*>));
+  EXPECT_TRUE((folly::is_invocable_r_v<std::false_type, Fn, ImmCv*>));
+  EXPECT_TRUE((folly::is_invocable_r_v<std::true_type, Fn, ImmCv*>));
 }
 
 TEST_F(InvokeTest, is_nothrow_invocable) {
   EXPECT_TRUE((folly::is_nothrow_invocable_v<Fn, int, char>));
   EXPECT_FALSE((folly::is_nothrow_invocable_v<Fn, int, char*>));
   EXPECT_FALSE((folly::is_nothrow_invocable_v<Fn, int>));
+  EXPECT_TRUE((folly::is_nothrow_invocable_v<Fn, Cv*>));
+  EXPECT_TRUE((folly::is_nothrow_invocable_v<Fn, ImmCv*>));
 }
 
 TEST_F(InvokeTest, is_nothrow_invocable_r) {
   EXPECT_TRUE((folly::is_nothrow_invocable_r_v<int, Fn, int, char>));
   EXPECT_FALSE((folly::is_nothrow_invocable_r_v<int, Fn, int, char*>));
   EXPECT_FALSE((folly::is_nothrow_invocable_r_v<int, Fn, int>));
+  EXPECT_FALSE((folly::is_nothrow_invocable_r_v<std::false_type, Fn, Cv*>));
+  EXPECT_TRUE((folly::is_nothrow_invocable_r_v<std::true_type, Fn, Cv*>));
+  EXPECT_TRUE((folly::is_nothrow_invocable_r_v<void, Fn, Cv*>));
+  EXPECT_TRUE((folly::is_nothrow_invocable_r_v<ImmCv, Fn, ImmCv*>));
+  EXPECT_TRUE((folly::is_nothrow_invocable_r_v<void, Fn, ImmCv*>));
+  EXPECT_FALSE((folly::is_nothrow_invocable_r_v<int, Fn, ImmCv*>));
+  EXPECT_FALSE((folly::is_nothrow_invocable_r_v<std::false_type, Fn, ImmCv*>));
+  EXPECT_TRUE((folly::is_nothrow_invocable_r_v<std::true_type, Fn, ImmCv*>));
 }
 
 TEST_F(InvokeTest, free_invoke) {
-  using traits = folly::invoke_traits<go_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::go)>;
 
   x::Obj x_;
   y::Obj y_;
@@ -157,7 +187,7 @@ TEST_F(InvokeTest, free_invoke) {
 }
 
 TEST_F(InvokeTest, free_invoke_result) {
-  using traits = folly::invoke_traits<go_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::go)>;
 
   EXPECT_TRUE((std::is_same<int, traits::invoke_result_t<x::Obj, int>>::value));
   EXPECT_TRUE((
@@ -165,7 +195,7 @@ TEST_F(InvokeTest, free_invoke_result) {
 }
 
 TEST_F(InvokeTest, free_is_invocable) {
-  using traits = folly::invoke_traits<go_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::go)>;
 
   EXPECT_TRUE((traits::is_invocable_v<x::Obj, int>));
   EXPECT_TRUE((traits::is_invocable_v<y::Obj, char const*>));
@@ -174,7 +204,7 @@ TEST_F(InvokeTest, free_is_invocable) {
 }
 
 TEST_F(InvokeTest, free_is_invocable_r) {
-  using traits = folly::invoke_traits<go_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::go)>;
 
   EXPECT_TRUE((traits::is_invocable_r_v<int, x::Obj, int>));
   EXPECT_TRUE((traits::is_invocable_r_v<char, y::Obj, char const*>));
@@ -183,7 +213,7 @@ TEST_F(InvokeTest, free_is_invocable_r) {
 }
 
 TEST_F(InvokeTest, free_is_nothrow_invocable) {
-  using traits = folly::invoke_traits<go_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::go)>;
 
   EXPECT_TRUE((traits::is_nothrow_invocable_v<x::Obj, int>));
   EXPECT_FALSE((traits::is_nothrow_invocable_v<y::Obj, char const*>));
@@ -192,7 +222,7 @@ TEST_F(InvokeTest, free_is_nothrow_invocable) {
 }
 
 TEST_F(InvokeTest, free_is_nothrow_invocable_r) {
-  using traits = folly::invoke_traits<go_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::go)>;
 
   EXPECT_TRUE((traits::is_nothrow_invocable_r_v<int, x::Obj, int>));
   EXPECT_FALSE((traits::is_nothrow_invocable_r_v<char, y::Obj, char const*>));
@@ -201,7 +231,7 @@ TEST_F(InvokeTest, free_is_nothrow_invocable_r) {
 }
 
 TEST_F(InvokeTest, free_invoke_swap) {
-  using traits = folly::invoke_traits<swap_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::swap)>;
 
   int a = 3;
   int b = 4;
@@ -225,8 +255,42 @@ TEST_F(InvokeTest, free_invoke_swap) {
       traits::is_invocable_r_v<AltSwappableRet, AltSwappable&, AltSwappable&>));
 }
 
+TEST_F(InvokeTest, qual_invoke_swap) {
+  using traits = folly::invoke_traits<decltype(invoker::std_swap)>;
+
+  int a = 3;
+  int b = 4;
+
+  traits::invoke(a, b);
+  EXPECT_EQ(4, a);
+  EXPECT_EQ(3, b);
+
+  swappable::Obj x{3};
+  swappable::Obj y{4};
+
+  traits::invoke(x, y);
+  EXPECT_EQ(4, x.x_);
+  EXPECT_EQ(3, y.x_);
+
+  std::swap(x, y);
+  EXPECT_EQ(3, x.x_);
+  EXPECT_EQ(4, y.x_);
+}
+
+TEST_F(InvokeTest, invoke_qual) {
+  auto go = FOLLY_INVOKE_QUAL(::std::swap);
+
+  int a = 3;
+  int b = 4;
+  EXPECT_TRUE(noexcept(go(a, b)));
+
+  go(a, b);
+  EXPECT_EQ(4, a);
+  EXPECT_EQ(3, b);
+}
+
 TEST_F(InvokeTest, member_invoke) {
-  using traits = folly::invoke_traits<test_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::test)>;
 
   Obj fn;
 
@@ -238,7 +302,7 @@ TEST_F(InvokeTest, member_invoke) {
 }
 
 TEST_F(InvokeTest, member_invoke_result) {
-  using traits = folly::invoke_traits<test_invoker>;
+  using traits = folly::invoke_traits<invoker::test_fn>;
 
   EXPECT_TRUE(
       (std::is_same<char, traits::invoke_result_t<Obj, int, char>>::value));
@@ -248,7 +312,7 @@ TEST_F(InvokeTest, member_invoke_result) {
 }
 
 TEST_F(InvokeTest, member_is_invocable) {
-  using traits = folly::invoke_traits<test_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::test)>;
 
   EXPECT_TRUE((traits::is_invocable_v<Obj, int, char>));
   EXPECT_TRUE((traits::is_invocable_v<Obj, int, char*>));
@@ -256,7 +320,7 @@ TEST_F(InvokeTest, member_is_invocable) {
 }
 
 TEST_F(InvokeTest, member_is_invocable_r) {
-  using traits = folly::invoke_traits<test_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::test)>;
 
   EXPECT_TRUE((traits::is_invocable_r_v<int, Obj, int, char>));
   EXPECT_TRUE((traits::is_invocable_r_v<int, Obj, int, char*>));
@@ -264,7 +328,7 @@ TEST_F(InvokeTest, member_is_invocable_r) {
 }
 
 TEST_F(InvokeTest, member_is_nothrow_invocable) {
-  using traits = folly::invoke_traits<test_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::test)>;
 
   EXPECT_TRUE((traits::is_nothrow_invocable_v<Obj, int, char>));
   EXPECT_FALSE((traits::is_nothrow_invocable_v<Obj, int, char*>));
@@ -272,29 +336,45 @@ TEST_F(InvokeTest, member_is_nothrow_invocable) {
 }
 
 TEST_F(InvokeTest, member_is_nothrow_invocable_r) {
-  using traits = folly::invoke_traits<test_invoker>;
+  using traits = folly::invoke_traits<decltype(invoker::test)>;
 
   EXPECT_TRUE((traits::is_nothrow_invocable_r_v<int, Obj, int, char>));
   EXPECT_FALSE((traits::is_nothrow_invocable_r_v<int, Obj, int, char*>));
   EXPECT_FALSE((traits::is_nothrow_invocable_r_v<int, Obj, int>));
 }
 
-FOLLY_CREATE_STATIC_MEMBER_INVOKER(stat_invoker, stat);
+TEST_F(InvokeTest, invoke_member) {
+  auto test = FOLLY_INVOKE_MEMBER(test);
+
+  Obj fn;
+
+  EXPECT_TRUE(noexcept(test(fn, 1, 2)));
+  EXPECT_FALSE(noexcept(test(fn, 1, "2")));
+
+  EXPECT_EQ('a', test(fn, 1, 2));
+  EXPECT_EQ(17, test(fn, 1, "2"));
+}
+
+namespace {
+
+namespace invoker {
+
+FOLLY_CREATE_STATIC_MEMBER_INVOKER_SUITE(stat);
+
+}
+
+} // namespace
 
 TEST_F(InvokeTest, static_member_invoke) {
   struct HasStat {
-    static char stat(int, int) noexcept {
-      return 'a';
-    }
+    static char stat(int, int) noexcept { return 'a'; }
     static int volatile&& stat(int, char const*) {
       static int volatile x_ = 17;
       return std::move(x_);
     }
-    static float stat(float, float) {
-      return 3.14;
-    }
+    static float stat(float, float) { return 3.14; }
   };
-  using traits = folly::invoke_traits<stat_invoker<HasStat>>;
+  using traits = folly::invoke_traits<decltype(invoker::stat<HasStat>)>;
 
   EXPECT_TRUE((traits::is_invocable_v<int, char>));
   EXPECT_TRUE((traits::is_invocable_v<int, char>));
@@ -314,6 +394,40 @@ TEST_F(InvokeTest, static_member_invoke) {
   EXPECT_FALSE((traits::is_nothrow_invocable_r_v<int, int>));
 }
 
+TEST_F(InvokeTest, static_member_no_invoke) {
+  struct HasNoStat {};
+
+  using traits = folly::invoke_traits<decltype(invoker::stat<HasNoStat>)>;
+
+  EXPECT_FALSE((traits::is_invocable_v<>));
+  EXPECT_FALSE((traits::is_invocable_v<int>));
+
+  EXPECT_FALSE((traits::is_invocable_r_v<int>));
+  EXPECT_FALSE((traits::is_invocable_r_v<int, int>));
+
+  EXPECT_FALSE((traits::is_nothrow_invocable_v<>));
+  EXPECT_FALSE((traits::is_nothrow_invocable_v<int>));
+
+  EXPECT_FALSE((traits::is_nothrow_invocable_r_v<int>));
+  EXPECT_FALSE((traits::is_nothrow_invocable_r_v<int, int>));
+}
+
+TEST_F(InvokeTest, invoke_first_match) {
+  struct a {
+    [[maybe_unused]] void operator()(int) const;
+  };
+  struct b {
+    [[maybe_unused]] void operator()(int) const;
+  };
+  struct c {
+    [[maybe_unused]] void operator()() const;
+  };
+  using inv = folly::invoke_first_match<a, b, c>;
+  EXPECT_TRUE((folly::is_invocable_v<inv const&, int>));
+  EXPECT_TRUE((folly::is_invocable_v<inv const&>));
+  EXPECT_FALSE((folly::is_invocable_v<inv const&, int, int>));
+}
+
 namespace {
 
 struct TestCustomisationPointFn {
@@ -328,14 +442,12 @@ struct TestCustomisationPointFn {
 FOLLY_DEFINE_CPO(TestCustomisationPointFn, testCustomisationPoint)
 
 struct TypeA {
-  constexpr friend int
-  tag_invoke(folly::cpo_t<testCustomisationPoint>, const TypeA&, int value) {
+  constexpr friend int tag_invoke(
+      folly::cpo_t<testCustomisationPoint>, const TypeA&, int value) {
     return value * 2;
   }
   constexpr friend bool tag_invoke(
-      folly::cpo_t<testCustomisationPoint>,
-      const TypeA&,
-      bool value) noexcept {
+      folly::cpo_t<testCustomisationPoint>, const TypeA&, bool value) noexcept {
     return !value;
   }
 };

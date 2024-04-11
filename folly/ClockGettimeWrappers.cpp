@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/ClockGettimeWrappers.h>
+
 #include <folly/CPortability.h>
 #include <folly/Likely.h>
 #include <folly/portability/Time.h>
@@ -34,7 +35,7 @@ namespace chrono {
 static int64_t clock_gettime_ns_fallback(clockid_t clock) {
   struct timespec ts;
   int r = clock_gettime(clock, &ts);
-  if (UNLIKELY(r != 0)) {
+  if (FOLLY_UNLIKELY(r != 0)) {
     // Mimic what __clock_gettime_ns does (even though this can be a legit
     // value).
     return -1;

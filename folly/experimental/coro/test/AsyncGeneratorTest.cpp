@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
  */
 
 #include <folly/Portability.h>
-
-#if FOLLY_HAS_COROUTINES
 
 #include <folly/ScopeGuard.h>
 #include <folly/Traits.h>
@@ -36,6 +34,8 @@
 #include <map>
 #include <string>
 #include <tuple>
+
+#if FOLLY_HAS_COROUTINES
 
 class AsyncGeneratorTest : public testing::Test {};
 
@@ -66,9 +66,7 @@ TEST_F(AsyncGeneratorTest, PartiallyConsumingSequenceDestroysObjectsInScope) {
   bool started = false;
   bool destroyed = false;
   auto makeGenerator = [&]() -> folly::coro::AsyncGenerator<int> {
-    SCOPE_EXIT {
-      destroyed = true;
-    };
+    SCOPE_EXIT { destroyed = true; };
     started = true;
     co_yield 1;
     co_yield 2;
@@ -164,8 +162,7 @@ TEST_F(AsyncGeneratorTest, ThrowExceptionAfterFirstYield) {
 }
 
 TEST_F(
-    AsyncGeneratorTest,
-    ConsumingManySynchronousElementsDoesNotOverflowStack) {
+    AsyncGeneratorTest, ConsumingManySynchronousElementsDoesNotOverflowStack) {
   auto makeGenerator = []() -> folly::coro::AsyncGenerator<std::uint64_t> {
     for (std::uint64_t i = 0; i < 1'000'000; ++i) {
       co_yield i;
@@ -212,9 +209,7 @@ TEST_F(AsyncGeneratorTest, ProduceResultsAsynchronously) {
 
 struct ConvertibleToIntReference {
   int value;
-  operator int&() {
-    return value;
-  }
+  operator int&() { return value; }
 };
 
 TEST_F(AsyncGeneratorTest, GeneratorOfLValueReference) {
@@ -243,9 +238,7 @@ TEST_F(AsyncGeneratorTest, GeneratorOfLValueReference) {
 }
 
 struct ConvertibleToInt {
-  operator int() const {
-    return 99;
-  }
+  operator int() const { return 99; }
 };
 
 TEST_F(AsyncGeneratorTest, GeneratorOfConstLValueReference) {
@@ -305,9 +298,7 @@ struct MoveOnly {
       : value_(std::exchange(other.value_, -1)) {}
   ~MoveOnly() {}
   MoveOnly& operator=(MoveOnly&&) = delete;
-  int value() const {
-    return value_;
-  }
+  int value() const { return value_; }
 
  private:
   int value_;
@@ -373,7 +364,7 @@ TEST_F(AsyncGeneratorTest, ExplicitValueType) {
                                  std::tuple<const std::string&, std::string&>,
                                  std::tuple<std::string, std::string>> {
     for (auto& [k, v] : items) {
-      co_yield{k, v};
+      co_yield {k, v};
     }
   };
 
@@ -471,6 +462,252 @@ TEST_F(AsyncGeneratorTest, BlockingWaitOnThrowingFinalNextDoesNotDeadlock) {
     CHECK(false);
   } catch (const SomeError&) {
   }
+}
+
+folly::coro::AsyncGenerator<int> range(int from, int to) {
+  for (int i = from; i < to; ++i) {
+    co_yield i;
+  }
+}
+
+TEST_F(AsyncGeneratorTest, SymmetricTransfer) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    int max = 100000;
+    auto g = range(1, max + 1);
+    long long sum = 0;
+    while (auto result = co_await g.next()) {
+      sum += *result;
+    }
+    EXPECT_EQ(((long long)max + 1) * max / 2, sum);
+  }());
+}
+
+TEST(AsyncGenerator, YieldCoError) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto gen = []() -> folly::coro::AsyncGenerator<std::string> {
+      co_yield "foo";
+      co_yield "bar";
+      co_yield folly::coro::co_error(SomeError{});
+      CHECK(false);
+    }();
+
+    auto item1 = co_await gen.next();
+    CHECK(item1.value() == "foo");
+    auto item2 = co_await gen.next();
+    CHECK(item2.value() == "bar");
+
+    try {
+      (void)co_await gen.next();
+      CHECK(false);
+    } catch (const SomeError&) {
+    }
+  }());
+}
+
+TEST(AsyncGenerator, YieldCoResult) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto gen = []() -> folly::coro::AsyncGenerator<std::string> {
+      co_yield folly::coro::co_result(folly::Try<std::string>("foo"));
+      co_yield folly::coro::co_result(folly::Try<std::string>("bar"));
+      co_yield folly::coro::co_result(folly::Try<std::string>(SomeError{}));
+      ADD_FAILURE();
+    }();
+
+    auto item1 = co_await gen.next();
+    CHECK(item1.value() == "foo");
+    auto item2 = co_await gen.next();
+    CHECK(item2.value() == "bar");
+
+    EXPECT_THROW(co_await gen.next(), SomeError);
+
+    gen = []() -> folly::coro::AsyncGenerator<std::string> {
+      co_yield folly::coro::co_result(folly::Try<std::string>("foo"));
+      co_yield folly::coro::co_result(folly::Try<std::string>("bar"));
+      co_yield folly::coro::co_result(folly::Try<std::string>());
+      ADD_FAILURE();
+    }();
+
+    item1 = co_await gen.next();
+    CHECK(item1.value() == "foo");
+    item2 = co_await gen.next();
+    CHECK(item2.value() == "bar");
+    EXPECT_FALSE(co_await gen.next());
+  }());
+}
+
+TEST(AsyncGenerator, CoResultProxyExample) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto makeProxy = [](folly::coro::AsyncGenerator<int> gen)
+        -> folly::coro::AsyncGenerator<int> {
+      while (true) {
+        auto t = co_await folly::coro::co_awaitTry(gen.next());
+        co_yield folly::coro::co_result(std::move(t));
+      }
+    };
+
+    auto gen = []() -> folly::coro::AsyncGenerator<int> {
+      for (int i = 0; i < 5; ++i) {
+        co_yield i;
+      }
+    }();
+
+    auto proxy = makeProxy(std::move(gen));
+
+    for (int i = 0; i < 5; ++i) {
+      auto val = co_await proxy.next();
+      EXPECT_EQ(*val, i);
+    }
+    EXPECT_FALSE(co_await proxy.next());
+
+    gen = []() -> folly::coro::AsyncGenerator<int> {
+      for (int i = 0; i < 5; ++i) {
+        co_yield i;
+      }
+      throw SomeError();
+    }();
+
+    proxy = makeProxy(std::move(gen));
+
+    for (int i = 0; i < 5; ++i) {
+      auto val = co_await proxy.next();
+      EXPECT_EQ(*val, i);
+    }
+    EXPECT_THROW(co_await proxy.next(), SomeError);
+  }());
+}
+
+TEST(AsyncGeneraor, CoAwaitTry) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    auto gen = []() -> folly::coro::AsyncGenerator<std::string> {
+      co_yield "foo";
+      co_yield "bar";
+      co_yield folly::coro::co_error(SomeError{});
+      CHECK(false);
+    }();
+
+    auto item1 = co_await folly::coro::co_awaitTry(gen.next());
+    CHECK(item1.hasValue());
+    CHECK(*item1.value() == "foo");
+    auto item2 = co_await folly::coro::co_awaitTry(gen.next());
+    CHECK(item2.hasValue());
+    CHECK(*item2.value() == "bar");
+    auto item3 = co_await folly::coro::co_awaitTry(gen.next());
+    CHECK(item3.hasException());
+    CHECK(item3.exception().is_compatible_with<SomeError>());
+  }());
+}
+
+TEST(AsyncGenerator, SafePoint) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    enum class step_type {
+      init,
+      before_continue_sp,
+      after_continue_sp,
+      before_cancel_sp,
+      after_cancel_sp,
+    };
+    step_type step = step_type::init;
+
+    folly::CancellationSource cancelSrc;
+    auto gen =
+        folly::coro::co_invoke([&]() -> folly::coro::AsyncGenerator<int> {
+          step = step_type::before_continue_sp;
+          co_await folly::coro::co_safe_point;
+          step = step_type::after_continue_sp;
+
+          cancelSrc.requestCancellation();
+
+          step = step_type::before_cancel_sp;
+          co_await folly::coro::co_safe_point;
+          step = step_type::after_cancel_sp;
+        });
+
+    auto result = co_await folly::coro::co_awaitTry(
+        folly::coro::co_withCancellation(cancelSrc.getToken(), gen.next()));
+    EXPECT_THROW(result.value(), folly::OperationCancelled);
+    EXPECT_EQ(step_type::before_cancel_sp, step);
+  }());
+}
+
+TEST_F(AsyncGeneratorTest, NextAfterCancel) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    folly::CancellationSource cancelSrc;
+    auto gen =
+        folly::coro::co_invoke([&]() -> folly::coro::AsyncGenerator<int> {
+          co_yield 1;
+          co_yield 2;
+          co_await folly::coro::co_safe_point;
+          co_yield 3;
+        });
+
+    auto result = co_await folly::coro::co_awaitTry(
+        folly::coro::co_withCancellation(cancelSrc.getToken(), gen.next()));
+    EXPECT_TRUE(result.hasValue());
+    EXPECT_EQ(1, *result.value());
+
+    cancelSrc.requestCancellation();
+    result = co_await folly::coro::co_awaitTry(
+        folly::coro::co_withCancellation(cancelSrc.getToken(), gen.next()));
+    EXPECT_TRUE(result.hasValue());
+    EXPECT_EQ(2, *result.value());
+
+    result = co_await folly::coro::co_awaitTry(
+        folly::coro::co_withCancellation(cancelSrc.getToken(), gen.next()));
+    EXPECT_TRUE(result.hasException());
+    EXPECT_THROW(result.value(), folly::OperationCancelled);
+  }());
+}
+
+TEST(AsyncGenerator, CoAwaitNothrow) {
+  auto res =
+      folly::coro::blockingWait(co_awaitTry([]() -> folly::coro::Task<void> {
+        auto gen = []() -> folly::coro::AsyncGenerator<int> {
+          auto inner = []() -> folly::coro::AsyncGenerator<int> {
+            co_yield 42;
+            throw std::runtime_error("");
+          }();
+          co_yield *co_await co_nothrow(inner.next());
+          try {
+            co_yield *co_await co_nothrow(inner.next());
+          } catch (...) {
+            ADD_FAILURE();
+          }
+          ADD_FAILURE();
+        }();
+
+        co_await co_nothrow(gen.next());
+        try {
+          co_await co_nothrow(gen.next());
+        } catch (...) {
+          ADD_FAILURE();
+        }
+        ADD_FAILURE();
+      }()));
+  EXPECT_TRUE(res.hasException<std::runtime_error>());
+}
+
+TEST(AsyncGenerator, CoAwaitNothrowMultiTask) {
+  auto res =
+      folly::coro::blockingWait(co_awaitTry([]() -> folly::coro::Task<void> {
+        auto gen = co_await
+            []() -> folly::coro::Task<folly::coro::AsyncGenerator<int>> {
+          auto gen = []() -> folly::coro::AsyncGenerator<int> {
+            co_yield 42;
+            throw std::runtime_error("");
+          }();
+
+          co_await co_nothrow(gen.next());
+          co_return gen;
+        }();
+
+        try {
+          co_await co_nothrow(gen.next());
+        } catch (...) {
+          ADD_FAILURE();
+        }
+        ADD_FAILURE();
+      }()));
+  EXPECT_TRUE(res.hasException<std::runtime_error>());
 }
 
 #endif

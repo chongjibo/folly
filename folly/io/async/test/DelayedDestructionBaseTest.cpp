@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,12 +34,8 @@ class DestructionOnCallback : public DelayedDestructionBase {
     state = state_;
   }
 
-  int state() const {
-    return state_;
-  }
-  bool deleted() const {
-    return deleted_;
-  }
+  int state() const { return state_; }
+  bool deleted() const { return deleted_; }
 
  protected:
   void onStackedComplete(int recur) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
  */
 
 #include <folly/logging/FileHandlerFactory.h>
-#include <folly/logging/StreamHandlerFactory.h>
 
 #include <folly/Exception.h>
 #include <folly/experimental/TestUtil.h>
@@ -23,6 +22,7 @@
 #include <folly/logging/GlogStyleFormatter.h>
 #include <folly/logging/ImmediateFileWriter.h>
 #include <folly/logging/StandardLogHandler.h>
+#include <folly/logging/StreamHandlerFactory.h>
 #include <folly/portability/GTest.h>
 #include <folly/test/TestUtils.h>
 
@@ -50,9 +50,7 @@ void checkAsyncWriter(
 }
 
 void checkAsyncWriter(
-    const LogWriter* writer,
-    int expectedFD,
-    size_t expectedMaxBufferSize) {
+    const LogWriter* writer, int expectedFD, size_t expectedMaxBufferSize) {
   auto asyncWriter = dynamic_cast<const AsyncFileWriter*>(writer);
   ASSERT_TRUE(asyncWriter)
       << "handler factory should have created an AsyncFileWriter";

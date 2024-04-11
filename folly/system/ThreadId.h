@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,6 @@
 
 #include <cstdint>
 
-#include <folly/portability/PThread.h>
-#include <folly/portability/SysSyscall.h>
-#include <folly/portability/Unistd.h>
-#include <folly/portability/Windows.h>
-
 namespace folly {
 
 /**
@@ -39,15 +34,7 @@ namespace folly {
  * The thread ID may be reused once the thread it corresponds to has been
  * joined.
  */
-inline uint64_t getCurrentThreadID() {
-#if __APPLE__
-  return uint64_t(pthread_mach_thread_np(pthread_self()));
-#elif defined(_WIN32)
-  return uint64_t(GetCurrentThreadId());
-#else
-  return uint64_t(pthread_self());
-#endif
-}
+uint64_t getCurrentThreadID();
 
 /**
  * Get the operating-system level thread ID for the current thread.
@@ -57,19 +44,12 @@ inline uint64_t getCurrentThreadID() {
  * This makes it more suitable for logging or displaying in user interfaces
  * than the result of getCurrentThreadID().
  *
- * There are some potential caveats about this API, however:
- *
- * - In theory there is no guarantee that application threads map one-to-one to
- *   kernel threads.  An application threading implementation could potentially
- *   share one OS thread across multiple application threads, and/or it could
- *   potentially move application threads between different OS threads over
- *   time.  However, in practice all of the platforms we currently support have
- *   a one-to-one mapping between userspace threads and operating system
- *   threads.
- *
- * - This API may also be slightly slower than getCurrentThreadID() on some
- *   platforms.  This API may require a system call, where getCurrentThreadID()
- *   may only need to read thread-local memory.
+ * In theory there is no guarantee that application threads map one-to-one to
+ * kernel threads.  An application threading implementation could potentially
+ * share one OS thread across multiple application threads, and/or it could
+ * potentially move application threads between different OS threads over time.
+ * However, in practice all of the platforms we currently support have a
+ * one-to-one mapping between userspace threads and operating system threads.
  *
  * On Linux the returned value is a pid_t, and can be used in contexts
  * requiring a thread pid_t.
@@ -77,19 +57,6 @@ inline uint64_t getCurrentThreadID() {
  * The thread ID may be reused once the thread it corresponds to has been
  * joined.
  */
-inline uint64_t getOSThreadID() {
-#if __APPLE__
-  uint64_t tid;
-  pthread_threadid_np(nullptr, &tid);
-  return tid;
-#elif defined(_WIN32)
-  return uint64_t(GetCurrentThreadId());
-#elif defined(__FreeBSD__)
-  long tid;
-  thr_self(&tid);
-  return uint64_t(tid);
-#else
-  return uint64_t(syscall(FOLLY_SYS_gettid));
-#endif
-}
+uint64_t getOSThreadID();
+
 } // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,9 +64,7 @@ class StandardLogHandlerFactory {
   };
 
   static std::shared_ptr<StandardLogHandler> createHandler(
-      StringPiece type,
-      WriterFactory* writerFactory,
-      const Options& options);
+      StringPiece type, WriterFactory* writerFactory, const Options& options);
 
   static std::shared_ptr<StandardLogHandler> createHandler(
       StringPiece type,

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,12 @@
 
 #include <folly/logging/CustomLogFormatter.h>
 
+#include <algorithm>
+
 #include <folly/Format.h>
 #include <folly/logging/LogLevel.h>
 #include <folly/logging/LogMessage.h>
 #include <folly/portability/Time.h>
-#include <algorithm>
 
 namespace {
 using folly::LogLevel;
@@ -62,15 +63,25 @@ StringPiece getColorSequence(LogLevel level) {
   return "\033[1;41m"; // BOLD ON RED BACKGROUND
 }
 
+/**
+ * Get base file name without extension.
+ */
+StringPiece getBaseNameNoExt(StringPiece baseName) {
+  auto extPos = baseName.rfind('.');
+  if (extPos == StringPiece::npos) {
+    extPos = baseName.size();
+  }
+
+  return baseName.subpiece(0, extPos);
+}
+
 struct FormatKeys {
   const StringPiece key;
   const std::size_t argIndex;
   const std::size_t width;
 
   constexpr FormatKeys(
-      StringPiece key_,
-      std::size_t argIndex_,
-      std::size_t width_ = 0)
+      StringPiece key_, std::size_t argIndex_, std::size_t width_ = 0)
       : key(key_), argIndex(argIndex_), width(width_) {}
 };
 
@@ -83,8 +94,10 @@ struct FormatKeys {
  *
  * TODO: Support including thread names and thread context info.
  */
-constexpr std::array<FormatKeys, 11> formatKeys{{
+constexpr std::array<FormatKeys, 13> formatKeys{{
+    FormatKeys(/* key */ "CTX", /*    argIndex  */ 11),
     FormatKeys(/* key */ "D", /*      argIndex  */ 2, /* width */ 2),
+    FormatKeys(/* key */ "FIL", /*    argIndex  */ 12),
     FormatKeys(/* key */ "FILE", /*   argIndex  */ 8),
     FormatKeys(/* key */ "FUN", /*    argIndex  */ 9),
     FormatKeys(/* key */ "H", /*      argIndex  */ 3, /* width */ 2),
@@ -111,6 +124,7 @@ void CustomLogFormatter::parseFormatString(StringPiece input) {
   std::size_t estimatedWidth = 0;
   functionNameCount_ = 0;
   fileNameCount_ = 0;
+  fileNameNoExtCount_ = 0;
   // Replace all format keys to numbers to improve performance and to use
   // varying value types (which is not possible using folly::vformat()).
   std::string output;
@@ -162,7 +176,8 @@ void CustomLogFormatter::parseFormatString(StringPiece input) {
               varName,
               [](const auto& a, const auto& b) { return a.key < b; });
 
-          if (UNLIKELY(item == formatKeys.end() || item->key != varName)) {
+          if (FOLLY_UNLIKELY(
+                  item == formatKeys.end() || item->key != varName)) {
             throw std::runtime_error(folly::to<std::string>(
                 "unknown format argument \"", varName, "\""));
           }
@@ -178,6 +193,8 @@ void CustomLogFormatter::parseFormatString(StringPiece input) {
             fileNameCount_++;
           } else if (item->key == "FUN") {
             functionNameCount_++;
+          } else if (item->key == "FIL") {
+            fileNameNoExtCount_++;
           }
 
           // Figure out if there are modifiers that follow the key or if we
@@ -230,8 +247,7 @@ void CustomLogFormatter::parseFormatString(StringPiece input) {
 }
 
 std::string CustomLogFormatter::formatMessage(
-    const LogMessage& message,
-    const LogCategory* /* handlerCategory */) {
+    const LogMessage& message, const LogCategory* /* handlerCategory */) {
   // Get the local time info
   struct tm ltime;
   auto timeSinceEpoch = message.getTimestamp().time_since_epoch();
@@ -246,6 +262,10 @@ std::string CustomLogFormatter::formatMessage(
   }
 
   auto basename = message.getFileBaseName();
+  StringPiece baseNameNoExt;
+  if (fileNameNoExtCount_) {
+    baseNameNoExt = getBaseNameNoExt(basename);
+  }
 
   // Most common logs will be single line logs and so we can format the entire
   // log string including the message at once.
@@ -263,6 +283,8 @@ std::string CustomLogFormatter::formatMessage(
         basename,
         message.getFunctionName(),
         message.getLineNumber(),
+        message.getContextString(),
+        baseNameNoExt,
         // NOTE: THE FOLLOWING ARGUMENTS ALWAYS NEED TO BE THE LAST 3:
         message.getMessage(),
         // If colored logs are enabled, the singleLineLogFormat_ will contain
@@ -274,7 +296,7 @@ std::string CustomLogFormatter::formatMessage(
   // If the message contains multiple lines, ensure that the log header is
   // prepended before each message line.
   else {
-    const auto headerFormatter = folly::format(
+    const auto header = folly::sformat(
         logFormat_,
         getGlogLevelName(message.getLevel())[0],
         ltime.tm_mon + 1,
@@ -286,7 +308,9 @@ std::string CustomLogFormatter::formatMessage(
         message.getThreadID(),
         basename,
         message.getFunctionName(),
-        message.getLineNumber());
+        message.getLineNumber(),
+        message.getContextString(),
+        baseNameNoExt);
 
     // Estimate header length. If this still isn't long enough the string will
     // grow as necessary, so the code will still be correct, but just slightly
@@ -294,6 +318,7 @@ std::string CustomLogFormatter::formatMessage(
     // time around.
     size_t headerLengthGuess = staticEstimatedWidth_ +
         (fileNameCount_ * basename.size()) +
+        (fileNameNoExtCount_ * baseNameNoExt.size()) +
         (functionNameCount_ * message.getFunctionName().size());
 
     // Format the data into a buffer.
@@ -320,7 +345,7 @@ std::string CustomLogFormatter::formatMessage(
       }
 
       auto line = msgData.subpiece(idx, end - idx);
-      headerFormatter.appendTo(buffer);
+      buffer += header;
       buffer.append(line.data(), line.size());
       buffer.push_back('\n');
 

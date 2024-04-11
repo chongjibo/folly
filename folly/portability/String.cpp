@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,6 @@
  */
 
 #include <folly/portability/String.h>
-
-#if !FOLLY_HAVE_MEMRCHR
-extern "C" void* memrchr(const void* s, int c, size_t n) {
-  for (auto p = ((const char*)s) + n - 1; p >= (const char*)s; p--) {
-    if (*p == (char)c) {
-      return (void*)p;
-    }
-  }
-  return nullptr;
-}
-#endif
 
 #if defined(_WIN32) || defined(__FreeBSD__)
 extern "C" char* strndup(const char* a, size_t len) {

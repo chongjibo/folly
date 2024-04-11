@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,7 +81,7 @@ LogCategory* getXlogCategory(
   if (!categoryInfo->isInitialized()) {
     return categoryInfo->init(categoryName, isCategoryNameOverridden);
   }
-  return categoryInfo->getCategory(&xlog_detail::xlogFileScopeInfo);
+  return categoryInfo->getCategory(&detail::custom::xlogFileScopeInfo);
 }
 } // namespace
 
@@ -103,9 +103,7 @@ LogStreamProcessor::LogStreamProcessor(
     InternalType,
     std::string&& msg) noexcept
     : category_{getXlogCategory(
-          categoryInfo,
-          categoryName,
-          isCategoryNameOverridden)},
+          categoryInfo, categoryName, isCategoryNameOverridden)},
       level_{level},
       filename_{filename},
       lineNumber_{lineNumber},
@@ -113,7 +111,6 @@ LogStreamProcessor::LogStreamProcessor(
       message_{std::move(msg)},
       stream_{this} {}
 
-#ifdef __INCLUDE_LEVEL__
 namespace {
 LogCategory* getXlogCategory(XlogFileScopeInfo* fileScopeInfo) {
   // By the time a LogStreamProcessor is created, the XlogFileScopeInfo object
@@ -167,7 +164,6 @@ LogStreamProcessor::LogStreamProcessor(
           functionName,
           INTERNAL,
           std::string()) {}
-#endif
 
 /*
  * We intentionally define the LogStreamProcessor destructor in
@@ -191,12 +187,13 @@ void LogStreamProcessor::logNow() noexcept {
   //
   // Any other error here is unexpected and we also want to fail hard
   // in that situation too.
-  category_->admitMessage(LogMessage{category_,
-                                     level_,
-                                     filename_,
-                                     lineNumber_,
-                                     functionName_,
-                                     extractMessageString(stream_)});
+  category_->admitMessage(LogMessage{
+      category_,
+      level_,
+      filename_,
+      lineNumber_,
+      functionName_,
+      extractMessageString(stream_)});
 }
 
 std::string LogStreamProcessor::extractMessageString(

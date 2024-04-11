@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,18 @@ namespace {
 std::atomic<size_t> numFoos{0};
 std::atomic<size_t> numDeleted{0};
 
-class Foo {};
+class Foo {
+ public:
+  void use() {
+    EXPECT_FALSE(used_);
+    used_ = true;
+  }
+
+  void reset() { used_ = false; }
+
+ private:
+  bool used_{false};
+};
 
 struct FooCreator {
   Foo* operator()() {
@@ -53,20 +64,21 @@ struct FooDeleter {
   }
 };
 
-using Pool = CompressionContextPool<Foo, FooCreator, FooDeleter>;
-using BadPool = CompressionContextPool<Foo, BadFooCreator, FooDeleter>;
+struct FooResetter {
+  void operator()(Foo* f) { f->reset(); }
+};
+
+using Pool = CompressionContextPool<Foo, FooCreator, FooDeleter, FooResetter>;
+using BadPool =
+    CompressionContextPool<Foo, BadFooCreator, FooDeleter, FooResetter>;
 
 } // anonymous namespace
 
 class CompressionContextPoolTest : public testing::Test {
  protected:
-  void SetUp() override {
-    pool_ = std::make_unique<Pool>();
-  }
+  void SetUp() override { pool_ = std::make_unique<Pool>(); }
 
-  void TearDown() override {
-    pool_.reset();
-  }
+  void TearDown() override { pool_.reset(); }
 
   std::unique_ptr<Pool> pool_;
 };
@@ -74,6 +86,7 @@ class CompressionContextPoolTest : public testing::Test {
 TEST_F(CompressionContextPoolTest, testGet) {
   auto ptr = pool_->get();
   EXPECT_TRUE(ptr);
+  EXPECT_EQ(pool_->created_count(), 1);
 }
 
 TEST_F(CompressionContextPoolTest, testSame) {
@@ -109,6 +122,7 @@ TEST_F(CompressionContextPoolTest, testDifferent) {
     auto ptr2 = pool_->get();
     EXPECT_NE(ptr1.get(), ptr2.get());
   }
+  EXPECT_EQ(pool_->created_count(), 2);
   EXPECT_EQ(pool_->size(), 2);
 }
 
@@ -144,6 +158,8 @@ TEST_F(CompressionContextPoolTest, testLifo) {
   EXPECT_EQ(ptr2.get(), t1);
   ptr3 = pool_->get();
   EXPECT_EQ(ptr3.get(), t3);
+
+  EXPECT_EQ(pool_->created_count(), numFoos.load());
 }
 
 TEST_F(CompressionContextPoolTest, testExplicitCreatorDeleter) {
@@ -153,11 +169,11 @@ TEST_F(CompressionContextPoolTest, testExplicitCreatorDeleter) {
 }
 
 TEST_F(CompressionContextPoolTest, testMultithread) {
-  constexpr size_t numThreads = 64;
-  constexpr size_t numIters = 1 << 14;
+  constexpr size_t numThreads = 64 / (folly::kIsSanitizeThread ? 4 : 1);
+  constexpr size_t numIters = (1 << 14) / (folly::kIsSanitizeThread ? 4 : 1);
   std::vector<std::thread> ts;
   for (size_t i = 0; i < numThreads; i++) {
-    ts.emplace_back([& pool = *pool_]() {
+    ts.emplace_back([&pool = *pool_]() {
       for (size_t n = 0; n < numIters; n++) {
         auto ref = pool.get();
         ref.get();
@@ -172,6 +188,8 @@ TEST_F(CompressionContextPoolTest, testMultithread) {
 
   EXPECT_LE(numFoos.load(), numThreads);
   EXPECT_LE(numDeleted.load(), 0);
+  EXPECT_EQ(pool_->created_count(), numFoos.load());
+  EXPECT_EQ(pool_->created_count(), pool_->size());
 }
 
 TEST_F(CompressionContextPoolTest, testBadCreate) {
@@ -179,17 +197,39 @@ TEST_F(CompressionContextPoolTest, testBadCreate) {
   EXPECT_THROW(pool.get(), std::bad_alloc);
 }
 
+TEST_F(CompressionContextPoolTest, testReset) {
+  Pool::Object* tmp;
+  {
+    auto ptr = pool_->get();
+    ptr->use();
+    tmp = ptr.get();
+  }
+  {
+    auto ptr = pool_->get();
+    ptr->use();
+    EXPECT_EQ(ptr.get(), tmp);
+  }
+}
+
+TEST_F(CompressionContextPoolTest, testFlush) {
+  pool_->get();
+  pool_->flush_deep();
+  pool_->get();
+  EXPECT_EQ(pool_->created_count(), 2);
+}
+
 class CompressionCoreLocalContextPoolTest : public testing::Test {
  protected:
-  using Pool = CompressionCoreLocalContextPool<Foo, FooCreator, FooDeleter, 8>;
+  using Pool = CompressionCoreLocalContextPool<
+      Foo,
+      FooCreator,
+      FooDeleter,
+      FooResetter,
+      8>;
 
-  void SetUp() override {
-    pool_ = std::make_unique<Pool>();
-  }
+  void SetUp() override { pool_ = std::make_unique<Pool>(); }
 
-  void TearDown() override {
-    pool_.reset();
-  }
+  void TearDown() override { pool_.reset(); }
 
   std::unique_ptr<Pool> pool_;
 };
@@ -237,12 +277,19 @@ TEST_F(CompressionCoreLocalContextPoolTest, testSwap) {
   EXPECT_EQ(ptr2.get(), tmp2);
 }
 
+TEST_F(CompressionCoreLocalContextPoolTest, testFlush) {
+  pool_->get();
+  pool_->flush_deep();
+  pool_->get();
+  EXPECT_EQ(pool_->created_count(), 2);
+}
+
 TEST_F(CompressionCoreLocalContextPoolTest, testMultithread) {
   constexpr size_t numThreads = 64;
   constexpr size_t numIters = 1 << 14;
   std::vector<std::thread> ts;
   for (size_t i = 0; i < numThreads; i++) {
-    ts.emplace_back([& pool = *pool_]() {
+    ts.emplace_back([&pool = *pool_]() {
       for (size_t n = 0; n < numIters; n++) {
         auto ref = pool.get();
         CHECK(ref);
@@ -256,6 +303,32 @@ TEST_F(CompressionCoreLocalContextPoolTest, testMultithread) {
   }
 
   EXPECT_LE(numFoos.load(), numThreads);
+}
+
+TEST_F(CompressionCoreLocalContextPoolTest, testReset) {
+  Pool::Object* tmp1;
+  Pool::Object* tmp2;
+  {
+    auto ptr1 = pool_->get();
+    ptr1->use();
+    tmp1 = ptr1.get();
+  }
+  {
+    auto ptr1 = pool_->get();
+    auto ptr2 = pool_->get();
+    ptr1->use();
+    ptr2->use();
+    EXPECT_EQ(ptr1.get(), tmp1);
+    tmp2 = ptr2.get();
+  }
+  {
+    auto ptr1 = pool_->get();
+    auto ptr2 = pool_->get();
+    ptr1->use();
+    ptr2->use();
+    EXPECT_EQ(ptr1.get(), tmp2);
+    EXPECT_EQ(ptr2.get(), tmp1);
+  }
 }
 
 #ifdef FOLLY_COMPRESSION_HAS_ZSTD_CONTEXT_POOL_SINGLETONS

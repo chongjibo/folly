@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <folly/test/TestUtils.h>
 #include <queue>
 
 #include <folly/logging/Init.h>
@@ -25,13 +24,14 @@
 #include <folly/logging/StandardLogHandler.h>
 #include <folly/logging/StandardLogHandlerFactory.h>
 #include <folly/logging/xlog.h>
+#include <folly/test/TestUtils.h>
 
 namespace folly {
 
 class TestLogWriter : public LogWriter {
  public:
-  void writeMessage(folly::StringPiece /* buffer */, uint32_t /* flags */ = 0)
-      override {
+  void writeMessage(
+      folly::StringPiece /* buffer */, uint32_t /* flags */ = 0) override {
     unflushed_messages_count++;
   }
 
@@ -43,9 +43,7 @@ class TestLogWriter : public LogWriter {
   int flushed_messages_count{0};
   int unflushed_messages_count{0};
 
-  bool ttyOutput() const override {
-    return false;
-  }
+  bool ttyOutput() const override { return false; }
 };
 
 class TestHandlerFactory : public LogHandlerFactory {
@@ -53,9 +51,7 @@ class TestHandlerFactory : public LogHandlerFactory {
   TestHandlerFactory(const std::shared_ptr<TestLogWriter> writer)
       : writer_(writer) {}
 
-  StringPiece getType() const override {
-    return "test";
-  }
+  StringPiece getType() const override { return "test"; }
 
   std::shared_ptr<LogHandler> createHandler(const Options& options) override {
     TestWriterFactory writerFactory{writer_};
@@ -70,14 +66,12 @@ class TestHandlerFactory : public LogHandlerFactory {
     TestWriterFactory(std::shared_ptr<TestLogWriter> writer)
         : writer_(writer) {}
 
-    bool processOption(StringPiece /* name */, StringPiece /* value */)
-        override {
+    bool processOption(
+        StringPiece /* name */, StringPiece /* value */) override {
       return false;
     }
 
-    std::shared_ptr<LogWriter> createWriter() override {
-      return writer_;
-    }
+    std::shared_ptr<LogWriter> createWriter() override { return writer_; }
 
    private:
     std::shared_ptr<TestLogWriter> writer_;

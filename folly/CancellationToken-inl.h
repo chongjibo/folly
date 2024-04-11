@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <tuple>
 #include <utility>
 
 #include <glog/logging.h>
@@ -25,16 +26,20 @@ namespace folly {
 
 namespace detail {
 
+struct FixedMergingCancellationStateTag {};
+
 // Internal cancellation state object.
 class CancellationState {
  public:
   FOLLY_NODISCARD static CancellationStateSourcePtr create();
 
- private:
+ protected:
   // Constructed initially with a CancellationSource reference count of 1.
   CancellationState() noexcept;
+  // Constructed initially with a CancellationToken reference count of 1.
+  explicit CancellationState(FixedMergingCancellationStateTag) noexcept;
 
-  ~CancellationState();
+  virtual ~CancellationState();
 
   friend struct CancellationStateTokenDeleter;
   friend struct CancellationStateSourceDeleter;
@@ -78,9 +83,10 @@ class CancellationState {
 
   static constexpr std::uint64_t kCancellationRequestedFlag = 1;
   static constexpr std::uint64_t kLockedFlag = 2;
-  static constexpr std::uint64_t kTokenReferenceCountIncrement = 4;
+  static constexpr std::uint64_t kMergingFlag = 4;
+  static constexpr std::uint64_t kTokenReferenceCountIncrement = 8;
   static constexpr std::uint64_t kSourceReferenceCountIncrement =
-      std::uint64_t(1) << 33u;
+      std::uint64_t(1) << 34u;
   static constexpr std::uint64_t kTokenReferenceCountMask =
       (kSourceReferenceCountIncrement - 1u) -
       (kTokenReferenceCountIncrement - 1u);
@@ -90,11 +96,40 @@ class CancellationState {
 
   // Bit 0 - Cancellation Requested
   // Bit 1 - Locked Flag
-  // Bits 2-32  - Token reference count (max ~2 billion)
-  // Bits 33-63 - Source reference count (max ~2 billion)
+  // Bit 2 - MergingCancellationState Flag
+  // Bits 3-33  - Token reference count (max ~2 billion)
+  // Bits 34-63 - Source reference count (max ~1 billion)
   std::atomic<std::uint64_t> state_;
-  CancellationCallback* head_;
+  CancellationCallback* head_{nullptr};
   std::thread::id signallingThreadId_;
+};
+
+template <size_t N>
+class FixedMergingCancellationState : public CancellationState {
+  template <typename... Ts>
+  FixedMergingCancellationState(Ts&&... tokens);
+
+ public:
+  template <typename... Ts>
+  FOLLY_NODISCARD static CancellationStateTokenPtr create(Ts&&... tokens);
+
+ private:
+  std::array<CancellationCallback, N> callbacks_;
+};
+
+template <typename... Data>
+class CancellationStateWithData : public CancellationState {
+  template <typename... Args>
+  CancellationStateWithData(Args&&... data);
+
+ public:
+  template <typename... Args>
+  FOLLY_NODISCARD static std::
+      pair<CancellationStateSourcePtr, std::tuple<Data...>*>
+      create(Args&&... data);
+
+ private:
+  std::tuple<Data...> data_;
 };
 
 inline void CancellationStateTokenDeleter::operator()(
@@ -152,14 +187,12 @@ inline CancellationToken::CancellationToken(
     : state_(std::move(state)) {}
 
 inline bool operator==(
-    const CancellationToken& a,
-    const CancellationToken& b) noexcept {
+    const CancellationToken& a, const CancellationToken& b) noexcept {
   return a.state_ == b.state_;
 }
 
 inline bool operator!=(
-    const CancellationToken& a,
-    const CancellationToken& b) noexcept {
+    const CancellationToken& a, const CancellationToken& b) noexcept {
   return !(a == b);
 }
 
@@ -234,8 +267,7 @@ template <
             value,
         int>>
 inline CancellationCallback::CancellationCallback(
-    CancellationToken&& ct,
-    Callable&& callable)
+    CancellationToken&& ct, Callable&& callable)
     : next_(nullptr),
       prevNext_(nullptr),
       state_(nullptr),
@@ -254,8 +286,7 @@ template <
             value,
         int>>
 inline CancellationCallback::CancellationCallback(
-    const CancellationToken& ct,
-    Callable&& callable)
+    const CancellationToken& ct, Callable&& callable)
     : next_(nullptr),
       prevNext_(nullptr),
       state_(nullptr),
@@ -285,9 +316,10 @@ inline CancellationStateSourcePtr CancellationState::create() {
 }
 
 inline CancellationState::CancellationState() noexcept
-    : state_(kSourceReferenceCountIncrement),
-      head_(nullptr),
-      signallingThreadId_() {}
+    : state_(kSourceReferenceCountIncrement) {}
+inline CancellationState::CancellationState(
+    FixedMergingCancellationStateTag) noexcept
+    : state_(kTokenReferenceCountIncrement | kMergingFlag) {}
 
 inline CancellationStateTokenPtr
 CancellationState::addTokenReference() noexcept {
@@ -334,7 +366,7 @@ inline bool CancellationState::canBeCancelled(std::uint64_t state) noexcept {
   // Can be cancelled if there is at least one CancellationSource ref-count
   // or if cancellation has been requested.
   return (state >= kSourceReferenceCountIncrement) ||
-      isCancellationRequested(state);
+      (state & kMergingFlag) != 0 || isCancellationRequested(state);
 }
 
 inline bool CancellationState::isCancellationRequested(
@@ -346,6 +378,72 @@ inline bool CancellationState::isLocked(std::uint64_t state) noexcept {
   return (state & kLockedFlag) != 0;
 }
 
+template <size_t N>
+template <typename... Ts>
+inline CancellationStateTokenPtr FixedMergingCancellationState<N>::create(
+    Ts&&... tokens) {
+  return CancellationStateTokenPtr{
+      new FixedMergingCancellationState<N>(std::forward<Ts>(tokens)...)};
+}
+
+template <typename... Data>
+struct WithDataTag {};
+
+template <size_t N>
+template <typename... Ts>
+inline FixedMergingCancellationState<N>::FixedMergingCancellationState(
+    Ts&&... tokens)
+    : CancellationState(FixedMergingCancellationStateTag{}),
+      callbacks_{
+          {{std::forward<Ts>(tokens), [this] { requestCancellation(); }}...}} {}
+
+template <typename... Data>
+template <typename... Args>
+CancellationStateWithData<Data...>::CancellationStateWithData(Args&&... data)
+    : data_(std::forward<Args>(data)...) {}
+
+template <typename... Data>
+template <typename... Args>
+std::pair<CancellationStateSourcePtr, std::tuple<Data...>*>
+CancellationStateWithData<Data...>::create(Args&&... data) {
+  auto* state =
+      new CancellationStateWithData<Data...>(std::forward<Args>(data)...);
+  return {CancellationStateSourcePtr{state}, &state->data_};
+}
+
+inline bool variadicDisjunction() {
+  return false;
+}
+
+inline bool variadicDisjunction(bool first) {
+  return first;
+}
+
+template <typename... Bools>
+bool variadicDisjunction(bool first, Bools... bools) {
+  return first || variadicDisjunction(bools...);
+}
 } // namespace detail
+
+template <typename... Data, typename... Args>
+std::pair<CancellationSource, std::tuple<Data...>*> CancellationSource::create(
+    detail::WithDataTag<Data...>, Args&&... data) {
+  auto cancellationStateWithData =
+      detail::CancellationStateWithData<Data...>::create(
+          std::forward<Args>(data)...);
+  return {
+      CancellationSource{std::move(cancellationStateWithData.first)},
+      cancellationStateWithData.second};
+}
+
+template <typename... Ts>
+inline CancellationToken CancellationToken::merge(Ts&&... tokens) {
+  bool canBeCancelled = detail::variadicDisjunction(tokens.canBeCancelled()...);
+  return canBeCancelled
+      ? CancellationToken(
+            detail::FixedMergingCancellationState<sizeof...(Ts)>::create(
+                std::forward<Ts>(tokens)...))
+      : CancellationToken();
+}
 
 } // namespace folly

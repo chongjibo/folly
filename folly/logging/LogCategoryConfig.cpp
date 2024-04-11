@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,9 +22,7 @@ LogCategoryConfig::LogCategoryConfig(LogLevel l, bool inherit)
     : level{l}, inheritParentLevel{inherit} {}
 
 LogCategoryConfig::LogCategoryConfig(
-    LogLevel l,
-    bool inherit,
-    std::vector<std::string> h)
+    LogLevel l, bool inherit, std::vector<std::string> h)
     : level{l}, inheritParentLevel{inherit}, handlers{h} {}
 
 bool LogCategoryConfig::operator==(const LogCategoryConfig& other) const {

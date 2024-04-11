@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
+#if FOLLY_HAS_COROUTINES
+
 namespace folly {
 namespace coro {
 
 template <typename FilterFn, typename Reference, typename Value>
 AsyncGenerator<Reference, Value> filter(
-    AsyncGenerator<Reference, Value> source,
-    FilterFn filterFn) {
+    AsyncGenerator<Reference, Value> source, FilterFn filterFn) {
   while (auto item = co_await source.next()) {
     if (invoke(filterFn, item.value())) {
       co_yield std::move(item).value();
@@ -30,3 +31,5 @@ AsyncGenerator<Reference, Value> filter(
 
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES

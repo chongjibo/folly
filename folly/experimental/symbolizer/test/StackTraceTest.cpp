@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,11 @@
 #include <cstring>
 
 #include <folly/experimental/TestUtil.h>
+#include <folly/experimental/coro/BlockingWait.h>
+#include <folly/experimental/coro/Task.h>
 #include <folly/experimental/symbolizer/StackTrace.h>
 #include <folly/experimental/symbolizer/Symbolizer.h>
+#include <folly/lang/Hint.h>
 #include <folly/test/TestUtils.h>
 
 #include <boost/regex.hpp>
@@ -26,6 +29,8 @@
 #include <glog/logging.h>
 
 #include <folly/portability/GTest.h>
+
+#if FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
 
 using namespace folly;
 using namespace folly::symbolizer;
@@ -95,6 +100,11 @@ TEST(StackTraceTest, Simple) {
 }
 
 TEST(StackTraceTest, Signal) {
+  if (folly::kIsSanitizeThread) {
+    // TSAN doesn't like signal-unsafe functions in a signal handler regardless
+    // of how the signal is raised. So skip the test in that case.
+    SKIP() << "Not supported for TSAN";
+  }
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
   sa.sa_sigaction = handler;
@@ -229,3 +239,98 @@ TEST(StackTraceTest, TerseFileAndLineStackTracePrinterOutput) {
 
   ASSERT_TRUE(match);
 }
+
+namespace {
+FOLLY_ALWAYS_INLINE void verifyAsyncStackTraces() {
+  constexpr size_t kMaxAddresses = 100;
+  FrameArray<kMaxAddresses> fa;
+  CHECK(getAsyncStackTraceSafe(fa));
+
+  CHECK_GT(fa.frameCount, 0);
+
+  Symbolizer symbolizer;
+  symbolizer.symbolize(fa);
+  symbolizer::StringSymbolizePrinter printer;
+  printer.println(fa);
+  auto stackTraceStr = printer.str();
+
+  if (VLOG_IS_ON(1)) {
+    VLOG(1) << "getAsyncStackTrace\n" << stackTraceStr;
+  }
+
+  // These functions should appear in this relative order
+  std::vector<std::string> funcNames{
+      "funcF",
+      "funcE",
+      "co_funcD",
+      "co_funcC",
+      "funcB2_blocking",
+      "funcB1",
+      "co_funcB0",
+      "co_funcA2",
+      "co_funcA1",
+      "co_funcA0",
+  };
+  std::vector<size_t> positions;
+  for (const auto& funcName : funcNames) {
+    SCOPED_TRACE(funcName);
+    auto pos = stackTraceStr.find(funcName);
+    ASSERT_NE(pos, std::string::npos);
+    positions.push_back(pos);
+  }
+  for (size_t i = 0; i < positions.size() - 1; ++i) {
+    ASSERT_LT(positions[i], positions[i + 1]);
+  }
+}
+
+FOLLY_NOINLINE void funcF() {
+  verifyAsyncStackTraces();
+}
+
+FOLLY_NOINLINE void funcE() {
+  funcF();
+  compiler_must_not_elide(0); // prevent tail-call above
+}
+
+FOLLY_NOINLINE folly::coro::Task<void> co_funcD() {
+  funcE();
+  co_return;
+}
+
+FOLLY_NOINLINE folly::coro::Task<void> co_funcC() {
+  co_await co_funcD();
+}
+
+FOLLY_NOINLINE void funcB2_blocking() {
+  // This should trigger a new AsyncStackRoot
+  folly::coro::blockingWait(co_funcC());
+}
+
+FOLLY_NOINLINE void funcB1() {
+  funcB2_blocking();
+  compiler_must_not_elide(0); // prevent tail-call above
+}
+
+FOLLY_NOINLINE folly::coro::Task<void> co_funcB0() {
+  funcB1();
+  co_return;
+}
+
+FOLLY_NOINLINE folly::coro::Task<void> co_funcA2() {
+  co_await co_funcB0();
+}
+
+FOLLY_NOINLINE folly::coro::Task<void> co_funcA1() {
+  co_await co_funcA2();
+}
+
+FOLLY_NOINLINE folly::coro::Task<void> co_funcA0() {
+  co_await co_funcA1();
+}
+} // namespace
+
+TEST(StackTraceTest, AsyncStackTraceSimple) {
+  folly::coro::blockingWait(co_funcA0());
+}
+
+#endif // FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF

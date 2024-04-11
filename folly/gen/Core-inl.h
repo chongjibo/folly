@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,13 +68,10 @@ class IsCompatibleSignature<Candidate, ExpectedReturn(ArgTypes...)> {
  */
 template <class Self>
 struct FBounded {
-  const Self& self() const {
-    return *static_cast<const Self*>(this);
-  }
+  using SelfType = Self;
+  const Self& self() const { return *static_cast<const Self*>(this); }
 
-  Self& self() {
-    return *static_cast<Self*>(this);
-  }
+  Self& self() { return *static_cast<Self*>(this); }
 };
 
 /**
@@ -213,8 +210,7 @@ template <
     class Right,
     class Chain = detail::Chain<LeftValue, Left, Right>>
 Chain operator+(
-    const GenImpl<LeftValue, Left>& left,
-    GenImpl<RightValue, Right>&& right) {
+    const GenImpl<LeftValue, Left>& left, GenImpl<RightValue, Right>&& right) {
   static_assert(
       std::is_same<LeftValue, RightValue>::value,
       "Generators may ony be combined if Values are the exact same type.");
@@ -228,8 +224,7 @@ template <
     class Right,
     class Chain = detail::Chain<LeftValue, Left, Right>>
 Chain operator+(
-    GenImpl<LeftValue, Left>&& left,
-    const GenImpl<RightValue, Right>& right) {
+    GenImpl<LeftValue, Left>&& left, const GenImpl<RightValue, Right>& right) {
   static_assert(
       std::is_same<LeftValue, RightValue>::value,
       "Generators may ony be combined if Values are the exact same type.");
@@ -243,8 +238,7 @@ template <
     class Right,
     class Chain = detail::Chain<LeftValue, Left, Right>>
 Chain operator+(
-    GenImpl<LeftValue, Left>&& left,
-    GenImpl<RightValue, Right>&& right) {
+    GenImpl<LeftValue, Left>&& left, GenImpl<RightValue, Right>&& right) {
   static_assert(
       std::is_same<LeftValue, RightValue>::value,
       "Generators may ony be combined if Values are the exact same type.");

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,8 @@
 
 #pragma once
 
-#include <boost/variant.hpp>
+#include <variant>
+
 #include <folly/portability/OpenSSL.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
 #include <folly/ssl/SSLSession.h>
@@ -81,7 +82,7 @@ class SSLSessionManager {
    * The SSL session. Which type the variant contains depends on the
    * session API that is used.
    */
-  boost::variant<
+  std::variant<
       folly::ssl::SSLSessionUniquePtr,
       std::shared_ptr<folly::ssl::detail::OpenSSLSession>>
       session_;

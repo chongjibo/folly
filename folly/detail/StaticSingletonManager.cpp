@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,11 @@
 
 #include <folly/detail/StaticSingletonManager.h>
 
+#include <map>
 #include <mutex>
 #include <typeindex>
-#include <unordered_map>
+
+#include <folly/memory/ReentrantAllocator.h>
 
 namespace folly {
 namespace detail {
@@ -28,11 +30,13 @@ namespace {
 class StaticSingletonManagerWithRttiImpl {
  public:
   using Make = void*();
-  using Cache = std::atomic<void*>;
 
-  void* create(std::type_info const& key, Make& make, Cache& cache) {
-    auto const ptr = entry(key).get(make);
-    cache.store(ptr, std::memory_order_release);
+  template <typename Arg>
+  static void* create(Arg& arg) {
+    // This Leaky Meyers Singleton must always live in the .cpp file.
+    static Indestructible<StaticSingletonManagerWithRttiImpl> instance;
+    auto const ptr = instance->entry(*arg.key).get(*arg.make, arg.debug);
+    arg.cache.store(ptr, std::memory_order_release);
     return ptr;
   }
 
@@ -41,29 +45,38 @@ class StaticSingletonManagerWithRttiImpl {
     void* ptr{};
     std::mutex mutex;
 
-    void* get(Make& make) {
-      std::lock_guard<std::mutex> lock(mutex);
-      return ptr ? ptr : (ptr = make());
+    void* get(Make& make, void** debug) {
+      std::unique_lock<std::mutex> lock(mutex);
+      return ptr ? ptr : (*debug = ptr = make());
     }
   };
 
   Entry& entry(std::type_info const& key) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& e = map_[key];
-    return e ? *e : *(e = new Entry());
+    std::unique_lock<std::mutex> lock(mutex_);
+    return map_[key];
   }
 
-  std::unordered_map<std::type_index, Entry*> map_;
+  // using reentrant_allocator to permit new/delete hooks to use this class
+  // using std::map over std::unordered_map to reduce number of mmap regions
+  // since reentrant_allocator creates creates mmap regions to avoid malloc/free
+  using map_value_t = std::pair<std::type_index const, Entry>;
+  using map_less_t = std::less<std::type_index>;
+  using map_alloc_t = reentrant_allocator<map_value_t>;
+  using map_t = std::map<std::type_index, Entry, map_less_t, map_alloc_t>;
+
+  map_t map_{map_alloc_t{reentrant_allocator_options{}}};
   std::mutex mutex_;
 };
 
 } // namespace
 
-void* StaticSingletonManagerWithRtti::create_(Arg& arg) {
-  // This Leaky Meyers Singleton must always live in the .cpp file.
-  static auto& instance = *new StaticSingletonManagerWithRttiImpl();
-  return instance.create(*arg.key, arg.make, arg.cache);
+template <bool Noexcept>
+void* StaticSingletonManagerWithRtti::create_(Arg& arg) noexcept(Noexcept) {
+  return StaticSingletonManagerWithRttiImpl::create(arg);
 }
+
+template void* StaticSingletonManagerWithRtti::create_<false>(Arg& arg);
+template void* StaticSingletonManagerWithRtti::create_<true>(Arg& arg) noexcept;
 
 } // namespace detail
 } // namespace folly

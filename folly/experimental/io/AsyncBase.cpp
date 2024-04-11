@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 
 #include <folly/experimental/io/AsyncBase.h>
 
-#include <sys/eventfd.h>
 #include <cerrno>
 #include <ostream>
 #include <stdexcept>
@@ -29,6 +28,7 @@
 #include <folly/Format.h>
 #include <folly/Likely.h>
 #include <folly/String.h>
+#include <folly/portability/Filesystem.h>
 #include <folly/portability/Unistd.h>
 
 namespace folly {
@@ -50,6 +50,11 @@ AsyncBaseOp::~AsyncBaseOp() {
 void AsyncBaseOp::start() {
   DCHECK_EQ(state_, State::INITIALIZED);
   state_ = State::PENDING;
+}
+
+void AsyncBaseOp::unstart() {
+  DCHECK_EQ(state_, State::PENDING);
+  state_ = State::INITIALIZED;
 }
 
 void AsyncBaseOp::complete(ssize_t result) {
@@ -77,32 +82,24 @@ void AsyncBaseOp::init() {
 }
 
 std::string AsyncBaseOp::fd2name(int fd) {
-  std::string path = folly::to<std::string>("/proc/self/fd/", fd);
-  char link[PATH_MAX];
-  const ssize_t length =
-      std::max<ssize_t>(readlink(path.c_str(), link, PATH_MAX), 0);
-  return path.assign(link, length);
+  auto link = fs::path{"/proc/self/fd"} / folly::to<std::string>(fd);
+  return fs::read_symlink(link).string();
 }
 
-AsyncBase::AsyncBase(size_t capacity, PollMode pollMode) : capacity_(capacity) {
+AsyncBase::AsyncBase(size_t capacity, PollMode pollMode)
+    : capacity_(capacity), pollMode_(pollMode) {
   CHECK_GT(capacity_, 0);
   completed_.reserve(capacity_);
-  if (pollMode == POLLABLE) {
-    pollFd_ = eventfd(0, EFD_NONBLOCK);
-    checkUnixError(pollFd_, "AsyncBase: eventfd creation failed");
-  }
 }
 
 AsyncBase::~AsyncBase() {
   CHECK_EQ(pending_, 0);
-  if (pollFd_ != -1) {
-    CHECK_ERR(close(pollFd_));
-  }
+  CHECK_EQ(pollFd_, -1);
 }
 
-void AsyncBase::decrementPending() {
+void AsyncBase::decrementPending(size_t n) {
   auto p =
-      pending_.fetch_add(static_cast<size_t>(-1), std::memory_order_acq_rel);
+      pending_.fetch_add(static_cast<size_t>(-n), std::memory_order_acq_rel);
   DCHECK_GE(p, 1);
 }
 
@@ -117,15 +114,50 @@ void AsyncBase::submit(Op* op) {
     throw std::range_error("AsyncBase: too many pending requests");
   }
 
+  op->start();
   int rc = submitOne(op);
 
-  if (rc < 0) {
+  if (rc <= 0) {
+    op->unstart();
     decrementPending();
+    if (rc < 0) {
+      throwSystemErrorExplicit(-rc, "AsyncBase: io_submit failed");
+    }
+  }
+  submitted_ += rc;
+  DCHECK_EQ(rc, 1);
+}
+
+int AsyncBase::submit(Range<Op**> ops) {
+  for (auto& op : ops) {
+    CHECK_EQ(op->state(), Op::State::INITIALIZED);
+    op->start();
+  }
+  initializeContext(); // on demand
+
+  // We can increment past capacity, but we'll clean up after ourselves.
+  auto p = pending_.fetch_add(ops.size(), std::memory_order_acq_rel);
+  if (p >= capacity_) {
+    decrementPending(ops.size());
+    throw std::range_error("AsyncBase: too many pending requests");
+  }
+
+  int rc = submitRange(ops);
+
+  if (rc < 0) {
+    decrementPending(ops.size());
     throwSystemErrorExplicit(-rc, "AsyncBase: io_submit failed");
   }
-  submitted_++;
-  DCHECK_EQ(rc, 1);
-  op->start();
+  // Any ops that did not get submitted go back to INITIALIZED state
+  // and are removed from pending count.
+  for (size_t i = rc; i < ops.size(); i++) {
+    ops[i]->unstart();
+    decrementPending(1);
+  }
+  submitted_ += rc;
+  DCHECK_LE(rc, ops.size());
+
+  return rc;
 }
 
 Range<AsyncBase::Op**> AsyncBase::wait(size_t minRequests) {
@@ -145,24 +177,13 @@ Range<AsyncBase::Op**> AsyncBase::cancel() {
 Range<AsyncBase::Op**> AsyncBase::pollCompleted() {
   CHECK(isInit());
   CHECK_NE(pollFd_, -1) << "pollCompleted() only allowed on pollable object";
-  uint64_t numEvents;
-  // This sets the eventFd counter to 0, see
-  // http://www.kernel.org/doc/man-pages/online/pages/man2/eventfd.2.html
-  ssize_t rc;
-  do {
-    rc = ::read(pollFd_, &numEvents, 8);
-  } while (rc == -1 && errno == EINTR);
-  if (UNLIKELY(rc == -1 && errno == EAGAIN)) {
+
+  if (drainPollFd() <= 0) {
     return Range<Op**>(); // nothing completed
   }
-  checkUnixError(rc, "AsyncBase: read from event fd failed");
-  DCHECK_EQ(rc, 8);
 
-  DCHECK_GT(numEvents, 0);
-  DCHECK_LE(numEvents, pending_);
-
-  // Don't reap more than numEvents, as we've just reset the counter to 0.
-  return doWait(WaitType::COMPLETE, numEvents, numEvents, completed_);
+  // Don't reap more than pending_, as we've just reset the counter to 0.
+  return doWait(WaitType::COMPLETE, 0, pending_.load(), completed_);
 }
 
 AsyncBaseQueue::AsyncBaseQueue(AsyncBase* asyncBase) : asyncBase_(asyncBase) {}
@@ -191,13 +212,14 @@ void AsyncBaseQueue::maybeDequeue() {
     queue_.pop_front();
 
     // Interpose our completion callback
-    auto& nextCb = op->notificationCallback();
-    op->setNotificationCallback([this, nextCb](AsyncBaseOp* op2) {
-      this->onCompleted(op2);
-      if (nextCb) {
-        nextCb(op2);
-      }
-    });
+    auto nextCb = op->getNotificationCallback();
+    op->setNotificationCallback(
+        [this, nextCb{std::move(nextCb)}](AsyncBaseOp* op2) mutable {
+          this->onCompleted(op2);
+          if (nextCb) {
+            nextCb(op2);
+          }
+        });
 
     asyncBase_->submit(op);
   }

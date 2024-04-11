@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,18 +33,20 @@
 #include <boost/container/flat_set.hpp>
 #include <boost/range/adaptors.hpp>
 
-#include <glog/logging.h>
-
 #include <folly/Conv.h>
 #include <folly/Exception.h>
 #include <folly/ScopeGuard.h>
 #include <folly/String.h>
 #include <folly/io/Cursor.h>
 #include <folly/lang/Assume.h>
+#include <folly/logging/xlog.h>
+#include <folly/portability/Dirent.h>
+#include <folly/portability/Fcntl.h>
 #include <folly/portability/Sockets.h>
 #include <folly/portability/Stdlib.h>
 #include <folly/portability/SysSyscall.h>
 #include <folly/portability/Unistd.h>
+#include <folly/system/AtFork.h>
 #include <folly/system/Shell.h>
 
 constexpr int kExecFailure = 127;
@@ -111,6 +113,10 @@ bool ProcessReturnCode::coreDumped() const {
   return WCOREDUMP(rawStatus_);
 }
 
+bool ProcessReturnCode::succeeded() const {
+  return exited() && exitStatus() == 0;
+}
+
 std::string ProcessReturnCode::str() const {
   switch (state()) {
     case NOT_STARTED:
@@ -132,18 +138,14 @@ CalledProcessError::CalledProcessError(ProcessReturnCode rc)
     : SubprocessError(rc.str()), returnCode_(rc) {}
 
 static inline std::string toSubprocessSpawnErrorMessage(
-    char const* executable,
-    int errCode,
-    int errnoValue) {
+    char const* executable, int errCode, int errnoValue) {
   auto prefix = errCode == kExecFailure ? "failed to execute "
                                         : "error preparing to execute ";
   return to<std::string>(prefix, executable, ": ", errnoStr(errnoValue));
 }
 
 SubprocessSpawnError::SubprocessSpawnError(
-    const char* executable,
-    int errCode,
-    int errnoValue)
+    const char* executable, int errCode, int errnoValue)
     : SubprocessError(
           toSubprocessSpawnErrorMessage(executable, errCode, errnoValue)),
       errnoValue_(errnoValue) {}
@@ -192,7 +194,8 @@ Subprocess::Subprocess(
     const std::vector<std::string>& argv,
     const Options& options,
     const char* executable,
-    const std::vector<std::string>* env) {
+    const std::vector<std::string>* env)
+    : destroyBehavior_(options.destroyBehavior_) {
   if (argv.empty()) {
     throw std::invalid_argument("argv must not be empty");
   }
@@ -205,7 +208,8 @@ Subprocess::Subprocess(
 Subprocess::Subprocess(
     const std::string& cmd,
     const Options& options,
-    const std::vector<std::string>* env) {
+    const std::vector<std::string>* env)
+    : destroyBehavior_(options.destroyBehavior_) {
   if (options.usePath_) {
     throw std::invalid_argument("usePath() not allowed when running in shell");
   }
@@ -217,13 +221,44 @@ Subprocess::Subprocess(
 Subprocess Subprocess::fromExistingProcess(pid_t pid) {
   Subprocess sp;
   sp.pid_ = pid;
+  sp.destroyBehavior_ = DestroyBehaviorLeak;
   sp.returnCode_ = ProcessReturnCode::makeRunning();
   return sp;
 }
 
 Subprocess::~Subprocess() {
-  CHECK_NE(returnCode_.state(), ProcessReturnCode::RUNNING)
-      << "Subprocess destroyed without reaping child";
+  if (returnCode_.state() == ProcessReturnCode::RUNNING) {
+    if (destroyBehavior_ == DestroyBehaviorFatal) {
+      // Explicitly crash if we are destroyed without reaping the child process.
+      //
+      // If you are running into this crash, you are destroying a Subprocess
+      // without cleaning up the child process first, which can leave behind a
+      // zombie process on the system until the current process exits.  You may
+      // want to use one of the following options instead when creating the
+      // Subprocess:
+      // - Options::detach()
+      //   If you do not want to wait on the child process to complete, and do
+      //   not care about its exit status, use detach().
+      // - Options::killChildOnDestruction()
+      //   If you want the child process to be automatically killed when the
+      //   Subprocess is destroyed, use killChildOnDestruction() or
+      //   terminateChildOnDestruction()
+      XLOG(FATAL) << "Subprocess destroyed without reaping child";
+    } else if (destroyBehavior_ == DestroyBehaviorLeak) {
+      // Do nothing if we are destroyed without reaping the child process.
+      XLOG(DBG) << "Subprocess destroyed without reaping child process";
+    } else {
+      // If we are killed without reaping the child process, explicitly
+      // terminate/kill it and wait for it to exit.
+      try {
+        TimeoutDuration timeout(destroyBehavior_);
+        terminateOrKill(timeout);
+      } catch (const std::exception& ex) {
+        XLOG(WARN) << "error terminating process in Subprocess destructor: "
+                   << ex.what();
+      }
+    }
+  }
 }
 
 namespace {
@@ -444,9 +479,15 @@ void Subprocess::spawnInternal(
     if (options.detach_) {
       // If we are detaching we must use fork() instead of vfork() for the first
       // fork, since we aren't going to simply call exec() in the child.
-      pid = fork();
+      pid = AtFork::forkInstrumented(fork);
     } else {
-      pid = vfork();
+      if (kIsSanitizeThread) {
+        // TSAN treats vfork as fork, so use the instrumented version
+        // instead
+        pid = AtFork::forkInstrumented(fork);
+      } else {
+        pid = vfork();
+      }
     }
 #ifdef __linux__
   }
@@ -461,7 +502,13 @@ void Subprocess::spawnInternal(
         pid = syscall(SYS_clone, *options.cloneFlags_, 0, nullptr, nullptr);
       } else {
 #endif
-        pid = vfork();
+        if (kIsSanitizeThread) {
+          // TSAN treats vfork as fork, so use the instrumented version
+          // instead
+          pid = AtFork::forkInstrumented(fork);
+        } else {
+          pid = vfork();
+        }
 #ifdef __linux__
       }
 #endif
@@ -500,6 +547,67 @@ void Subprocess::spawnInternal(
 }
 FOLLY_POP_WARNING
 
+// If requested, close all other file descriptors.  Don't close
+// any fds in options.fdActions_, and don't touch stdin, stdout, stderr.
+// Ignore errors.
+//
+//
+// This function is called in the child after fork but before exec so
+// there is very little it can do. It cannot allocate memory and
+// it cannot lock a mutex, just as if it were running in a signal
+// handler.
+void Subprocess::closeInheritedFds(const Options::FdMap& fdActions) {
+#if defined(__linux__)
+  int dirfd = open("/proc/self/fd", O_RDONLY);
+  if (dirfd != -1) {
+    char buffer[32768];
+    int res;
+    while ((res = syscall(SYS_getdents64, dirfd, buffer, sizeof(buffer))) > 0) {
+      // linux_dirent64 is part of the kernel ABI for the getdents64 system
+      // call. It is currently the same as struct dirent64 in both glibc and
+      // musl, but those are library specific and could change. linux_dirent64
+      // is not defined in the standard set of Linux userspace headers
+      // (/usr/include/linux)
+      //
+      // We do not use the POSIX interfaces (opendir, readdir, etc..) for
+      // reading a directory since they may allocate memory / grab a lock, which
+      // is unsafe in this context.
+      struct linux_dirent64 {
+        uint64_t d_ino;
+        int64_t d_off;
+        uint16_t d_reclen;
+        unsigned char d_type;
+        char d_name[0];
+      } const* entry;
+      for (int offset = 0; offset < res; offset += entry->d_reclen) {
+        entry = reinterpret_cast<struct linux_dirent64*>(buffer + offset);
+        if (entry->d_type != DT_LNK) {
+          continue;
+        }
+        char* end_p = nullptr;
+        errno = 0;
+        int fd = static_cast<int>(::strtol(entry->d_name, &end_p, 10));
+        if (errno == ERANGE || fd < 3 || end_p == entry->d_name) {
+          continue;
+        }
+        if ((fd != dirfd) && (fdActions.count(fd) == 0)) {
+          ::close(fd);
+        }
+      }
+    }
+    ::close(dirfd);
+    return;
+  }
+#endif
+  // If not running on Linux or if we failed to open /proc/self/fd, try to close
+  // all possible open file descriptors.
+  for (int fd = sysconf(_SC_OPEN_MAX) - 1; fd >= 3; --fd) {
+    if (fdActions.count(fd) == 0) {
+      ::close(fd);
+    }
+  }
+}
+
 int Subprocess::prepareChild(
     const Options& options,
     const sigset_t* sigmask,
@@ -525,16 +633,35 @@ int Subprocess::prepareChild(
     }
   }
 
+#ifdef __linux__
+  // Best effort
+  if (options.cpuSet_.hasValue()) {
+    const auto& cpuSet = options.cpuSet_.value();
+    ::sched_setaffinity(0, sizeof(cpuSet), &cpuSet);
+  }
+#endif
+
   // We don't have to explicitly close the parent's end of all pipes,
   // as they all have the FD_CLOEXEC flag set and will be closed at
   // exec time.
 
-  // Close all fds that we're supposed to close.
+  // Redirect requested FDs to /dev/null or NUL
+  // dup2 any explicitly specified FDs
   for (auto& p : options.fdActions_) {
-    if (p.second == CLOSE) {
-      if (::close(p.first) == -1) {
+    if (p.second == DEV_NULL) {
+      // folly/portability/Fcntl provides an impl of open that will
+      // map this to NUL on Windows.
+      auto devNull = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+      if (devNull == -1) {
         return errno;
       }
+      // note: dup2 will not set CLOEXEC on the destination
+      if (::dup2(devNull, p.first) == -1) {
+        // explicit close on error to avoid leaking fds
+        ::close(devNull);
+        return errno;
+      }
+      ::close(devNull);
     } else if (p.second != p.first) {
       if (::dup2(p.second, p.first) == -1) {
         return errno;
@@ -542,15 +669,8 @@ int Subprocess::prepareChild(
     }
   }
 
-  // If requested, close all other file descriptors.  Don't close
-  // any fds in options.fdActions_, and don't touch stdin, stdout, stderr.
-  // Ignore errors.
   if (options.closeOtherFds_) {
-    for (int fd = getdtablesize() - 1; fd >= 3; --fd) {
-      if (options.fdActions_.count(fd) == 0) {
-        ::close(fd);
-      }
-    }
+    closeInheritedFds(options.fdActions_);
   }
 
 #if defined(__linux__)
@@ -614,8 +734,11 @@ void Subprocess::readChildErrorPipe(int pfd, const char* executable) {
     // normally, as if the child executed successfully.  If something bad
     // happened the caller should at least get a non-normal exit status from
     // the child.
-    LOG(ERROR) << "unexpected error trying to read from child error pipe "
-               << "rc=" << rc << ", errno=" << errno;
+    XLOGF(
+        ERR,
+        "unexpected error trying to read from child error pipe rc={}, errno={}",
+        rc,
+        errno);
     return;
   }
 
@@ -722,8 +845,7 @@ void Subprocess::sendSignal(int signal) {
 }
 
 ProcessReturnCode Subprocess::waitOrTerminateOrKill(
-    TimeoutDuration waitTimeout,
-    TimeoutDuration sigtermTimeout) {
+    TimeoutDuration waitTimeout, TimeoutDuration sigtermTimeout) {
   returnCode_.enforce(ProcessReturnCode::RUNNING);
   DCHECK_GT(pid_, 0) << "The subprocess has been waited already";
 
@@ -738,17 +860,21 @@ ProcessReturnCode Subprocess::waitOrTerminateOrKill(
 ProcessReturnCode Subprocess::terminateOrKill(TimeoutDuration sigtermTimeout) {
   returnCode_.enforce(ProcessReturnCode::RUNNING);
   DCHECK_GT(pid_, 0) << "The subprocess has been waited already";
-  // 1. Send SIGTERM to kill the process
-  terminate();
-  // 2. check whether subprocess has terminated using non-blocking waitpid
-  waitTimeout(sigtermTimeout);
-  if (!returnCode_.running()) {
-    return returnCode_;
+
+  if (sigtermTimeout > TimeoutDuration(0)) {
+    // 1. Send SIGTERM to kill the process
+    terminate();
+    // 2. check whether subprocess has terminated using non-blocking waitpid
+    waitTimeout(sigtermTimeout);
+    if (!returnCode_.running()) {
+      return returnCode_;
+    }
   }
+
   // 3. If we are at this point, we have waited enough time after
   // sending SIGTERM, we have to use nuclear option SIGKILL to kill
   // the subprocess.
-  LOG(INFO) << "Send SIGKILL to " << pid_;
+  XLOGF(INFO, "Send SIGKILL to {}", pid_);
   kill();
   // 4. SIGKILL should kill the process otherwise there must be
   // something seriously wrong, just use blocking wait to wait for the
@@ -884,8 +1010,7 @@ std::pair<IOBufQueue, IOBufQueue> Subprocess::communicateIOBuf(
 }
 
 void Subprocess::communicate(
-    FdCallback readCallback,
-    FdCallback writeCallback) {
+    FdCallback readCallback, FdCallback writeCallback) {
   // This serves to prevent wait() followed by communicate(), but if you
   // legitimately need that, send a patch to delete this line.
   returnCode_.enforce(ProcessReturnCode::RUNNING);
@@ -950,7 +1075,6 @@ void Subprocess::communicate(
 
       if ((events & (POLLHUP | POLLERR)) && !closed) {
         toClose.push_back(i);
-        closed = true;
       }
     }
 

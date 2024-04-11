@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,16 @@
 
 #include <folly/concurrency/CacheLocality.h>
 
-#include <folly/portability/GTest.h>
-#include <folly/portability/SysResource.h>
-
-#include <glog/logging.h>
+#include <cstdlib>
 #include <memory>
 #include <thread>
 #include <unordered_map>
+
+#include <folly/portability/GTest.h>
+#include <folly/portability/SysResource.h>
+#include <folly/test/TestUtils.h>
+
+#include <glog/logging.h>
 
 using namespace folly;
 
@@ -305,10 +308,9 @@ static std::unordered_map<std::string, std::string> fakeSysfsTree = {
 
 /// This is the expected CacheLocality structure for fakeSysfsTree
 static const CacheLocality nonUniformExampleLocality = {
-    32,
-    {16, 16, 2},
-    {0,  2, 4, 6, 8, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28,
-     30, 1, 3, 5, 7, 9,  13, 15, 17, 19, 21, 23, 25, 27, 29, 31}};
+    32, {16, 16, 2}, {0,  2,  4,  6,  8,  10, 11, 12, 14, 16, 18,
+                      20, 22, 24, 26, 28, 30, 1,  3,  5,  7,  9,
+                      13, 15, 17, 19, 21, 23, 25, 27, 29, 31}};
 
 TEST(CacheLocality, FakeSysfs) {
   auto parsed = CacheLocality::readFromSysfsTree([](std::string name) {
@@ -959,11 +961,10 @@ static const std::vector<std::string> fakeProcCpuinfo = {
 
 /// This is the expected CacheLocality structure for fakeProcCpuinfo
 static const CacheLocality fakeProcCpuinfoLocality = {
-    56,
-    {28, 28, 2},
-    {0,  2,  4,  6,  8,  10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36,
-     38, 40, 42, 44, 46, 48, 50, 52, 54, 1,  3,  5,  7,  9,  11, 13, 15, 17, 19,
-     21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55}};
+    56, {28, 28, 2}, {0,  2,  4,  6,  8,  10, 12, 14, 16, 18, 20, 22, 24, 26,
+                      28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54,
+                      1,  3,  5,  7,  9,  11, 13, 15, 17, 19, 21, 23, 25, 27,
+                      29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55}};
 
 TEST(CacheLocality, ProcCpu) {
   auto parsed = CacheLocality::readFromProcCpuinfoLines(fakeProcCpuinfo);
@@ -977,6 +978,9 @@ TEST(CacheLocality, LinuxActual) {
   if (!kIsLinux) {
     return;
   }
+
+  auto in_re = ::getenv("RE_PLATFORM");
+  SKIP_IF(in_re != nullptr);
 
   auto parsed1 = CacheLocality::readFromProcCpuinfo();
   EXPECT_EQ(parsed1.numCpus, std::thread::hardware_concurrency());
@@ -1035,26 +1039,26 @@ TEST(CacheLocality, BenchmarkSysfs) {
 
 #if defined(FOLLY_HAVE_LINUX_VDSO) && !defined(FOLLY_SANITIZE_MEMORY)
 TEST(Getcpu, VdsoGetcpu) {
+  Getcpu::Func func = Getcpu::resolveVdsoFunc();
+  SKIP_IF(func == nullptr);
+
   unsigned cpu;
-  Getcpu::resolveVdsoFunc()(&cpu, nullptr, nullptr);
+  func(&cpu, nullptr, nullptr);
 
   EXPECT_TRUE(cpu < CPU_SETSIZE);
 }
 #endif
 
-#ifdef FOLLY_CL_USE_FOLLY_TLS
 TEST(ThreadId, SimpleTls) {
   unsigned cpu = 0;
-  auto rv = folly::FallbackGetcpu<SequentialThreadId<std::atomic>>::getcpu(
-      &cpu, nullptr, nullptr);
+  auto rv =
+      folly::FallbackGetcpu<SequentialThreadId>::getcpu(&cpu, nullptr, nullptr);
   EXPECT_EQ(rv, 0);
   EXPECT_TRUE(cpu > 0);
   unsigned again;
-  folly::FallbackGetcpu<SequentialThreadId<std::atomic>>::getcpu(
-      &again, nullptr, nullptr);
+  folly::FallbackGetcpu<SequentialThreadId>::getcpu(&again, nullptr, nullptr);
   EXPECT_EQ(cpu, again);
 }
-#endif
 
 TEST(ThreadId, SimplePthread) {
   unsigned cpu = 0;
@@ -1067,8 +1071,7 @@ TEST(ThreadId, SimplePthread) {
   EXPECT_EQ(cpu, again);
 }
 
-#ifdef FOLLY_CL_USE_FOLLY_TLS
-static FOLLY_TLS unsigned testingCpu = 0;
+static thread_local unsigned testingCpu = 0;
 
 static int testingGetcpu(unsigned* cpu, unsigned* node, void* /* unused */) {
   if (cpu != nullptr) {
@@ -1079,7 +1082,6 @@ static int testingGetcpu(unsigned* cpu, unsigned* node, void* /* unused */) {
   }
   return 0;
 }
-#endif
 
 TEST(AccessSpreader, Simple) {
   for (size_t s = 1; s < 200; ++s) {
@@ -1111,7 +1113,6 @@ TEST(AccessSpreader, ConcurrentAccessCached) {
   }
 }
 
-#ifdef FOLLY_CL_USE_FOLLY_TLS
 #define DECLARE_SPREADER_TAG(tag, locality, func)      \
   namespace {                                          \
   template <typename dummy>                            \
@@ -1149,32 +1150,35 @@ TEST(AccessSpreader, Wrapping) {
   }
 }
 
-TEST(CoreRawAllocator, Basic) {
-  CoreRawAllocator<32> alloc;
-  auto a = alloc.get(0);
-  auto res = a->allocate(8);
-  memset(res, 0, 8);
-  a->deallocate(res);
-  res = a->allocate(8);
-  EXPECT_TRUE((intptr_t)res % 8 == 0); // check alignment
-  memset(res, 0, 8);
-  a->deallocate(res);
-  res = a->allocate(12);
-  EXPECT_TRUE((intptr_t)res % 16 == 0); // check alignment
-  memset(res, 0, 12);
-  a->deallocate(res);
-  res = a->allocate(257);
-  memset(res, 0, 257);
-  a->deallocate(res);
+TEST(CoreAllocator, Basic) {
+  constexpr size_t kNumStripes = 32;
 
-  std::vector<void*> mems;
+  auto res = coreMalloc(8, kNumStripes, 0);
+  memset(res, 0, 8);
+  coreFree(res);
+
+  res = coreMalloc(8, kNumStripes, 0);
+  EXPECT_EQ(0, (intptr_t)res % 8); // check alignment
+  memset(res, 0, 8);
+  coreFree(res);
+  res = coreMalloc(12, kNumStripes, 0);
+  if (alignof(std::max_align_t) >= 16) {
+    EXPECT_EQ(0, (intptr_t)res % 16); // check alignment
+  }
+  memset(res, 0, 12);
+  coreFree(res);
+  res = coreMalloc(257, kNumStripes, 0);
+  memset(res, 0, 257);
+  coreFree(res);
+
+  CoreAllocator<int> a;
+  std::vector<int*> mems;
   for (int i = 0; i < 10000; i++) {
-    mems.push_back(a->allocate(1));
+    CoreAllocatorGuard g(kNumStripes, i % kNumStripes);
+    mems.push_back(a.allocate(1));
   }
   for (auto& mem : mems) {
-    a->deallocate(mem);
+    a.deallocate(mem, 1);
   }
   mems.clear();
 }
-
-#endif

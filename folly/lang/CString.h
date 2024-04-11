@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,19 @@
 #include <cstring>
 
 namespace folly {
+
+namespace detail {
+
+void* memrchr_fallback(void* s, int c, std::size_t len) noexcept;
+void const* memrchr_fallback(void const* s, int c, std::size_t len) noexcept;
+
+} // namespace detail
+
+//  memrchr
+//
+//  mimic: memrchr, glibc++
+void* memrchr(void* s, int c, std::size_t len) noexcept;
+void const* memrchr(void const* s, int c, std::size_t len) noexcept;
 
 //  strlcpy
 //

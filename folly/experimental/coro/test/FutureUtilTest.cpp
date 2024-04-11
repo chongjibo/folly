@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
 #include <folly/executors/ManualExecutor.h>
 #include <folly/experimental/coro/AsyncGenerator.h>
 #include <folly/experimental/coro/Baton.h>
@@ -25,11 +24,16 @@
 #include <folly/experimental/coro/Task.h>
 #include <folly/portability/GTest.h>
 
+#if FOLLY_HAS_COROUTINES
+
 static folly::coro::Task<int> makeTask() {
   co_return 42;
 }
 static folly::coro::AsyncGenerator<int> makeGen() {
   co_yield 42;
+}
+static folly::coro::Task<void> makeVoidTask() {
+  co_return;
 }
 
 TEST(FutureUtilTest, ToTask) {
@@ -100,5 +104,13 @@ TEST(FutureUtilTest, ToFuture) {
   baton.post();
   ex.drain();
   EXPECT_TRUE(fut3.isReady());
+}
+
+TEST(FutureUtilTest, VoidRoundtrip) {
+  folly::coro::Task<void> task = makeVoidTask();
+  folly::SemiFuture<folly::Unit> semi =
+      folly::coro::toSemiFuture(std::move(task));
+  task = folly::coro::toTask(std::move(semi));
+  folly::coro::blockingWait(std::move(task));
 }
 #endif

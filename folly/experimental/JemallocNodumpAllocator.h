@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -82,12 +82,8 @@ class JemallocNodumpAllocator {
   void* reallocate(void* p, size_t size);
   void deallocate(void* p, size_t = 0);
 
-  unsigned getArenaIndex() const {
-    return arena_index_;
-  }
-  int getFlags() const {
-    return flags_;
-  }
+  unsigned getArenaIndex() const { return arena_index_; }
+  int getFlags() const { return flags_; }
 
  private:
 #ifdef FOLLY_JEMALLOC_NODUMP_ALLOCATOR_SUPPORTED

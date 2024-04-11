@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,12 @@
  */
 
 #include <folly/FileUtil.h>
-#include <folly/detail/FileUtilDetail.h>
-#include <folly/experimental/TestUtil.h>
 
-#include <deque>
 #if defined(__linux__)
 #include <dlfcn.h>
 #endif
+
+#include <deque>
 
 #include <glog/logging.h>
 
@@ -29,6 +28,9 @@
 #include <folly/File.h>
 #include <folly/Range.h>
 #include <folly/String.h>
+#include <folly/detail/FileUtilDetail.h>
+#include <folly/detail/FileUtilVectorDetail.h>
+#include <folly/experimental/TestUtil.h>
 #include <folly/portability/GTest.h>
 
 namespace folly {
@@ -38,7 +40,6 @@ using namespace fileutil_detail;
 using namespace std;
 
 namespace {
-
 class Reader {
  public:
   Reader(off_t offset, StringPiece data, std::deque<ssize_t> spec);
@@ -55,9 +56,7 @@ class Reader {
   // pwritev-like
   ssize_t operator()(int fd, const iovec* iov, int count, off_t offset);
 
-  const std::deque<ssize_t> spec() const {
-    return spec_;
-  }
+  const std::deque<ssize_t> spec() const { return spec_; }
 
  private:
   ssize_t nextSize();
@@ -198,12 +197,8 @@ class IovecBuffers {
   explicit IovecBuffers(std::initializer_list<size_t> sizes);
   explicit IovecBuffers(std::vector<size_t> sizes);
 
-  std::vector<iovec> iov() const {
-    return iov_;
-  } // yes, make a copy
-  std::string join() const {
-    return folly::join("", buffers_);
-  }
+  std::vector<iovec> iov() const { return iov_; } // yes, make a copy
+  std::string join() const { return folly::join("", buffers_); }
   size_t size() const;
 
  private:
@@ -548,6 +543,32 @@ TEST_F(WriteFileAtomic, multipleFiles) {
   EXPECT_EQ(0440, getPerms(tmpPath("foo_txt")));
   EXPECT_EQ(0444, getPerms(tmpPath("foo.txt2")));
 }
+
+TEST_F(WriteFileAtomic, WriteWithCustomTempPath) {
+  auto path = fs::path{tmpDir_.path().string()} / fs::path{"file"};
+
+  writeFileAtomic(path.c_str(), "data_1");
+
+  auto output = std::string{};
+  auto success = readFile(path.c_str(), output);
+  ASSERT_TRUE(success);
+  EXPECT_EQ(output, "data_1");
+
+  auto customPath = fs::path{tmpDir_.path().string()}.string();
+
+  writeFileAtomic(
+      path.string(),
+      "data_2",
+      WriteFileAtomicOptions{}
+          .setPermissions(0644)
+          .setSyncType(SyncType::WITH_SYNC)
+          .setTemporaryDirectory(customPath));
+
+  output = std::string{};
+  success = readFile(path.c_str(), output);
+  ASSERT_TRUE(success);
+  EXPECT_EQ(output, "data_2");
+}
 #endif // !_WIN32
 
 } // namespace test
@@ -561,16 +582,10 @@ namespace {
  */
 class FChmodFailure {
  public:
-  FChmodFailure() {
-    ++forceFailure_;
-  }
-  ~FChmodFailure() {
-    --forceFailure_;
-  }
+  FChmodFailure() { ++forceFailure_; }
+  ~FChmodFailure() { --forceFailure_; }
 
-  static bool shouldFail() {
-    return forceFailure_.load() > 0;
-  }
+  static bool shouldFail() { return forceFailure_.load() > 0; }
 
  private:
   static std::atomic<int> forceFailure_;
@@ -586,7 +601,9 @@ int fchmod(int fd, mode_t mode) {
       reinterpret_cast<int (*)(int, mode_t)>(dlsym(RTLD_NEXT, "fchmod"));
   // For sanity, make sure we didn't find ourself,
   // since that would cause infinite recursion.
-  CHECK_NE(realFunction, fchmod);
+  CHECK_NE(
+      reinterpret_cast<uintptr_t>(realFunction),
+      reinterpret_cast<uintptr_t>(&fchmod));
 
   if (FChmodFailure::shouldFail()) {
     errno = EINVAL;

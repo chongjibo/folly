@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,10 @@
  */
 
 #pragma once
+
+#ifdef __BMI__
+#include <immintrin.h>
+#endif
 
 #include <cstddef>
 #include <limits>
@@ -54,12 +58,8 @@ struct BitsTraits<
     Unaligned<T>,
     typename std::enable_if<(std::is_integral<T>::value)>::type> {
   typedef T UnderlyingType;
-  static T load(const Unaligned<T>& x) {
-    return x.value;
-  }
-  static void store(Unaligned<T>& x, T v) {
-    x.value = v;
-  }
+  static T load(const Unaligned<T>& x) { return x.value; }
+  static void store(Unaligned<T>& x, T v) { x.value = v; }
   static T loadRMW(const Unaligned<T>& x) {
     FOLLY_PUSH_WARNING
     FOLLY_GNU_DISABLE_WARNING("-Wuninitialized")
@@ -98,12 +98,8 @@ struct BitsTraits<
     T,
     typename std::enable_if<(std::is_integral<T>::value)>::type> {
   typedef T UnderlyingType;
-  static T load(const T& x) {
-    return x;
-  }
-  static void store(T& x, T v) {
-    x = v;
-  }
+  static T load(const T& x) { return x; }
+  static void store(T& x, T v) { x = v; }
   static T loadRMW(const T& x) {
     FOLLY_PUSH_WARNING
     FOLLY_GNU_DISABLE_WARNING("-Wuninitialized")
@@ -136,16 +132,12 @@ struct Bits {
   /**
    * Byte index of the given bit.
    */
-  static constexpr size_t blockIndex(size_t bit) {
-    return bit / bitsPerBlock;
-  }
+  static constexpr size_t blockIndex(size_t bit) { return bit / bitsPerBlock; }
 
   /**
    * Offset in block of the given bit.
    */
-  static constexpr size_t bitOffset(size_t bit) {
-    return bit % bitsPerBlock;
-  }
+  static constexpr size_t bitOffset(size_t bit) { return bit % bitsPerBlock; }
 
   /**
    * Number of blocks used by the given number of bits.
@@ -192,8 +184,8 @@ struct Bits {
  private:
   // Same as set, assumes all bits are in the same block.
   // (bitStart < sizeof(T) * 8, bitStart + count <= sizeof(T) * 8)
-  static void
-  innerSet(T* p, size_t bitStart, size_t count, UnderlyingType value);
+  static void innerSet(
+      T* p, size_t bitStart, size_t count, UnderlyingType value);
 
   // Same as get, assumes all bits are in the same block.
   // (bitStart < sizeof(T) * 8, bitStart + count <= sizeof(T) * 8)
@@ -212,22 +204,22 @@ struct Bits {
 
 template <class T, class Traits>
 inline void Bits<T, Traits>::set(T* p, size_t bit) {
+  auto mask = static_cast<UnderlyingType>(one << bitOffset(bit));
   T& block = p[blockIndex(bit)];
-  Traits::store(block, Traits::loadRMW(block) | (one << bitOffset(bit)));
+  Traits::store(block, Traits::loadRMW(block) | mask);
 }
 
 template <class T, class Traits>
 inline void Bits<T, Traits>::clear(T* p, size_t bit) {
+  auto mask = static_cast<UnderlyingType>(one << bitOffset(bit));
+  auto ksam = static_cast<UnderlyingType>(~mask);
   T& block = p[blockIndex(bit)];
-  Traits::store(block, Traits::loadRMW(block) & ~(one << bitOffset(bit)));
+  Traits::store(block, Traits::loadRMW(block) & ksam);
 }
 
 template <class T, class Traits>
 inline void Bits<T, Traits>::set(
-    T* p,
-    size_t bitStart,
-    size_t count,
-    UnderlyingType value) {
+    T* p, size_t bitStart, size_t count, UnderlyingType value) {
   DCHECK_LE(count, sizeof(UnderlyingType) * 8);
   size_t cut = bitsPerBlock - count;
   if (cut != 8 * sizeof(UnderlyingType)) {
@@ -257,10 +249,7 @@ inline void Bits<T, Traits>::set(
 
 template <class T, class Traits>
 inline void Bits<T, Traits>::innerSet(
-    T* p,
-    size_t offset,
-    size_t count,
-    UnderlyingType value) {
+    T* p, size_t offset, size_t count, UnderlyingType value) {
   // Mask out bits and set new value
   UnderlyingType v = Traits::loadRMW(*p);
   v &= ~(ones(count) << offset);
@@ -304,7 +293,11 @@ inline auto Bits<T, Traits>::get(const T* p, size_t bitStart, size_t count)
 template <class T, class Traits>
 inline auto Bits<T, Traits>::innerGet(const T* p, size_t offset, size_t count)
     -> UnderlyingType {
+#if __BMI__
+  return _bextr_u64(Traits::load(*p), offset, count);
+#else
   return (Traits::load(*p) >> offset) & ones(count);
+#endif
 }
 
 template <class T, class Traits>

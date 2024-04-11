@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,11 @@
 
 #include <glog/logging.h>
 
+#include <folly/Portability.h>
 #include <folly/experimental/observer/detail/Core.h>
 #include <folly/experimental/observer/detail/GraphCycleDetector.h>
+#include <folly/fibers/FiberManager.h>
+#include <folly/functional/Invoke.h>
 #include <folly/futures/Future.h>
 #include <folly/synchronization/SanitizeThread.h>
 
@@ -52,62 +55,32 @@ namespace observer_detail {
  */
 class ObserverManager {
  public:
-  static size_t getVersion() {
-    return getInstance().version_;
-  }
+  static size_t getVersion() { return getInstance().version_; }
 
-  static bool inManagerThread() {
-    return inManagerThread_;
-  }
+  static bool inManagerThread() { return inManagerThread_; }
+
+  static void vivify() { getUpdatesManager(); }
 
   static void scheduleRefresh(Core::Ptr core, size_t minVersion) {
     if (core->getVersion() >= minVersion) {
       return;
     }
 
-    auto updatesManager = getUpdatesManager();
-
-    if (!updatesManager) {
-      return;
-    }
-
     auto& instance = getInstance();
 
-    SharedMutexReadPriority::ReadHolder rh(instance.versionMutex_);
+    std::shared_lock rh(instance.versionMutex_);
 
-    // TSAN assumes that the thread that locks the mutex must
-    // be the one that unlocks it. However, we are passing ownership of
-    // the read lock into the lambda, and the thread that performs the async
-    // work will be the one that unlocks it. To avoid noise with TSAN,
-    // annotate that the thread has released the mutex, and then annotate
-    // the async thread as acquiring the mutex.
-    annotate_rwlock_released(
-        &instance.versionMutex_,
-        annotate_rwlock_level::rdlock,
-        __FILE__,
-        __LINE__);
-
-    updatesManager->scheduleCurrent(
-        [core = std::move(core), &instance, rh = std::move(rh)]() {
-          // Make TSAN know that the current thread owns the read lock now.
-          annotate_rwlock_acquired(
-              &instance.versionMutex_,
-              annotate_rwlock_level::rdlock,
-              __FILE__,
-              __LINE__);
-
-          core->refresh(instance.version_);
-        });
+    instance.scheduleCurrent([coreWeak = folly::to_weak_ptr(std::move(core)),
+                              &instance,
+                              rh_2 = std::move(rh)]() {
+      if (auto coreShared = coreWeak.lock()) {
+        coreShared->refresh(instance.version_);
+      }
+    });
   }
 
-  static void scheduleRefreshNewVersion(Core::WeakPtr coreWeak) {
-    auto updatesManager = getUpdatesManager();
-
-    if (!updatesManager) {
-      return;
-    }
-
-    updatesManager->scheduleNext(std::move(coreWeak));
+  static void scheduleRefreshNewVersion(Function<Core::Ptr()> coreFunc) {
+    getInstance().scheduleNext(std::move(coreFunc));
   }
 
   static void initCore(Core::Ptr core) {
@@ -115,17 +88,35 @@ class ObserverManager {
 
     auto& instance = getInstance();
 
-    auto inManagerThread = std::exchange(inManagerThread_, true);
-    SCOPE_EXIT {
-      inManagerThread_ = inManagerThread;
-    };
+    folly::fibers::runInMainContext([&] {
+      auto inManagerThread = std::exchange(inManagerThread_, true);
+      SCOPE_EXIT { inManagerThread_ = inManagerThread; };
 
-    SharedMutexReadPriority::ReadHolder rh(instance.versionMutex_);
+      std::shared_lock rh(instance.versionMutex_);
 
-    core->refresh(instance.version_);
+      core->refresh(instance.version_);
+    });
   }
 
-  static void waitForAllUpdates();
+  static void waitForAllUpdates() {
+    tryWaitForAllUpdatesImpl([=](auto& m) { return make_unique_lock(m); });
+  }
+  static bool tryWaitForAllUpdates() {
+    return tryWaitForAllUpdatesImpl(
+        [=](auto& m) { return make_unique_lock(m, std::try_to_lock); });
+  }
+  template <typename Rep, typename Period>
+  static bool tryWaitForAllUpdatesFor(
+      std::chrono::duration<Rep, Period> timeout) {
+    return tryWaitForAllUpdatesImpl(
+        [=](auto& m) { return make_unique_lock(m, timeout); });
+  }
+  template <typename Clock, typename Duration>
+  static bool tryWaitForAllUpdatesUntil(
+      std::chrono::time_point<Clock, Duration> deadline) {
+    return tryWaitForAllUpdatesImpl(
+        [=](auto& m) { return make_unique_lock(m, deadline); });
+  }
 
   class DependencyRecorder {
    public:
@@ -144,8 +135,14 @@ class ObserverManager {
       currentDependencies_ = &dependencies_;
     }
 
-    static bool isActive() {
-      return currentDependencies_;
+    static bool isActive() { return currentDependencies_; }
+
+    template <typename F>
+    static invoke_result_t<F> withDependencyRecordingDisabled(F f) {
+      auto* const dependencies = std::exchange(currentDependencies_, nullptr);
+      SCOPE_EXIT { currentDependencies_ = dependencies; };
+
+      return f();
     }
 
     static void markDependency(Core::Ptr dependency) {
@@ -156,6 +153,9 @@ class ObserverManager {
     }
 
     static void markRefreshDependency(const Core& core) {
+      if (!kIsDebug) {
+        return;
+      }
       if (!currentDependencies_) {
         return;
       }
@@ -164,12 +164,15 @@ class ObserverManager {
         bool hasCycle =
             !cycleDetector.addEdge(&currentDependencies_->core, &core);
         if (hasCycle) {
-          throw std::logic_error("Observer cycle detected.");
+          LOG(FATAL) << "Observer cycle detected.";
         }
       });
     }
 
     static void unmarkRefreshDependency(const Core& core) {
+      if (!kIsDebug) {
+        return;
+      }
       if (!currentDependencies_) {
         return;
       }
@@ -197,32 +200,37 @@ class ObserverManager {
     Dependencies dependencies_;
     Dependencies* previousDepedencies_;
 
-    static FOLLY_TLS Dependencies* currentDependencies_;
+    static thread_local Dependencies* currentDependencies_;
   };
 
  private:
+  using TryWaitForAllUpdatesImplOp =
+      FunctionRef<std::unique_lock<SharedMutexReadPriority>(
+          SharedMutexReadPriority&)>;
   ObserverManager() {}
+
+  static bool tryWaitForAllUpdatesImpl(TryWaitForAllUpdatesImplOp op);
+
+  void scheduleCurrent(Function<void()>);
+  void scheduleNext(Function<Core::Ptr()>);
 
   class UpdatesManager {
    public:
     UpdatesManager();
-    ~UpdatesManager();
-    void scheduleCurrent(Function<void()>);
-    void scheduleNext(Core::WeakPtr);
-    void waitForAllUpdates();
+    bool tryWaitForAllUpdatesImpl(TryWaitForAllUpdatesImplOp op);
 
    private:
-    class CurrentQueue;
-    class NextQueue;
+    class CurrentQueueProcessor;
+    class NextQueueProcessor;
 
-    std::unique_ptr<CurrentQueue> currentQueue_;
-    std::unique_ptr<NextQueue> nextQueue_;
+    std::unique_ptr<CurrentQueueProcessor> currentQueueProcessor_;
+    std::unique_ptr<NextQueueProcessor> nextQueueProcessor_;
   };
   struct Singleton;
 
   static ObserverManager& getInstance();
   static std::shared_ptr<UpdatesManager> getUpdatesManager();
-  static FOLLY_TLS bool inManagerThread_;
+  static thread_local bool inManagerThread_;
 
   /**
    * Version mutex is used to make sure all updates are processed from the
@@ -233,7 +241,7 @@ class ObserverManager {
    * happen if CurrentQueue is empty (notice that we use read-priority shared
    * mutex).
    */
-  SharedMutexReadPriority versionMutex_;
+  mutable SharedMutexReadPriority versionMutex_;
   std::atomic<size_t> version_{1};
 
   using CycleDetector = GraphCycleDetector<const Core*>;

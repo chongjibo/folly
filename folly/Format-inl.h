@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,8 +28,10 @@
 #include <folly/Exception.h>
 #include <folly/FormatTraits.h>
 #include <folly/MapUtil.h>
+#include <folly/Portability.h>
 #include <folly/Traits.h>
 #include <folly/lang/Exception.h>
+#include <folly/lang/ToAscii.h>
 #include <folly/portability/Windows.h>
 
 // Ignore -Wformat-nonliteral and -Wconversion warnings within this file
@@ -157,18 +159,14 @@ size_t uintToBinary(char* buffer, size_t bufLen, Uint v) {
   return bufLen;
 }
 
-} // namespace detail
-
-template <class Derived, bool containerMode, class... Args>
-BaseFormatter<Derived, containerMode, Args...>::BaseFormatter(
-    StringPiece str,
-    Args&&... args)
-    : str_(str), values_(std::forward<Args>(args)...) {}
-
-template <class Derived, bool containerMode, class... Args>
-template <class Output>
-void BaseFormatter<Derived, containerMode, Args...>::operator()(
-    Output& out) const {
+template <bool containerMode, bool RecordUsedArg, class Output>
+void baseFormatterCallImpl(
+    Output& out,
+    size_t nargs,
+    const int widths[],
+    std::bool_constant<RecordUsedArg>(used)(const BaseFormatterBase&, size_t),
+    BaseFormatterBase::DoFormatFn<Output>* const funs[],
+    const BaseFormatterBase& base) {
   // Copy raw string (without format specifiers) to output;
   // not as simple as we'd like, as we still need to translate "}}" to "}"
   // and throw if we see any lone "}"
@@ -193,6 +191,7 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
     }
   };
 
+  auto str_ = base.str_;
   auto p = str_.begin();
   auto end = str_.end();
 
@@ -230,7 +229,7 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
 
     int argIndex = 0;
     auto piece = arg.splitKey<true>(); // empty key component is okay
-    if (containerMode) { // static
+    if constexpr (containerMode) {
       arg.enforce(
           arg.width != FormatArg::kDynamicWidth,
           "dynamic field width not supported in vformat()");
@@ -247,8 +246,14 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
           arg.enforce(
               arg.widthIndex == FormatArg::kNoIndex,
               "cannot provide width arg index without value arg index");
-          int sizeArg = nextArg++;
-          arg.width = asDerived().getSizeArg(size_t(sizeArg), arg);
+          auto sizeArg = size_t(nextArg++);
+          detail::formatCheckIndex(sizeArg, arg, nargs);
+          if (RecordUsedArg) {
+            used(base, sizeArg);
+          }
+          auto w = widths[sizeArg];
+          arg.enforce(w >= 0, "dynamic field width argument must be integral");
+          arg.width = w;
         }
 
         argIndex = nextArg++;
@@ -258,7 +263,14 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
           arg.enforce(
               arg.widthIndex != FormatArg::kNoIndex,
               "cannot provide value arg index without width arg index");
-          arg.width = asDerived().getSizeArg(size_t(arg.widthIndex), arg);
+          auto sizeArg = size_t(arg.widthIndex);
+          detail::formatCheckIndex(sizeArg, arg, nargs);
+          if (RecordUsedArg) {
+            used(base, sizeArg);
+          }
+          auto w = widths[sizeArg];
+          arg.enforce(w >= 0, "dynamic field width argument must be integral");
+          arg.width = w;
         }
 
         auto result = tryTo<int>(piece);
@@ -274,21 +286,33 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
           "folly::format: may not have both default and explicit arg indexes");
     }
 
-    asDerived().doFormat(size_t(argIndex), arg, out);
+    if (RecordUsedArg) {
+      used(base, argIndex);
+    } else {
+      formatCheckIndex(argIndex, arg, nargs);
+      funs[argIndex](base, arg, out);
+    }
   }
 }
 
-template <class Derived, bool containerMode, class... Args>
-void writeTo(
-    FILE* fp,
-    const BaseFormatter<Derived, containerMode, Args...>& formatter) {
-  auto writer = [fp](StringPiece sp) {
-    size_t n = fwrite(sp.data(), 1, sp.size(), fp);
-    if (n < sp.size()) {
-      throwSystemError("Formatter writeTo", "fwrite failed");
-    }
-  };
-  formatter(writer);
+} // namespace detail
+
+template <class Derived, bool containerMode, size_t... I, class... Args>
+template <class Output>
+void BaseFormatterImpl<
+    Derived,
+    containerMode,
+    std::index_sequence<I...>,
+    Args...>::operator()(Output& out) const {
+  constexpr size_t nargs = sizeof...(Args);
+  using RecordUsedSizeArgs = decltype(Derived::recordUsedArg(*this, 0));
+  constexpr auto used = Derived::recordUsedArg;
+  static constexpr auto funs = getDoFormatFnArray<Output>();
+  constexpr auto in = unsafe_default_initialized;
+  int widths[nargs + 1] = {conditional_t<!alignof(Args), int, int>{in}..., in};
+  getSizeArg(widths);
+  detail::baseFormatterCallImpl<containerMode, RecordUsedSizeArgs::value>(
+      out, nargs, widths, *used, funs.data, *this);
 }
 
 namespace format_value {
@@ -326,6 +350,8 @@ void formatString(StringPiece val, FormatArg& arg, FormatCallback& cb) {
     int padChars = static_cast<int>(arg.width - val.size());
     memset(padBuf, fill, size_t(std::min(padBufSize, padChars)));
 
+    FOLLY_PUSH_WARNING
+    FOLLY_CLANG_DISABLE_WARNING("-Wcovered-switch-default")
     switch (arg.align) {
       case FormatArg::Align::DEFAULT:
       case FormatArg::Align::LEFT:
@@ -344,6 +370,7 @@ void formatString(StringPiece val, FormatArg& arg, FormatCallback& cb) {
         abort();
         break;
     }
+    FOLLY_POP_WARNING
   }
 
   cb(val);
@@ -355,10 +382,7 @@ void formatString(StringPiece val, FormatArg& arg, FormatCallback& cb) {
 
 template <class FormatCallback>
 void formatNumber(
-    StringPiece val,
-    int prefixLen,
-    FormatArg& arg,
-    FormatCallback& cb) {
+    StringPiece val, int prefixLen, FormatArg& arg, FormatCallback& cb) {
   // precision means something different for numbers
   arg.precision = FormatArg::kDefaultPrecision;
   if (arg.align == FormatArg::Align::DEFAULT) {
@@ -372,13 +396,29 @@ void formatNumber(
   format_value::formatString(val, arg, cb);
 }
 
-template <
-    class FormatCallback,
-    class Derived,
-    bool containerMode,
-    class... Args>
+template <typename FormatCallback>
+struct FormatFormatterFn {
+  FormatArg& arg;
+  FormatCallback& cb;
+  void operator()(StringPiece sp) {
+    int sz = static_cast<int>(sp.size());
+    if (arg.precision != FormatArg::kDefaultPrecision) {
+      sz = std::min(arg.precision, sz);
+      sp.reset(sp.data(), size_t(sz));
+      arg.precision -= sz;
+    }
+    if (!sp.empty()) {
+      cb(sp);
+      if (arg.width != FormatArg::kDefaultWidth) {
+        arg.width = std::max(arg.width - sz, 0);
+      }
+    }
+  }
+};
+
+template <class FormatCallback, bool containerMode, class... Args>
 void formatFormatter(
-    const BaseFormatter<Derived, containerMode, Args...>& formatter,
+    const Formatter<containerMode, Args...>& formatter,
     FormatArg& arg,
     FormatCallback& cb) {
   if (arg.width == FormatArg::kDefaultWidth &&
@@ -390,22 +430,9 @@ void formatFormatter(
       arg.align != FormatArg::Align::DEFAULT) {
     // We can only avoid creating a temporary string if we align left,
     // as we'd need to know the size beforehand otherwise
-    format_value::formatString(formatter.fbstr(), arg, cb);
+    format_value::formatString(formatter.str(), arg, cb);
   } else {
-    auto fn = [&arg, &cb](StringPiece sp) mutable {
-      int sz = static_cast<int>(sp.size());
-      if (arg.precision != FormatArg::kDefaultPrecision) {
-        sz = std::min(arg.precision, sz);
-        sp.reset(sp.data(), size_t(sz));
-        arg.precision -= sz;
-      }
-      if (!sp.empty()) {
-        cb(sp);
-        if (arg.width != FormatArg::kDefaultWidth) {
-          arg.width = std::max(arg.width - sz, 0);
-        }
-      }
-    };
+    auto fn = FormatFormatterFn<FormatCallback>{arg, cb};
     formatter(fn);
     if (arg.width != FormatArg::kDefaultWidth && arg.width != 0) {
       // Rely on formatString to do appropriate padding
@@ -427,9 +454,7 @@ class FormatValue<
  public:
   explicit FormatValue(T val) : val_(val) {}
 
-  T getValue() const {
-    return val_;
-  }
+  T getValue() const { return val_; }
 
   template <class FormatCallback>
   void format(FormatArg& arg, FormatCallback& cb) const {
@@ -449,7 +474,7 @@ class FormatValue<
     typedef typename std::make_unsigned<T>::type UT;
     UT uval;
     char sign;
-    if (std::is_signed<T>::value) {
+    if constexpr (std::is_signed<T>::value) {
       if (folly::is_negative(val_)) {
         // avoid unary negation of unsigned types, which may be warned against
         // avoid ub signed integer overflow, which ubsan checks against
@@ -457,6 +482,8 @@ class FormatValue<
         sign = '-';
       } else {
         uval = static_cast<UT>(val_);
+        FOLLY_PUSH_WARNING
+        FOLLY_CLANG_DISABLE_WARNING("-Wcovered-switch-default")
         switch (arg.sign) {
           case FormatArg::Sign::PLUS_OR_MINUS:
             sign = '+';
@@ -471,6 +498,7 @@ class FormatValue<
             sign = '\0';
             break;
         }
+        FOLLY_POP_WARNING
       }
     } else {
       uval = static_cast<UT>(val_);
@@ -540,8 +568,9 @@ class FormatValue<
             "' specifier");
         valBufBegin = valBuf + 1; // room for sign
 
-        // Use uintToBuffer, faster than sprintf
-        valBufEnd = valBufBegin + uint64ToBufferUnsafe(uval, valBufBegin);
+        // Use to_ascii_decimal, faster than sprintf
+        valBufEnd = valBufBegin +
+            to_ascii_decimal(valBufBegin, valBuf + sizeof(valBuf), uval);
         if (arg.thousandsSeparator) {
           detail::insertThousandsGroupingUnsafe(valBufBegin, &valBufEnd);
         }
@@ -808,8 +837,8 @@ template <class T, class = void>
 class TryFormatValue {
  public:
   template <class FormatCallback>
-  static void
-  formatOrFail(T& /* value */, FormatArg& arg, FormatCallback& /* cb */) {
+  static void formatOrFail(
+      T& /* value */, FormatArg& arg, FormatCallback& /* cb */) {
     arg.error("No formatter available for this type");
   }
 };
@@ -932,9 +961,7 @@ struct KeyFromStringPiece;
 template <>
 struct KeyFromStringPiece<std::string> : public FormatTraitsBase {
   typedef std::string key_type;
-  static std::string convert(StringPiece s) {
-    return s.toString();
-  }
+  static std::string convert(StringPiece s) { return s.toString(); }
   typedef void enabled;
 };
 
@@ -942,18 +969,14 @@ struct KeyFromStringPiece<std::string> : public FormatTraitsBase {
 template <>
 struct KeyFromStringPiece<fbstring> : public FormatTraitsBase {
   typedef fbstring key_type;
-  static fbstring convert(StringPiece s) {
-    return s.to<fbstring>();
-  }
+  static fbstring convert(StringPiece s) { return s.to<fbstring>(); }
 };
 
 // StringPiece
 template <>
 struct KeyFromStringPiece<StringPiece> : public FormatTraitsBase {
   typedef StringPiece key_type;
-  static StringPiece convert(StringPiece s) {
-    return s;
-  }
+  static StringPiece convert(StringPiece s) { return s; }
 };
 
 // Base class for associative types keyed by strings
@@ -967,8 +990,8 @@ struct KeyableTraitsAssoc : public FormatTraitsBase {
     }
     throw_exception<FormatKeyNotFoundException>(key);
   }
-  static const value_type&
-  at(const T& map, StringPiece key, const value_type& dflt) {
+  static const value_type& at(
+      const T& map, StringPiece key, const value_type& dflt) {
     auto pos = map.find(KeyFromStringPiece<key_type>::convert(key));
     return pos != map.end() ? pos->second : dflt;
   }
@@ -1075,29 +1098,20 @@ class FormatValue<std::tuple<Args...>> {
   }
 
  private:
-  static constexpr size_t valueCount = std::tuple_size<Tuple>::value;
+  template <size_t K>
+  using FV = FormatValue<
+      typename std::decay<typename std::tuple_element<K, Tuple>::type>::type>;
 
-  template <size_t K, class Callback>
-  typename std::enable_if<K == valueCount>::type
-  doFormatFrom(size_t i, FormatArg& arg, Callback& /* cb */) const {
-    arg.error("tuple index out of range, max=", i);
+  template <class Callback, size_t... I>
+  void doFormat(
+      size_t i, FormatArg& arg, Callback& cb, std::index_sequence<I...>) const {
+    using _ = int[];
+    detail::formatCheckIndex(i, arg, sizeof...(Args));
+    void(_{(i == I ? (FV<I>(std::get<I>(val_)).format(arg, cb), 0) : 0)..., 0});
   }
-
-  template <size_t K, class Callback>
-  typename std::enable_if<(K < valueCount)>::type
-  doFormatFrom(size_t i, FormatArg& arg, Callback& cb) const {
-    if (i == K) {
-      FormatValue<typename std::decay<
-          typename std::tuple_element<K, Tuple>::type>::type>(std::get<K>(val_))
-          .format(arg, cb);
-    } else {
-      doFormatFrom<K + 1>(i, arg, cb);
-    }
-  }
-
   template <class Callback>
   void doFormat(size_t i, FormatArg& arg, Callback& cb) const {
-    return doFormatFrom<0>(i, arg, cb);
+    return doFormat(i, arg, cb, std::index_sequence_for<Args...>{});
   }
 
   const Tuple& val_;
@@ -1109,7 +1123,7 @@ class FormatValue<
     F<containerMode, Args...>,
     typename std::enable_if<
         detail::IsFormatter<F<containerMode, Args...>>::value>::type> {
-  typedef typename F<containerMode, Args...>::BaseType FormatterValue;
+  typedef F<containerMode, Args...> FormatterValue;
 
  public:
   explicit FormatValue(const FormatterValue& f) : f_(f) {}
@@ -1127,10 +1141,9 @@ class FormatValue<
  * Formatter objects can be appended to strings, and therefore they're
  * compatible with folly::toAppend and folly::to.
  */
-template <class Tgt, class Derived, bool containerMode, class... Args>
+template <class Tgt, bool containerMode, class... Args>
 typename std::enable_if<IsSomeString<Tgt>::value>::type toAppend(
-    const BaseFormatter<Derived, containerMode, Args...>& value,
-    Tgt* result) {
+    const Formatter<containerMode, Args...>& value, Tgt* result) {
   value.appendTo(*result);
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,14 @@
 
 #pragma once
 
+#include <utility>
+
+#include <glog/logging.h>
+
 #include <folly/Traits.h>
 #include <folly/Unit.h>
 #include <folly/functional/Invoke.h>
-#include <glog/logging.h>
-#include <utility>
+#include <folly/lang/CustomizationPoint.h>
 
 namespace folly {
 namespace fibers {
@@ -35,14 +38,26 @@ namespace detail {
  * cheap to include
  */
 bool onFiber();
+} // namespace detail
 
 struct await_fn {
   template <typename T>
-  T&& operator()(Async<T>&&) const noexcept;
-
-  void operator()(Async<void>&&) const noexcept {}
+  auto operator()(Async<T>&& async) const
+      noexcept(is_nothrow_tag_invocable<await_fn, Async<T>&&>::value)
+          -> tag_invoke_result_t<await_fn, Async<T>&&> {
+    return tag_invoke(*this, static_cast<Async<T>&&>(async));
+  }
 };
-} // namespace detail
+/**
+ * Function to retrieve the result from the Async wrapper
+ * A function calling await must return an Async wrapper itself
+ * for the wrapper to serve its intended purpose (the best way to enforce this
+ * is static analysis)
+ */
+FOLLY_DEFINE_CPO(await_fn, await_async)
+#if !defined(_MSC_VER)
+static constexpr auto& await = await_async;
+#endif
 
 /**
  * Asynchronous fiber result wrapper
@@ -76,25 +91,28 @@ class [[nodiscard]] Async {
 
   // General use constructor
   template <typename... Us>
-  /* implicit */ Async(Us && ... val) : val_(std::forward<Us>(val)...) {}
+  /* implicit */ Async(Us&&... val) : val_(std::forward<Us>(val)...) {}
 
   // Move constructor to allow eager-return of async without using await
   template <typename U>
-  /* implicit */ Async(Async<U> && async) noexcept
+  /* implicit */ Async(Async<U>&& async) noexcept
       : val_(static_cast<U&&>(async.val_)) {}
 
   Async(const Async&) = delete;
-  Async(Async && other) = default;
+  Async(Async&& other) = default;
   Async& operator=(const Async&) = delete;
   Async& operator=(Async&&) = delete;
+
+  friend T&& tag_invoke(await_fn, Async&& async) noexcept {
+    DCHECK(detail::onFiber());
+    return static_cast<T&&>(async.val_);
+  }
 
  private:
   T val_;
 
   template <typename U>
   friend class Async;
-
-  friend struct detail::await_fn;
 };
 
 template <>
@@ -104,37 +122,24 @@ class [[nodiscard]] Async<void> {
 
   /* implicit */ Async() {}
   /* implicit */ Async(Unit) {}
-  /* implicit */ Async(Async<Unit> &&) {}
+  /* implicit */ Async(Async<Unit>&&) {}
 
   Async(const Async&) = delete;
-  Async(Async && other) = default;
+  Async(Async&& other) = default;
   Async& operator=(const Async&) = delete;
   Async operator=(Async&&) = delete;
+
+  friend void tag_invoke(await_fn, Async&&) noexcept {
+    DCHECK(detail::onFiber());
+  }
 };
 
-#if __cpp_deduction_guides >= 201703
 /**
  * Deduction guide to make it easier to construct and return Async objects.
  * The guide doesn't permit constructing and returning by reference.
  */
 template <typename T>
-explicit Async(T)->Async<T>;
-#endif
-
-namespace detail {
-template <typename T>
-T&& await_fn::operator()(Async<T>&& async) const noexcept {
-  return static_cast<T&&>(async.val_);
-}
-} // namespace detail
-
-/**
- * Function to retrieve the result from the Async wrapper
- * A function calling await must return an Async wrapper itself
- * for the wrapper to serve its intended purpose (the best way to enforce this
- * is static analysis)
- */
-constexpr detail::await_fn await;
+explicit Async(T) -> Async<T>;
 
 /**
  * A utility to start annotating at top of stack (eg. the task which is added to
@@ -143,11 +148,11 @@ constexpr detail::await_fn await;
  */
 template <typename T>
 T&& init_await(Async<T>&& async) {
-  return await(std::move(async));
+  return await_async(std::move(async));
 }
 
 inline void init_await(Async<void>&& async) {
-  await(std::move(async));
+  await_async(std::move(async));
 }
 
 // is_async
@@ -167,12 +172,13 @@ template <typename T>
 using async_inner_type_t = typename async_inner_type<T>::type;
 
 // async_invocable_inner_type
-template <typename F>
-using async_invocable_inner_type = async_inner_type<invoke_result_t<F>>;
+template <typename F, typename... Args>
+using async_invocable_inner_type =
+    async_inner_type<invoke_result_t<F, Args...>>;
 
-template <typename F>
+template <typename F, typename... Args>
 using async_invocable_inner_type_t =
-    typename async_invocable_inner_type<F>::type;
+    typename async_invocable_inner_type<F, Args...>::type;
 
 } // namespace async
 } // namespace fibers

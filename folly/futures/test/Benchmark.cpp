@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,15 +15,16 @@
  */
 
 #include <folly/Benchmark.h>
+
+#include <vector>
+
 #include <folly/executors/InlineExecutor.h>
 #include <folly/futures/Future.h>
 #include <folly/futures/Promise.h>
 #include <folly/futures/test/TestExecutor.h>
 #include <folly/portability/GFlags.h>
-#include <folly/portability/Semaphore.h>
 #include <folly/synchronization/Baton.h>
-
-#include <vector>
+#include <folly/synchronization/NativeSemaphore.h>
 
 using namespace folly;
 
@@ -166,8 +167,7 @@ BENCHMARK_RELATIVE(contention) {
   std::vector<Promise<int>> promises(10000);
   std::vector<Future<int>> futures;
   std::thread producer, consumer;
-  sem_t sem;
-  sem_init(&sem, 0, 0);
+  folly::NativeSemaphore sem;
 
   BENCHMARK_SUSPEND {
     folly::Baton<> b1, b2;
@@ -178,7 +178,7 @@ BENCHMARK_RELATIVE(contention) {
     consumer = std::thread([&] {
       b1.post();
       for (auto& f : futures) {
-        sem_wait(&sem);
+        sem.wait();
         std::move(f).then(incr<int>);
       }
     });
@@ -186,7 +186,7 @@ BENCHMARK_RELATIVE(contention) {
     producer = std::thread([&] {
       b2.post();
       for (auto& p : promises) {
-        sem_post(&sem);
+        sem.post();
         p.setValue(42);
       }
     });
@@ -278,6 +278,11 @@ void throwWrappedAndCatchWrappedImpl() {
       });
 }
 
+// Apparently OSX doesn't implement barriers since it is an optional part of
+// POSIX realtime threads extension, therefore we test for its presence.
+// Details:
+// https://pubs.opengroup.org/onlinepubs/009695399/basedefs/xbd_chap02.html
+#if defined(_POSIX_BARRIERS) && (_POSIX_BARRIERS > 0)
 // Simulate heavy contention on func
 void contend(void (*func)()) {
   folly::BenchmarkSuspender s;
@@ -302,6 +307,7 @@ void contend(void (*func)()) {
   s.rehire();
   pthread_barrier_destroy(&barrier);
 }
+#endif
 
 BENCHMARK(throwAndCatch) {
   throwAndCatchImpl();
@@ -321,6 +327,7 @@ BENCHMARK_RELATIVE(throwWrappedAndCatchWrapped) {
 
 BENCHMARK_DRAW_LINE();
 
+#if defined(_POSIX_BARRIERS) && (_POSIX_BARRIERS > 0)
 BENCHMARK(throwAndCatchContended) {
   contend(throwAndCatchImpl);
 }
@@ -336,18 +343,14 @@ BENCHMARK_RELATIVE(throwWrappedAndCatchContended) {
 BENCHMARK_RELATIVE(throwWrappedAndCatchWrappedContended) {
   contend(throwWrappedAndCatchWrappedImpl);
 }
-
 BENCHMARK_DRAW_LINE();
+#endif
 
 namespace {
 struct Bulky {
   explicit Bulky(std::string message) : message_(message) {}
-  std::string message() & {
-    return message_;
-  }
-  std::string&& message() && {
-    return std::move(message_);
-  }
+  std::string message() & { return message_; }
+  std::string&& message() && { return std::move(message_); }
 
  private:
   std::string message_;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// @author: Bert Maher <bertrand@fb.com>
 
 #include <folly/ProducerConsumerQueue.h>
 
@@ -49,6 +47,9 @@ struct ThroughputTest {
       cpu_set_t cpuset;
       CPU_ZERO(&cpuset);
       CPU_SET(cpu0_, &cpuset);
+      /* TODO(cavalcanti): enable this bench on OSX and use
+       * pthread_set_qos_self_np for handling big.LITTLE macs.
+       */
       pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
     }
     for (int i = 0; i < iters_; ++i) {
@@ -162,9 +163,7 @@ struct LatencyTest {
     }
   }
 
-  void printHistogram() {
-    hist_.toTSV(std::cout);
-  }
+  void printHistogram() { hist_.toTSV(std::cout); }
 
   QueueType queue_;
   std::atomic<bool> done_;

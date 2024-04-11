@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,9 +27,7 @@ class Exception : public std::exception {
   explicit Exception(const std::string& value) : value_(value) {}
   ~Exception() noexcept override {}
 
-  const char* what() const noexcept override {
-    return value_.c_str();
-  }
+  const char* what() const noexcept override { return value_.c_str(); }
 
  private:
   std::string value_;

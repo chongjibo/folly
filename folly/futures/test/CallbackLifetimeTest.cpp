@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-#include <folly/futures/Future.h>
-
 #include <thread>
 
+#include <folly/futures/Future.h>
 #include <folly/futures/test/TestExecutor.h>
 #include <folly/portability/GTest.h>
 
@@ -43,16 +42,10 @@ class CallbackLifetimeTest : public testing::Test {
  public:
   using CounterPtr = std::unique_ptr<size_t>;
 
-  static bool kRaiseWillThrow() {
-    return true;
-  }
-  static constexpr auto kDelay() {
-    return std::chrono::milliseconds(500);
-  }
+  static bool kRaiseWillThrow() { return true; }
+  static constexpr auto kDelay() { return std::chrono::milliseconds(500); }
 
-  auto mkC() {
-    return std::make_unique<size_t>(0);
-  }
+  auto mkC() { return std::make_unique<size_t>(0); }
   auto mkCGuard(CounterPtr& ptr) {
     return makeGuard([&] {
       /* sleep override */ std::this_thread::sleep_for(kDelay());

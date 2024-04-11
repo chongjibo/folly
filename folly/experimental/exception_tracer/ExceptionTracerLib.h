@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@
 
 #include <exception>
 #include <typeinfo>
+
+#if defined(__GLIBCXX__)
 
 namespace folly {
 namespace exception_tracer {
@@ -49,3 +51,5 @@ void registerCxaEndCatchCallback(CxaEndCatchType callback);
 void registerRethrowExceptionCallback(RethrowExceptionType callback);
 } // namespace exception_tracer
 } // namespace folly
+
+#endif // defined(__GLIBCXX__)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 
 import asyncio
 import unittest
+from sys import platform
 
 from . import simplebridge
 
@@ -37,6 +38,7 @@ class Futures(unittest.TestCase):
         with self.assertRaises(ValueError, msg="0 is not allowed"):
             loop.run_until_complete(simplebridge.get_value_x5(0))
 
+    @unittest.skipIf(platform.startswith("win"), "Broken on Windows.")
     def test_bridge_fibers(self):
         val = 1337
         loop = asyncio.get_event_loop()

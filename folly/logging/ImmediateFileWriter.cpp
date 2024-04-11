@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,19 +19,19 @@
 #include <folly/FileUtil.h>
 #include <folly/String.h>
 #include <folly/logging/LoggerDB.h>
+#include <folly/portability/Fcntl.h>
 #include <folly/portability/Unistd.h>
 
 namespace folly {
 
 ImmediateFileWriter::ImmediateFileWriter(StringPiece path)
-    : file_{path.str(), O_WRONLY | O_APPEND | O_CREAT} {}
+    : file_{path.str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC} {}
 
 ImmediateFileWriter::ImmediateFileWriter(folly::File&& file)
     : file_{std::move(file)} {}
 
 void ImmediateFileWriter::writeMessage(
-    StringPiece buffer,
-    uint32_t /* flags */) {
+    StringPiece buffer, uint32_t /* flags */) {
   // Write the data.
   // We are doing direct file descriptor writes here, so there is no buffering
   // of log message data.  Each message is immediately written to the output.

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@
 #include <folly/io/async/ssl/SSLErrors.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/OpenSSL.h>
-#include <folly/ssl/Init.h>
 
 namespace folly {
 
@@ -56,8 +55,6 @@ TEST(AsyncSocketException, SimpleTest) {
 
 TEST(AsyncSocketException, SSLExceptionType) {
   {
-    // Initiailzes OpenSSL everything. Else some of the calls will block
-    folly::ssl::init();
     SSLException eof(SSL_ERROR_ZERO_RETURN, 0, 0, 0);
     EXPECT_EQ(eof.getType(), AsyncSocketException::END_OF_FILE);
 
@@ -67,12 +64,13 @@ TEST(AsyncSocketException, SSLExceptionType) {
     SSLException netOther(SSL_ERROR_SYSCALL, 0, 1, 0);
     EXPECT_EQ(netOther.getType(), AsyncSocketException::NETWORK_ERROR);
 
-    std::array<int, 6> sslErrs{{SSL_ERROR_SSL,
-                                SSL_ERROR_WANT_READ,
-                                SSL_ERROR_WANT_WRITE,
-                                SSL_ERROR_WANT_X509_LOOKUP,
-                                SSL_ERROR_WANT_CONNECT,
-                                SSL_ERROR_WANT_ACCEPT}};
+    std::array<int, 6> sslErrs{
+        {SSL_ERROR_SSL,
+         SSL_ERROR_WANT_READ,
+         SSL_ERROR_WANT_WRITE,
+         SSL_ERROR_WANT_X509_LOOKUP,
+         SSL_ERROR_WANT_CONNECT,
+         SSL_ERROR_WANT_ACCEPT}};
 
     for (auto& e : sslErrs) {
       SSLException sslEx(e, 0, 0, 0);
@@ -87,10 +85,11 @@ TEST(AsyncSocketException, SSLExceptionType) {
     SSLException net(SSLError::NETWORK_ERROR);
     EXPECT_EQ(net.getType(), AsyncSocketException::NETWORK_ERROR);
 
-    std::array<SSLError, 4> errs{{SSLError::CLIENT_RENEGOTIATION,
-                                  SSLError::INVALID_RENEGOTIATION,
-                                  SSLError::EARLY_WRITE,
-                                  SSLError::SSL_ERROR}};
+    std::array<SSLError, 4> errs{
+        {SSLError::CLIENT_RENEGOTIATION,
+         SSLError::INVALID_RENEGOTIATION,
+         SSLError::EARLY_WRITE,
+         SSLError::SSL_ERROR}};
 
     for (auto& e : errs) {
       SSLException sslEx(e);

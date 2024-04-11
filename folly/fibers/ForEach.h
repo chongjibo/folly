@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ namespace fibers {
 
 /**
  * Schedules several tasks and blocks until all of them are completed.
- * In the process of their successfull completion given callback would be called
+ * In the process of their successful completion given callback would be called
  * for each of them with the index of the task and the result it returned (if
  * not void).
  * If any of these n tasks throws an exception, this exception will be

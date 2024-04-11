@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,15 +54,15 @@ namespace folly {
       return "Network error";
     case EARLY_DATA_REJECTED:
       return "Early data rejected";
+    case CANCELED:
+      return "IO operation was canceled";
     default:
       return "(Invalid exception type)";
   }
 }
 
 /* static */ std::string AsyncSocketException::getMessage(
-    AsyncSocketExceptionType type,
-    const std::string& message,
-    int errnoCopy) {
+    AsyncSocketExceptionType type, const std::string& message, int errnoCopy) {
   if (errnoCopy != 0) {
     return sformat(
         "AsyncSocketException: {}, type = {}, errno = {} ({})",

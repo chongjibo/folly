@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,8 +45,8 @@ inline std::string familyNameStr(sa_family_t family) {
 [[noreturn]] void getNthMSBitImplThrow(size_t bitCount, sa_family_t family);
 
 template <typename IPAddrType>
-inline bool
-getNthMSBitImpl(const IPAddrType& ip, size_t bitIndex, sa_family_t family) {
+inline bool getNthMSBitImpl(
+    const IPAddrType& ip, size_t bitIndex, sa_family_t family) {
   if (bitIndex >= ip.bitCount()) {
     getNthMSBitImplThrow(ip.bitCount(), family);
   }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/io/async/WriteChainAsyncTransportWrapper.h>
+
 #include <folly/io/async/AsyncTransport.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
@@ -30,12 +31,12 @@ class TestWriteChainAsyncTransportWrapper
   TestWriteChainAsyncTransportWrapper()
       : WriteChainAsyncTransportWrapper<folly::AsyncTransport>(nullptr) {}
 
-  MOCK_METHOD3(
+  MOCK_METHOD(
+      void,
       writeChain,
-      void(
-          folly::AsyncTransport::WriteCallback*,
-          std::shared_ptr<folly::IOBuf>,
-          folly::WriteFlags));
+      (folly::AsyncTransport::WriteCallback*,
+       std::shared_ptr<folly::IOBuf>,
+       folly::WriteFlags));
 
   // gmock doesn't work with the IOBuf&& so we have to wrap this.
   void writeChain(

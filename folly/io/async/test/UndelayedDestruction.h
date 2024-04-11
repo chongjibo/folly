@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -94,9 +94,7 @@ class UndelayedDestruction : public TDD {
    * Override our parent's destroy() method to make it protected.
    * Callers should use the normal destructor instead of destroy
    */
-  void destroy() override {
-    this->TDD::destroy();
-  }
+  void destroy() override { this->TDD::destroy(); }
 
  private:
   // Forbidden copy constructor and assignment operator

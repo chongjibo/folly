@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -118,4 +118,9 @@ TEST(RateLimiter, concurrentThreads) {
 
   // We should have passed the check exactly maxEvents times
   EXPECT_EQ(maxEvents, count.load(std::memory_order_relaxed));
+}
+
+TEST(RateLimiter, LargeInterval) {
+  IntervalRateLimiter limiter{1, std::chrono::hours{8765}}; // Just under a year
+  EXPECT_TRUE(limiter.check());
 }

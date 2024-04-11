@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,16 @@
  * limitations under the License.
  */
 
-#include <folly/synchronization/DistributedMutex.h>
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <limits>
+#include <new>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+
+#include <glog/logging.h>
 
 #include <folly/ConstexprMath.h>
 #include <folly/Likely.h>
@@ -26,21 +35,13 @@
 #include <folly/functional/Invoke.h>
 #include <folly/lang/Align.h>
 #include <folly/lang/Bits.h>
+#include <folly/lang/Exception.h>
 #include <folly/portability/Asm.h>
 #include <folly/synchronization/AtomicNotification.h>
 #include <folly/synchronization/AtomicUtil.h>
+#include <folly/synchronization/Lock.h>
 #include <folly/synchronization/detail/InlineFunctionRef.h>
 #include <folly/synchronization/detail/Sleeper.h>
-
-#include <glog/logging.h>
-
-#include <array>
-#include <atomic>
-#include <cstdint>
-#include <limits>
-#include <stdexcept>
-#include <thread>
-#include <utility>
 
 namespace folly {
 namespace detail {
@@ -144,14 +145,17 @@ constexpr auto kCombineWaiting = std::uint32_t{0b1001};
 // without any additional branching to handle exceptions
 constexpr auto kExceptionOccurred = std::uint32_t{0b1010};
 
+// Alias for processor's time-stamp counter value to help distinguish it from
+// other integers
+using CpuTicks = std::uint64_t;
 // The number of spins that we are allowed to do before we resort to marking a
 // thread as having slept
 //
 // This is just a magic number from benchmarks
-constexpr auto kScheduledAwaySpinThreshold = std::chrono::nanoseconds{200};
-// The maximum number of spins before a thread starts yielding its processor
+constexpr auto kScheduledAwaySpinThreshold = CpuTicks{200};
+// The maximum time to spin before a thread starts yielding its processor
 // in hopes of getting skipped
-constexpr auto kMaxSpins = 4000;
+constexpr auto kMaxSpinTime = CpuTicks{40000};
 // The maximum number of contention chains we can resolve with flat combining.
 // After this number of contention chains, the mutex falls back to regular
 // two-phased mutual exclusion to ensure that we don't starve the combiner
@@ -396,9 +400,7 @@ class RequestWithReturn {
     // note that the invariant here is that this function is only called if the
     // requesting thread had it's critical section combined, and the value_
     // member constructed through detach()
-    SCOPE_EXIT {
-      value_.~ReturnType();
-    };
+    SCOPE_EXIT { value_.~ReturnType(); };
     return std::move(value_);
   }
 
@@ -500,9 +502,7 @@ class TaskWithoutCoalesce {
   using StorageType = folly::Unit;
   explicit TaskWithoutCoalesce(Func func, Waiter&) : func_{std::move(func)} {}
 
-  void operator()() const {
-    func_();
-  }
+  void operator()() const { func_(); }
 
  private:
   Func func_;
@@ -521,8 +521,7 @@ class TaskWithBigReturnValue {
   // waits
   using ReturnType = folly::invoke_result_t<const Func&>;
   static const auto kReturnValueAlignment = folly::constexpr_max(
-      alignof(ReturnType),
-      folly::hardware_destructive_interference_size);
+      alignof(ReturnType), folly::hardware_destructive_interference_size);
   using StorageType = std::aligned_storage_t<
       sizeof(std::aligned_storage_t<sizeof(ReturnType), kReturnValueAlignment>),
       kReturnValueAlignment>;
@@ -645,9 +644,9 @@ void throwIfExceptionOccurred(Request&, Waiter& waiter, bool exception) {
   // avoid leaks.  If we don't destroy the exception_ptr in storage, the
   // refcount for the internal exception will never hit zero, thereby leaking
   // memory
-  if (UNLIKELY(!folly::is_nothrow_invocable_v<const F&> && exception)) {
+  if (FOLLY_UNLIKELY(!folly::is_nothrow_invocable_v<const F&> && exception)) {
     auto storage = &waiter.storage_;
-    auto exc = folly::launder(reinterpret_cast<std::exception_ptr*>(storage));
+    auto exc = std::launder(reinterpret_cast<std::exception_ptr*>(storage));
     auto copy = std::move(*exc);
     exc->std::exception_ptr::~exception_ptr();
     std::rethrow_exception(std::move(copy));
@@ -684,7 +683,7 @@ void detach(
   static_assert(!std::is_same<ReturnType, void>{}, "");
   static_assert(sizeof(waiter.storage_) >= sizeof(ReturnType), "");
 
-  auto& val = *folly::launder(reinterpret_cast<ReturnType*>(&waiter.storage_));
+  auto& val = *std::launder(reinterpret_cast<ReturnType*>(&waiter.storage_));
   new (&request.value_) ReturnType{std::move(val)};
   val.~ReturnType();
 }
@@ -701,13 +700,13 @@ void detach(
   static_assert(!std::is_same<ReturnType, void>{}, "");
   static_assert(sizeof(storage) >= sizeof(ReturnType), "");
 
-  auto& val = *folly::launder(reinterpret_cast<ReturnType*>(&storage));
+  auto& val = *std::launder(reinterpret_cast<ReturnType*>(&storage));
   new (&request.value_) ReturnType{std::move(val)};
   val.~ReturnType();
 }
 
 /**
- * Get the time since epoch in nanoseconds
+ * Get the time since epoch in CPU cycles
  *
  * This is faster than std::chrono::steady_clock because it avoids a VDSO
  * access to get the timestamp counter
@@ -716,8 +715,8 @@ void detach(
  * guaranteed to be monotonically increasing -
  * https://c9x.me/x86/html/file_module_x86_id_278.html
  */
-inline std::chrono::nanoseconds time() {
-  return std::chrono::nanoseconds{hardware_timestamp()};
+inline CpuTicks time() {
+  return static_cast<CpuTicks>(hardware_timestamp());
 }
 
 /**
@@ -736,13 +735,12 @@ Type* extractPtr(std::uintptr_t from) {
 }
 
 /**
- * Strips the given nanoseconds into only the least significant 56 bits by
+ * Strips the given CPU timestamp into only the least significant 56 bits by
  * moving the least significant 56 bits over by 8 zeroing out the bottom 8
  * bits to be used as a medium of information transfer for the thread wait
  * nodes
  */
-inline std::uint64_t strip(std::chrono::nanoseconds t) {
-  auto time = t.count();
+inline std::uint64_t strip(CpuTicks time) {
   return static_cast<std::uint64_t>(time) << 8;
 }
 
@@ -757,31 +755,15 @@ inline std::uint64_t recover(std::uint64_t from) {
 template <template <typename> class Atomic, bool TimePublishing>
 class DistributedMutex<Atomic, TimePublishing>::DistributedMutexStateProxy {
  public:
-  // DistributedMutexStateProxy is move constructible and assignable for
-  // convenience
-  DistributedMutexStateProxy(DistributedMutexStateProxy&& other) {
-    *this = std::move(other);
-  }
+  DistributedMutexStateProxy() = default;
 
-  DistributedMutexStateProxy& operator=(DistributedMutexStateProxy&& other) {
-    DCHECK(!(*this)) << "Cannot move into a valid DistributedMutexStateProxy";
-
-    next_ = std::exchange(other.next_, nullptr);
-    expected_ = std::exchange(other.expected_, 0);
-    timedWaiters_ = std::exchange(other.timedWaiters_, false);
-    combined_ = std::exchange(other.combined_, false);
-    waker_ = std::exchange(other.waker_, 0);
-    waiters_ = std::exchange(other.waiters_, nullptr);
-    ready_ = std::exchange(other.ready_, nullptr);
-
-    return *this;
-  }
+  DistributedMutexStateProxy(DistributedMutexStateProxy const&) = default;
+  DistributedMutexStateProxy& operator=(DistributedMutexStateProxy const&) =
+      default;
 
   // The proxy is valid when a mutex acquisition attempt was successful,
   // lock() is guaranteed to return a valid proxy, try_lock() is not
-  explicit operator bool() const {
-    return expected_;
-  }
+  explicit operator bool() const { return expected_; }
 
   // private:
   // friend the mutex class, since that will be accessing state private to
@@ -854,8 +836,10 @@ DistributedMutex<Atomic, TimePublishing>::DistributedMutex()
 template <typename Waiter>
 std::uint64_t publish(
     std::uint64_t spins,
+    CpuTicks current,
+    CpuTicks previous,
+    CpuTicks elapsed,
     bool& shouldPublish,
-    std::chrono::nanoseconds& previous,
     Waiter& waiter,
     std::uint32_t waitMode) {
   // time publishing has some overhead because it executes an atomic exchange on
@@ -872,11 +856,10 @@ std::uint64_t publish(
   // only comes into play when the combiner has exhausted their max combine
   // passes.  So we defer time publishing to the point when the current thread
   // gets preempted
-  auto current = time();
-  if ((current - previous) >= kScheduledAwaySpinThreshold) {
+  if (previous != CpuTicks{0} &&
+      (current - previous) >= kScheduledAwaySpinThreshold) {
     shouldPublish = true;
   }
-  previous = current;
 
   // if we have requested a combine, and this is the first iteration of the
   // wait-loop, we publish a max timestamp to optimistically convey that we have
@@ -886,9 +869,9 @@ std::uint64_t publish(
   // we publish the exact timestamp, otherwise we publish the minimum possible
   // timestamp to force the waking thread to skip us
   auto now = ((waitMode == kCombineWaiting) && !spins)
-      ? decltype(time())::max()
-      : (spins < kMaxSpins) ? previous : decltype(time())::zero();
-
+      ? std::numeric_limits<CpuTicks>::max()
+      : (elapsed < kMaxSpinTime) ? current
+                                 : CpuTicks{0};
   // the wait mode information is published in the bottom 8 bits of the futex
   // word, the rest contains time information as computed above.  Overflows are
   // not really a correctness concern because time publishing is only a
@@ -906,10 +889,13 @@ template <typename Waiter>
 bool spin(Waiter& waiter, std::uint32_t& sig, std::uint32_t mode) {
   auto spins = std::uint64_t{0};
   auto waitMode = (mode == kCombineUninitialized) ? kCombineWaiting : kWaiting;
-  auto previous = time();
+  auto previous = CpuTicks{0};
   auto shouldPublish = false;
-  while (true) {
-    auto signal = publish(spins++, shouldPublish, previous, waiter, waitMode);
+  // elapsed is unsigned and will intentionally underflows if time goes back
+  for (CpuTicks start = time(), current = start, elapsed = 0;;
+       previous = current, current = time(), elapsed = current - start) {
+    auto signal = publish(
+        spins++, current, previous, elapsed, shouldPublish, waiter, waitMode);
 
     // if we got skipped, make a note of it and return if we got a skipped
     // signal or a signal to wake up
@@ -924,10 +910,10 @@ bool spin(Waiter& waiter, std::uint32_t& sig, std::uint32_t mode) {
 
     // if we are under the spin threshold, pause to allow the other
     // hyperthread to run.  If not, then sleep
-    if (spins < kMaxSpins) {
+    if (elapsed < kMaxSpinTime) {
       asm_volatile_pause();
     } else {
-      Sleeper::sleep();
+      std::this_thread::sleep_for(folly::detail::Sleeper::kMinYieldingSleep);
     }
   }
 }
@@ -1030,14 +1016,13 @@ bool wait(Waiter* waiter, std::uint32_t mode, Waiter*& next, uint32_t& signal) {
 }
 
 inline void recordTimedWaiterAndClearTimedBit(
-    bool& timedWaiter,
-    std::uintptr_t& previous) {
+    bool& timedWaiter, std::uintptr_t& previous) {
   // the previous value in the mutex can never be kTimedWaiter, timed waiters
   // always set (kTimedWaiter | kLocked) in the mutex word when they try and
   // acquire the mutex
   DCHECK(previous != kTimedWaiter);
 
-  if (UNLIKELY(previous & kTimedWaiter)) {
+  if (FOLLY_UNLIKELY(previous & kTimedWaiter)) {
     // record whether there was a timed waiter in the previous mutex state, and
     // clear the timed bit from the previous state
     timedWaiter = true;
@@ -1047,8 +1032,8 @@ inline void recordTimedWaiterAndClearTimedBit(
 
 template <typename Atomic>
 void wakeTimedWaiters(Atomic* state, bool timedWaiters) {
-  if (UNLIKELY(timedWaiters)) {
-    atomic_notify_one(state);
+  if (FOLLY_UNLIKELY(timedWaiters)) {
+    folly::atomic_notify_one(state); // evade ADL
   }
 }
 
@@ -1069,9 +1054,7 @@ auto DistributedMutex<Atomic, TimePublishing>::lock_combine(Func func)
     // to avoid having to play a return-value dance when the combinable
     // returns void, we use a scope exit to perform the unlock after the
     // function return has been processed
-    SCOPE_EXIT {
-      unlock(std::move(state));
-    };
+    SCOPE_EXIT { unlock(std::move(state)); };
     return func();
   }
 
@@ -1101,13 +1084,10 @@ template <template <typename> class Atomic, bool TimePublishing>
 template <typename Rep, typename Period, typename Func>
 folly::Optional<invoke_result_t<Func&>>
 DistributedMutex<Atomic, TimePublishing>::try_lock_combine_for(
-    const std::chrono::duration<Rep, Period>& duration,
-    Func func) {
+    const std::chrono::duration<Rep, Period>& duration, Func func) {
   auto state = try_lock_for(duration);
   if (state) {
-    SCOPE_EXIT {
-      unlock(std::move(state));
-    };
+    SCOPE_EXIT { unlock(std::move(state)); };
     return func();
   }
 
@@ -1118,13 +1098,10 @@ template <template <typename> class Atomic, bool TimePublishing>
 template <typename Clock, typename Duration, typename Func>
 folly::Optional<invoke_result_t<Func&>>
 DistributedMutex<Atomic, TimePublishing>::try_lock_combine_until(
-    const std::chrono::time_point<Clock, Duration>& deadline,
-    Func func) {
+    const std::chrono::time_point<Clock, Duration>& deadline, Func func) {
   auto state = try_lock_until(deadline);
   if (state) {
-    SCOPE_EXIT {
-      unlock(std::move(state));
-    };
+    SCOPE_EXIT { unlock(std::move(state)); };
     return func();
   }
 
@@ -1141,11 +1118,7 @@ auto tryLockNoLoad(Atomic& atomic, DistributedMutex<A, T>&) {
   // If this fails, then it is a no-op
   using Proxy = typename DistributedMutex<A, T>::DistributedMutexStateProxy;
   auto previous = atomic_fetch_set(atomic, 0, std::memory_order_acquire);
-  if (!previous) {
-    return Proxy{nullptr, kLocked};
-  }
-
-  return Proxy{nullptr, 0};
+  return Proxy{nullptr, previous ? 0 : kLocked};
 }
 
 template <template <typename> class Atomic, bool TimePublishing>
@@ -1166,7 +1139,8 @@ DistributedMutex<Atomic, TimePublishing>::try_lock() {
 }
 
 template <
-    template <typename> class Atomic,
+    template <typename>
+    class Atomic,
     bool TimePublishing,
     typename State,
     typename Request>
@@ -1215,9 +1189,9 @@ lockImplementation(
     // previous value is zeroed out
     //
     // we use memory_order_acq_rel here because we want the read-modify-write
-    // operation to be both acquire and release.  Acquire becasue if this is a
+    // operation to be both acquire and release.  Acquire because if this is a
     // successful lock acquisition, we want to acquire state any other thread
-    // has released from a prior unlock.  We want release semantics becasue
+    // has released from a prior unlock.  We want release semantics because
     // other threads that read the address of this value should see the full
     // well-initialized node we are going to wait on if the mutex acquisition
     // was unsuccessful
@@ -1225,13 +1199,14 @@ lockImplementation(
     recordTimedWaiterAndClearTimedBit(timedWaiter, previous);
     state.next_.store(previous, std::memory_order_relaxed);
     if (previous == kUnlocked) {
-      return {/* next */ nullptr,
-              /* expected */ address,
-              /* timedWaiter */ timedWaiter,
-              /* combined */ false,
-              /* waker */ 0,
-              /* waiters */ nullptr,
-              /* ready */ nextSleeper};
+      return {
+          /* next */ nullptr,
+          /* expected */ address,
+          /* timedWaiter */ timedWaiter,
+          /* combined */ false,
+          /* waker */ 0,
+          /* waiters */ nullptr,
+          /* ready */ nextSleeper};
     }
     DCHECK(previous & kLocked);
 
@@ -1281,22 +1256,22 @@ lockImplementation(
     // waiter we are responsible for is also a waiter waiting on a futex, so
     // we return that list in the list of ready threads.  We wlil be waking up
     // the ready threads on unlock no matter what
-    return {/* next */ extractPtr<Waiter<Atomic>>(next),
-            /* expected */ expected,
-            /* timedWaiter */ timedWaiter,
-            /* combined */ combineRequested && (combined || exceptionOccurred),
-            /* waker */ state.metadata_.waker_,
-            /* waiters */ extractPtr<Waiter<Atomic>>(state.metadata_.waiters_),
-            /* ready */ nextSleeper};
+    return {
+        /* next */ extractPtr<Waiter<Atomic>>(next),
+        /* expected */ expected,
+        /* timedWaiter */ timedWaiter,
+        /* combined */ combineRequested && (combined || exceptionOccurred),
+        /* waker */ state.metadata_.waker_,
+        /* waiters */ extractPtr<Waiter<Atomic>>(state.metadata_.waiters_),
+        /* ready */ nextSleeper};
   }
 }
 
-inline bool preempted(std::uint64_t value, std::chrono::nanoseconds now) {
+inline bool preempted(std::uint64_t value, CpuTicks now) {
   auto currentTime = recover(strip(now));
   auto nodeTime = recover(value);
-  auto preempted =
-      (currentTime > nodeTime + kScheduledAwaySpinThreshold.count()) &&
-      (nodeTime != recover(strip(std::chrono::nanoseconds::max())));
+  auto preempted = (currentTime > nodeTime + kScheduledAwaySpinThreshold) &&
+      (nodeTime != recover(strip(std::numeric_limits<CpuTicks>::max())));
 
   // we say that the thread has been preempted if its timestamp says so, and
   // also if it is neither uninitialized nor skipped
@@ -1347,7 +1322,7 @@ FOLLY_ALWAYS_INLINE std::uintptr_t tryCombine(
     std::uintptr_t value,
     std::uintptr_t next,
     std::uint64_t iteration,
-    std::chrono::nanoseconds now,
+    CpuTicks now,
     CombineFunction task) {
   // if the waiter has asked for a combine operation, we should combine its
   // critical section and move on to the next waiter
@@ -1369,12 +1344,12 @@ FOLLY_ALWAYS_INLINE std::uintptr_t tryCombine(
   // members of the waiter struct, so it's fine to use those values here
   if (isWaitingCombiner(value) &&
       (iteration <= kMaxCombineIterations || preempted(value, now))) {
-    try {
-      task();
-      waiter->futex_.store(kCombined, std::memory_order_release);
-    } catch (...) {
-      transferCurrentException(waiter);
-    }
+    catch_exception(
+        [&] {
+          task();
+          waiter->futex_.store(kCombined, std::memory_order_release);
+        },
+        [&] { transferCurrentException(waiter); });
     return next;
   }
 
@@ -1411,7 +1386,8 @@ FOLLY_ALWAYS_INLINE std::uintptr_t tryWake(
     // we need release here because of the write to waker_ and also because we
     // are unlocking the mutex, the thread we do the handoff to here should
     // see the modified data
-    new (&waiter->metadata_) Metadata{waker, bit_cast<uintptr_t>(sleepers)};
+    new (&waiter->metadata_)
+        Metadata{waker, folly::bit_cast<uintptr_t>(sleepers)};
     waiter->futex_.store(kWake, std::memory_order_release);
     return 0;
   }
@@ -1552,7 +1528,7 @@ bool tryUnlockClean(Atomic& state, Proxy& proxy, Sleepers sleepers) {
     // if we failed the compare_exchange_strong() above, we check to see if
     // the failure was because of the presence of a timed waiter.  If that
     // was the case then we try one more time with the kTimedWaiter bit set
-    if (UNLIKELY(expected == (proxy.expected_ | kTimedWaiter))) {
+    if (FOLLY_UNLIKELY(expected == (proxy.expected_ | kTimedWaiter))) {
       proxy.timedWaiters_ = true;
       continue;
     }
@@ -1564,7 +1540,8 @@ bool tryUnlockClean(Atomic& state, Proxy& proxy, Sleepers sleepers) {
 
 template <template <typename> class Atomic, bool Publish>
 void DistributedMutex<Atomic, Publish>::unlock(
-    DistributedMutex::DistributedMutexStateProxy proxy) {
+    DistributedMutex::DistributedMutexStateProxy const& proxy_) {
+  auto proxy = proxy_;
   // we always wake up ready threads and timed waiters if we saw either
   DCHECK(proxy) << "Invalid proxy passed to DistributedMutex::unlock()";
   DCHECK(!proxy.combined_) << "Cannot unlock mutex after a successful combine";
@@ -1678,7 +1655,10 @@ auto timedLock(Atomic& state, Deadline deadline, MakeProxy proxy) {
 
     // wait on the futex until signalled, if we get a timeout, the try_lock
     // fails
-    auto result = atomic_wait_until(&state, previous | data, deadline);
+    auto result = folly::atomic_wait_until( // evade ADL
+        &state,
+        previous | data,
+        deadline);
     if (result == std::cv_status::timeout) {
       return proxy(nullptr, std::uintptr_t{0}, false);
     }
@@ -1727,3 +1707,31 @@ DistributedMutex<Atomic, TimePublishing>::try_lock_for(
 } // namespace distributed_mutex
 } // namespace detail
 } // namespace folly
+
+namespace std {
+
+template <template <typename> class Atom, bool TimePublishing>
+class unique_lock<
+    ::folly::detail::distributed_mutex::DistributedMutex<Atom, TimePublishing>>
+    : public ::folly::unique_lock_base<
+          ::folly::detail::distributed_mutex::
+              DistributedMutex<Atom, TimePublishing>> {
+ public:
+  using ::folly::unique_lock_base<
+      ::folly::detail::distributed_mutex::
+          DistributedMutex<Atom, TimePublishing>>::unique_lock_base;
+};
+
+template <template <typename> class Atom, bool TimePublishing>
+class lock_guard<
+    ::folly::detail::distributed_mutex::DistributedMutex<Atom, TimePublishing>>
+    : public ::folly::unique_lock_guard_base<
+          ::folly::detail::distributed_mutex::
+              DistributedMutex<Atom, TimePublishing>> {
+ public:
+  using ::folly::unique_lock_guard_base<
+      ::folly::detail::distributed_mutex::
+          DistributedMutex<Atom, TimePublishing>>::unique_lock_guard_base;
+};
+
+} // namespace std

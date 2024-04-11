@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,15 @@
  * limitations under the License.
  */
 
-// @author Tudor Bosman (tudorb@fb.com)
+#include <folly/lang/Bits.h>
 
 #include <algorithm>
 #include <vector>
 
+#include <folly/Benchmark.h>
 #include <folly/CppAttributes.h>
 #include <folly/Random.h>
 #include <folly/lang/Assume.h>
-#include <folly/lang/Bits.h>
-
-#include <folly/Benchmark.h>
 
 BENCHMARK(nextPowTwoClz, iters) {
   for (unsigned long i = 0; i < iters; ++i) {
@@ -86,17 +84,17 @@ uint64_t partialLoadUnalignedSwitch(const char* p, size_t l) {
   switch (l) {
     case 7:
       r = static_cast<uint64_t>(folly::loadUnaligned<uint32_t>(p + 3)) << 24;
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case 3:
       r |= static_cast<uint64_t>(folly::loadUnaligned<uint16_t>(p + 1)) << 8;
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case 1:
       r |= *p;
       break;
 
     case 6:
       r = static_cast<uint64_t>(folly::loadUnaligned<uint16_t>(p + 4)) << 32;
-      FOLLY_FALLTHROUGH;
+      [[fallthrough]];
     case 4:
       r |= folly::loadUnaligned<uint32_t>(p);
       break;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 #include <cstdint>
 
 extern "C" {
-int gettimeofday(timeval* tv, struct timezone*) {
+int gettimeofday(timeval* tv, folly_port_struct_timezone*) {
   constexpr auto posixWinFtOffset = 116444736000000000ULL;
 
   if (tv) {

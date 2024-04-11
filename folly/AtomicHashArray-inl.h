@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -105,17 +105,17 @@ AtomicHashArray<
        ;
        idx = ProbeFcn()(idx, numProbes, capacity_)) {
     const KeyT key = acquireLoadKey(cells_[idx]);
-    if (LIKELY(LookupEqualFcn()(key, key_in))) {
+    if (FOLLY_LIKELY(LookupEqualFcn()(key, key_in))) {
       return SimpleRetT(idx, true);
     }
-    if (UNLIKELY(key == kEmptyKey_)) {
+    if (FOLLY_UNLIKELY(key == kEmptyKey_)) {
       // if we hit an empty element, this key does not exist
       return SimpleRetT(capacity_, false);
     }
     // NOTE: the way we count numProbes must be same in find(), insert(),
     // and erase(). Otherwise it may break probing.
     ++numProbes;
-    if (UNLIKELY(numProbes >= capacity_)) {
+    if (FOLLY_UNLIKELY(numProbes >= capacity_)) {
       // probed every cell...fail
       return SimpleRetT(capacity_, false);
     }
@@ -264,7 +264,7 @@ AtomicHashArray<
     // NOTE: the way we count numProbes must be same in find(),
     // insert(), and erase(). Otherwise it may break probing.
     ++numProbes;
-    if (UNLIKELY(numProbes >= capacity_)) {
+    if (FOLLY_UNLIKELY(numProbes >= capacity_)) {
       // probed every cell...fail
       return SimpleRetT(capacity_, false);
     }
@@ -335,7 +335,7 @@ size_t AtomicHashArray<
     // NOTE: the way we count numProbes must be same in find(), insert(),
     // and erase(). Otherwise it may break probing.
     ++numProbes;
-    if (UNLIKELY(numProbes >= capacity_)) {
+    if (FOLLY_UNLIKELY(numProbes >= capacity_)) {
       // probed every cell...fail
       return 0;
     }
@@ -508,9 +508,7 @@ struct AtomicHashArray<
   // Returns unique index that can be used with findAt().
   // WARNING: The following function will fail silently for hashtable
   // with capacity > 2^32
-  uint32_t getIndex() const {
-    return offset_;
-  }
+  uint32_t getIndex() const { return offset_; }
 
   void advancePastEmpty() {
     while (offset_ < aha_->capacity_ && !isValid()) {
@@ -532,9 +530,7 @@ struct AtomicHashArray<
     return aha_ == o.aha_ && offset_ == o.offset_;
   }
 
-  IterVal& dereference() const {
-    return aha_->cells_[offset_];
-  }
+  IterVal& dereference() const { return aha_->cells_[offset_]; }
 
   bool isValid() const {
     KeyT key = acquireLoadKey(aha_->cells_[offset_]);

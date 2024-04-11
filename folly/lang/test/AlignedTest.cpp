@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -110,7 +110,7 @@ TEST_F(AlignedTest, constructors) {
   }
 
   {
-    using P = folly::in_place_t;
+    using P = std::in_place_t;
     struct L {};
     struct M {};
     struct N {};

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@
 
 #include <folly/ConcurrentBitSet.h>
 
+#include <glog/logging.h>
+
 #include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
-
-#include <glog/logging.h>
 
 namespace folly {
 namespace test {

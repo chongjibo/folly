@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,17 +38,14 @@ class LogConfig {
 
   LogConfig() = default;
   explicit LogConfig(
-      HandlerConfigMap handlerConfigs,
-      CategoryConfigMap catConfigs)
+      HandlerConfigMap handlerConfigs, CategoryConfigMap catConfigs)
       : handlerConfigs_{std::move(handlerConfigs)},
         categoryConfigs_{std::move(catConfigs)} {}
 
   const CategoryConfigMap& getCategoryConfigs() const {
     return categoryConfigs_;
   }
-  const HandlerConfigMap& getHandlerConfigs() const {
-    return handlerConfigs_;
-  }
+  const HandlerConfigMap& getHandlerConfigs() const { return handlerConfigs_; }
 
   bool operator==(const LogConfig& other) const;
   bool operator!=(const LogConfig& other) const;

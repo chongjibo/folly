@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@
 
 #include <folly/synchronization/detail/InlineFunctionRef.h>
 
-#include <folly/portability/GTest.h>
-
+#include <array>
 #include <cstring>
+
+#include <folly/portability/GTest.h>
 
 namespace folly {
 namespace detail {
@@ -171,21 +172,21 @@ TEST_F(InlineFunctionRefTest, TestTriviality) {
     auto lambda = []() {};
     auto fref = InlineFunctionRef<void(), 24>{std::move(lambda)};
     EXPECT_TRUE(std::is_trivially_destructible<decltype(fref)>{});
-    EXPECT_TRUE(folly::is_trivially_copyable<decltype(fref)>{});
+    EXPECT_TRUE(std::is_trivially_copyable<decltype(fref)>{});
   }
   {
     auto integer = std::uint64_t{0};
     auto lambda = [&]() { static_cast<void>(integer); };
     auto fref = InlineFunctionRef<void(), 24>{std::move(lambda)};
     EXPECT_TRUE(std::is_trivially_destructible<decltype(fref)>{});
-    EXPECT_TRUE(folly::is_trivially_copyable<decltype(fref)>{});
+    EXPECT_TRUE(std::is_trivially_copyable<decltype(fref)>{});
   }
   {
     auto data = std::array<std::uint8_t, 128>{};
     auto lambda = [data]() { static_cast<void>(data); };
     auto fref = InlineFunctionRef<void(), 24>{std::move(lambda)};
     EXPECT_TRUE(std::is_trivially_destructible<decltype(fref)>{});
-    EXPECT_TRUE(folly::is_trivially_copyable<decltype(fref)>{});
+    EXPECT_TRUE(std::is_trivially_copyable<decltype(fref)>{});
   }
 }
 
@@ -193,12 +194,8 @@ namespace {
 template <typename Data>
 class ConstQualifiedFunctor {
  public:
-  int operator()() {
-    return 0;
-  }
-  int operator()() const {
-    return 1;
-  }
+  int operator()() { return 0; }
+  int operator()() const { return 1; }
 
   Data data_;
 };

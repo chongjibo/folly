@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-/* -*- Mode: C++; tab-width: 2; c-basic-offset: 2; indent-tabs-mode: nil -*- */
 
 #include <folly/Singleton.h>
 
@@ -153,6 +151,22 @@ BENCHMARK(FollySingletonThreadLocal, n) {
 
 BENCHMARK(FollySingletonThreadLocal4Threads, n) {
   run4Threads([=]() { follySingletonThreadLocal(n); });
+}
+
+LeakySingleton<BenchmarkSingleton> benchmark_leaky_singleton;
+
+void follyLeakySingleton(size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    LeakySingleton<BenchmarkSingleton>::get().val++;
+  }
+}
+
+BENCHMARK(FollyLeakySingleton, n) {
+  follyLeakySingleton(n);
+}
+
+BENCHMARK(FollyLeakySingleton4Threads, n) {
+  run4Threads([=]() { follyLeakySingleton(n); });
 }
 
 int main(int argc, char** argv) {

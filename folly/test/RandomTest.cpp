@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,10 @@
 
 #ifndef _WIN32
 #include <sys/wait.h>
+#endif
+
+#if FOLLY_HAVE_EXTRANDOM_SFMT19937
+#include <ext/random>
 #endif
 
 using namespace folly;
@@ -102,9 +106,9 @@ TEST(Random, MultiThreaded) {
 TEST(Random, sanity) {
   // edge cases
   EXPECT_EQ(folly::Random::rand32(0), 0);
-  EXPECT_EQ(folly::Random::rand32(12, 12), 0);
+  EXPECT_EQ(folly::Random::rand32(12, 12), 12);
   EXPECT_EQ(folly::Random::rand64(0), 0);
-  EXPECT_EQ(folly::Random::rand64(12, 12), 0);
+  EXPECT_EQ(folly::Random::rand64(12, 12), 12);
 
   // 32-bit repeatability, uniqueness
   constexpr int kTestSize = 1000;
@@ -140,12 +144,31 @@ TEST(Random, sanity) {
         vals.size(),
         std::unordered_set<uint64_t>(vals.begin(), vals.end()).size());
   }
+
+  // Support for common generators.
+  folly::Random::rand32(std::mt19937{});
+  folly::Random::rand32(std::mt19937_64{});
+  folly::Random::rand32(std::minstd_rand{});
+#if FOLLY_HAVE_EXTRANDOM_SFMT19937
+  folly::Random::rand32(__gnu_cxx::sfmt19937{});
+  folly::Random::rand32(__gnu_cxx::sfmt19937_64{});
+#endif
+
+  folly::Random::rand64(std::mt19937{});
+  folly::Random::rand64(std::mt19937_64{});
+  folly::Random::rand64(std::minstd_rand{});
+#if FOLLY_HAVE_EXTRANDOM_SFMT19937
+  folly::Random::rand64(__gnu_cxx::sfmt19937{});
+  folly::Random::rand64(__gnu_cxx::sfmt19937_64{});
+#endif
 }
 
 TEST(Random, oneIn) {
   for (auto i = 0; i < 10; ++i) {
     EXPECT_FALSE(folly::Random::oneIn(0));
+    EXPECT_FALSE(folly::Random::secureOneIn(0));
     EXPECT_TRUE(folly::Random::oneIn(1));
+    EXPECT_TRUE(folly::Random::secureOneIn(1));
   }
 
   // When using higher sampling rates, we'll just ensure that we see both
@@ -158,6 +181,85 @@ TEST(Random, oneIn) {
   auto seenSoFar{0};
   for (auto i = 0; i < 1000 && seenSoFar != kSeenBoth; ++i) {
     seenSoFar |= (folly::Random::oneIn(10) ? kSeenTrue : kSeenFalse);
+  }
+
+  EXPECT_EQ(kSeenBoth, seenSoFar);
+}
+
+TEST(Random, oneIn64) {
+  for (auto i = 0; i < 10; ++i) {
+    EXPECT_FALSE(folly::Random::oneIn64(0));
+    EXPECT_FALSE(folly::Random::secureOneIn64(0));
+    EXPECT_TRUE(folly::Random::oneIn64(1));
+    EXPECT_TRUE(folly::Random::secureOneIn64(1));
+  }
+
+  // When using higher sampling rates, we'll just ensure that we see both
+  // outcomes. We won't worry about statistical validity since we defer that to
+  // folly::Random.
+  auto constexpr kSeenTrue{1};
+  auto constexpr kSeenFalse{2};
+  auto constexpr kSeenBoth{kSeenTrue | kSeenFalse};
+
+  auto seenSoFar{0};
+  for (auto i = 0; i < 1000 && seenSoFar != kSeenBoth; ++i) {
+    seenSoFar |= (folly::Random::oneIn64(10) ? kSeenTrue : kSeenFalse);
+  }
+
+  EXPECT_EQ(kSeenBoth, seenSoFar);
+
+  // For a 64 bit space this is effectively always false. Using 2^63 + 1 was
+  // suggested to guard against a future possible bug that truncates down to
+  // a 32 bit value. If this were to happen then this test might evaluate
+  // as oneIn(1), which always returns true, which would fail.
+  //
+  //   >>> (2 ** 64 - 1) & 0xFFFFFFFF
+  //   4294967295
+  //   >>> (2 ** 63 + 1) & 0xFFFFFFFF
+  //   1
+  uint64_t kAlmostMax = (uint64_t(1) << 63) + 1;
+  EXPECT_FALSE(folly::Random::oneIn64(kAlmostMax));
+  EXPECT_TRUE(folly::Random::oneIn(kAlmostMax));
+}
+
+TEST(Random, randBool) {
+  for (auto i = 0; i < 10; ++i) {
+    EXPECT_FALSE(folly::Random::randBool(0));
+    EXPECT_TRUE(folly::Random::randBool(1));
+  }
+
+  // When using higher sampling rates, we'll just ensure that we see both
+  // outcomes. We won't worry about statistical validity since we defer that to
+  // folly::Random.
+  auto constexpr kSeenTrue{1};
+  auto constexpr kSeenFalse{2};
+  auto constexpr kSeenBoth{kSeenTrue | kSeenFalse};
+
+  auto seenSoFar{0};
+  for (auto i = 0; i < 1000 && seenSoFar != kSeenBoth; ++i) {
+    seenSoFar |= (folly::Random::randBool(0.5) ? kSeenTrue : kSeenFalse);
+  }
+
+  EXPECT_EQ(kSeenBoth, seenSoFar);
+}
+
+TEST(Random, randDouble01) {
+  // Very basic test that we see at least one number < 0.1 and one > 0.9, to
+  // verify that the output is not constant and the mantissa is not misaligned.
+  auto constexpr kSeenHigh{1};
+  auto constexpr kSeenLow{2};
+  auto constexpr kSeenBoth{kSeenHigh | kSeenLow};
+
+  auto seenSoFar{0};
+  for (auto i = 0; i < 1000; ++i) {
+    auto value = folly::Random::randDouble01();
+    ASSERT_GE(value, 0);
+    ASSERT_LT(value, 1);
+    if (value > 0.9) {
+      seenSoFar |= kSeenHigh;
+    } else if (value < 0.1) {
+      seenSoFar |= kSeenLow;
+    }
   }
 
   EXPECT_EQ(kSeenBoth, seenSoFar);

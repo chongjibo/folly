@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#include <thread>
-
 #include <folly/synchronization/ParkingLot.h>
+
+#include <thread>
 
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
@@ -32,10 +32,12 @@ TEST(ParkingLot, multilot) {
   folly::Baton<> lb;
 
   std::thread small([&]() {
-    smalllot.park(0, false, [] { return true; }, [&]() { sb.post(); });
+    smalllot.park(
+        0, false, [] { return true; }, [&]() { sb.post(); });
   });
   std::thread large([&]() {
-    largelot.park(0, true, [] { return true; }, [&]() { lb.post(); });
+    largelot.park(
+        0, true, [] { return true; }, [&]() { lb.post(); });
   });
   sb.wait();
   lb.wait();
@@ -59,13 +61,62 @@ TEST(ParkingLot, multilot) {
   large.join();
 }
 
+TEST(ParkingLot, StressTestPingPong) {
+  auto lot = ParkingLot<std::uint32_t>{};
+  auto one = std::atomic<std::uint64_t>{0};
+  auto two = std::atomic<std::uint64_t>{0};
+
+  auto testDone = std::atomic<bool>{false};
+  auto threadOneDone = std::atomic<bool>{false};
+
+  auto threadOne = std::thread{[&]() {
+    auto local = std::uint64_t{0};
+    while (!testDone.load(std::memory_order_relaxed)) {
+      // wait while the atomic is still equal to c, the other thread unblocks us
+      // because it signals before spinning itself
+      lot.park(
+          &one, -1, [&]() { return one.load() == local; }, []() {});
+      local = one.load(std::memory_order_acquire);
+      two.store(local, std::memory_order_release);
+    }
+
+    threadOneDone.store(true, std::memory_order_release);
+  }};
+
+  auto threadTwo = std::thread{[&]() {
+    for (auto i = std::uint64_t{1}; true; ++i) {
+      auto local = two.load(std::memory_order_acquire);
+      assert(local < i);
+
+      // unblock the other thread
+      one.store(i, std::memory_order_release);
+      lot.unpark(&one, [&](auto&&) { return UnparkControl::RemoveBreak; });
+
+      // spinning (vs sleeping with ParkingLot::park) happens to expose the bug
+      // more frequently in practice
+      while (two.load(std::memory_order_acquire) == local) {
+        if (threadOneDone.load(std::memory_order_acquire)) {
+          return;
+        }
+      }
+    }
+  }};
+
+  /* sleep override */
+  std::this_thread::sleep_for(std::chrono::seconds{10});
+  testDone.store(true);
+  threadOne.join();
+  threadTwo.join();
+}
+
 // This is not possible to implement with Futex, because futex
 // and the native linux syscall are 32-bit only.
 TEST(ParkingLot, LargeWord) {
   ParkingLot<uint64_t> lot;
   std::atomic<uint64_t> w{0};
 
-  lot.park(0, false, [&]() { return w == 1; }, []() {});
+  lot.park(
+      0, false, [&]() { return w == 1; }, []() {});
 
   // Validate should return false, will hang otherwise.
 }

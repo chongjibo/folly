@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ class LogHandlerFactory {
    * place, or will point to a new LogHandler if a new one was created.
    */
   virtual std::shared_ptr<LogHandler> updateHandler(
-      FOLLY_MAYBE_UNUSED const std::shared_ptr<LogHandler>& existingHandler,
+      [[maybe_unused]] const std::shared_ptr<LogHandler>& existingHandler,
       const Options& options) {
     // Subclasses may override this with functionality to update an existing
     // handler in-place.  However, provide a default implementation that simply

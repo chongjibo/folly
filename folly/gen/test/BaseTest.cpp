@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <glog/logging.h>
+#include <folly/gen/Base.h>
 
 #include <iosfwd>
 #include <memory>
@@ -22,13 +22,14 @@
 #include <set>
 #include <vector>
 
+#include <glog/logging.h>
+
 #include <folly/FBVector.h>
 #include <folly/MapUtil.h>
 #include <folly/Memory.h>
 #include <folly/String.h>
-#include <folly/dynamic.h>
 #include <folly/experimental/TestUtil.h>
-#include <folly/gen/Base.h>
+#include <folly/json/dynamic.h>
 #include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
 
@@ -111,19 +112,11 @@ TEST(Gen, Member) {
   struct Counter {
     Counter(int start = 0) : c(start) {}
 
-    int count() const {
-      return c;
-    }
-    int incr() {
-      return ++c;
-    }
+    int count() const { return c; }
+    int incr() { return ++c; }
 
-    int& ref() {
-      return c;
-    }
-    const int& ref() const {
-      return c;
-    }
+    int& ref() { return c; }
+    const int& ref() const { return c; }
 
    private:
     int c;
@@ -887,6 +880,14 @@ TEST(Gen, VirtualGen) {
   EXPECT_EQ(30, v | take(4) | sum);
 }
 
+TEST(Gen, VirtualGenMoveOnly) {
+  VirtualGenMoveOnly<int> v(seq(1, 10));
+  EXPECT_EQ(55, std::move(v) | sum);
+  v = seq(1, 10) | virtualize;
+  v = std::move(v) | map(square);
+  EXPECT_EQ(385, std::move(v) | sum);
+}
+
 TEST(Gen, CustomType) {
   struct Foo {
     int y;
@@ -956,9 +957,7 @@ struct CopyCounter {
   int copies;
   int moves;
 
-  CopyCounter() : copies(0), moves(0) {
-    ++alive;
-  }
+  CopyCounter() : copies(0), moves(0) { ++alive; }
 
   CopyCounter(CopyCounter&& source) noexcept {
     *this = std::move(source);
@@ -970,9 +969,7 @@ struct CopyCounter {
     ++alive;
   }
 
-  ~CopyCounter() {
-    --alive;
-  }
+  ~CopyCounter() { --alive; }
 
   CopyCounter& operator=(const CopyCounter& source) {
     this->copies = source.copies + 1;
@@ -1123,15 +1120,9 @@ TEST(Gen, Dereference) {
 namespace {
 struct DereferenceWrapper {
   string data;
-  string& operator*() & {
-    return data;
-  }
-  string&& operator*() && {
-    return std::move(data);
-  }
-  explicit operator bool() {
-    return true;
-  }
+  string& operator*() & { return data; }
+  string&& operator*() && { return std::move(data); }
+  explicit operator bool() { return true; }
 };
 bool operator==(const DereferenceWrapper& a, const DereferenceWrapper& b) {
   return a.data == b.data;
@@ -1181,6 +1172,15 @@ TEST(Gen, Guard) {
       | eachTo<int>()
       | sum);
   EXPECT_EQ(
+      4,
+      from({"1", "a", "3", "99"})
+      | guard<runtime_error>([](runtime_error&, const char*) {
+          return true; // continue
+        })
+      | eachTo<int>()
+      | take(2) // Ensure take() is respected.
+      | sum);
+  EXPECT_EQ(
       1,
       from({"1", "a", "3"})
       | guard<runtime_error>([](runtime_error&, const char*) {
@@ -1203,7 +1203,7 @@ TEST(Gen, Guard) {
 }
 
 // Disabled: guard currently can't catch exceptions thrown after a buffering op.
-TEST(Gen, DISABLED_GuardThroughBuffers) {
+TEST(Gen, DISABLEDGuardthroughbuffers) {
   using std::runtime_error;
   // clang-format off
   EXPECT_EQ(
@@ -1465,10 +1465,4 @@ TEST(Gen, Unwrap) {
     int x = 3;
     EXPECT_EQ(&x, empty | unwrapOr(&x));
   }
-}
-
-int main(int argc, char* argv[]) {
-  testing::InitGoogleTest(&argc, argv);
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
-  return RUN_ALL_TESTS();
 }

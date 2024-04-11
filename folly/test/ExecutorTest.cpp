@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,16 @@
  * limitations under the License.
  */
 
+#include <folly/Executor.h>
+
 #include <atomic>
 
-#include <folly/Executor.h>
+#include <folly/lang/Keep.h>
 #include <folly/portability/GTest.h>
+
+extern "C" FOLLY_KEEP void check_executor_invoke_catching_exns(void (*f)()) {
+  folly::Executor::invokeCatchingExns("check", f);
+}
 
 namespace folly {
 
@@ -27,14 +33,12 @@ class KeepAliveTestExecutor : public Executor {
     // this executor does nothing
   }
 
-  bool keepAliveAcquire() override {
+  bool keepAliveAcquire() noexcept override {
     ++refCount;
     return true;
   }
 
-  void keepAliveRelease() override {
-    --refCount;
-  }
+  void keepAliveRelease() noexcept override { --refCount; }
 
   std::atomic<int> refCount{0};
 };

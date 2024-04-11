@@ -37,7 +37,7 @@ writing. For example:
     void RequestHandler::processRequest(const Request& request) {
       stop_watch<> watch;
       checkRequestValidity(request);
-      SharedMutex::WriteHolder lock(requestQueueMutex_);
+      std::unique_lock lock(requestQueueMutex_);
       requestQueue_.push_back(request);
       stats_->addStatValue("requestEnqueueLatency", watch.elapsed());
       LOG(INFO) << "enqueued request ID " << request.getID();
@@ -150,10 +150,10 @@ the lock as soon as possible.
 `Synchronized` is a template with two parameters, the data type and a
 mutex type: `Synchronized<T, Mutex>`.
 
-If not specified, the mutex type defaults to `folly::SharedMutex`.  However, any
-mutex type supported by `folly::LockTraits` can be used instead.
-`folly::LockTraits` can be specialized to support other custom mutex
-types that it does not know about out of the box.
+If not specified, the mutex type defaults to `folly::SharedMutex`. However, any
+mutex type with an interface compatible with the standard mutex types is
+supported. Additionally, any mutex type compatible with the extended protocol
+implemented in `folly/synchronization/Lock.h` is supported.
 
 `Synchronized` provides slightly different APIs when instantiated with a
 shared mutex type or an upgrade mutex type then with a plain exclusive mutex.
@@ -202,7 +202,7 @@ locked. This technique avoids the need to lock both mutexes at
 the same time. Mutexes are not copied or moved.
 
 The move assignment operator assumes the source object is a true
-rvalue and does lock lock the source mutex. It moves the source
+rvalue and does lock the source mutex. It moves the source
 data into the destination data with the destination mutex locked.
 
 `swap` acquires locks on both mutexes in increasing order of
@@ -366,9 +366,8 @@ When using `Synchronized` with a shared mutex type, it provides separate
 
 `Synchronized` also supports upgrading and downgrading mutex lock levels as
 long as the mutex type used to instantiate the `Synchronized` type has the
-same interface as the mutex types in the C++ standard library, or if
-`LockTraits` is specialized for the mutex type and the specialization is
-visible. See below for an intro to upgrade mutexes.
+same interface as the mutex types in the C++ standard library. See below for an
+intro to upgrade mutexes.
 
 An upgrade lock can be acquired as usual either with the `ulock()` method or
 the `withULockPtr()` method as so
@@ -498,7 +497,7 @@ problem is called reader starvation.
 
 One solution is to use a shared mutex type with read priority, such as
 `folly::SharedMutexReadPriority`. That can introduce less blocking under
-contention to the other threads attemping to acquire a shared lock to do the
+contention to the other threads attempting to acquire a shared lock to do the
 first check. However, that may backfire and cause threads which are attempting
 to acquire a unique lock (for the second check) to stall, waiting for a moment
 in time when there are no shared locks held on the mutex, a moment in time that
@@ -520,7 +519,7 @@ checks rather than blocking or being blocked by them.
 The example would then look like:
 
 ``` Cpp
-    struct MyObect {
+    struct MyObject {
       bool isUpdateRequired() const;
       void doUpdate();
     };
@@ -554,10 +553,9 @@ attempting to transition atomically from shared to upgrade locks, the threads
 are deadlocked. Likewise if they are both attempting to transition atomically
 from shared to unique locks, or one is attempting to transition atomically from
 shared to upgrade while the other is attempting to transition atomically from
-shared to unique. Therefore, `LockTraits` does not expose either of these
-dangerous atomic state transitions even when the underlying mutex type supports
-them. Likewise, `Synchronized`'s `LockedPtr` proxies do not expose these
-dangerous atomic state transitions either.
+shared to unique. Therefore, `Synchronized`'s `LockedPtr` proxies do not expose
+either of these dangerous atomic state transitions even when the underlying
+mutex type supports them.
 
 #### Timed Locking
 
@@ -654,7 +652,7 @@ When used with a `std::mutex`, `Synchronized` supports using a
 in the internal data.
 
 The `LockedPtr` returned by `Synchronized<T, std::mutex>::lock()` has a
-`getUniqueLock()` method that returns a reference to a
+`as_lock()` method that returns a reference to a
 `std::unique_lock<std::mutex>`, which can be given to the
 `std::condition_variable`:
 
@@ -665,7 +663,7 @@ The `LockedPtr` returned by `Synchronized<T, std::mutex>::lock()` has a
     // Assuming some other thread will put data on vec and signal
     // emptySignal, we can then wait on it as follows:
     auto locked = vec.lock();
-    emptySignal.wait(locked.getUniqueLock(),
+    emptySignal.wait(locked.as_lock(),
                      [&] { return !locked->empty(); });
 ```
 
@@ -711,7 +709,7 @@ locking of two objects and offering their innards.  It returns a
 ```
 
 Note that C++ 17 introduces
-(structured binding syntax)[(http://wg21.link/P0144r2)]
+[structured binding syntax](http://wg21.link/P0144r2)
 which will make the returned tuple more convenient to use:
 
 ``` Cpp

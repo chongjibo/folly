@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,16 @@
 
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <unordered_map>
 
 #include <folly/Traits.h>
 #include <folly/portability/GTest.h>
+#include <folly/sorted_vector_types.h>
 
 using namespace folly;
 
-TEST(MapUtil, get_default) {
+TEST(MapUtil, getDefault) {
   std::map<int, int> m;
   m[1] = 2;
   EXPECT_EQ(2, get_default(m, 1, 42));
@@ -33,7 +35,7 @@ TEST(MapUtil, get_default) {
   EXPECT_EQ(0, get_default(m, 3));
 }
 
-TEST(MapUtil, get_default_function) {
+TEST(MapUtil, getDefaultFunction) {
   std::map<int, int> m;
   m[1] = 2;
   EXPECT_EQ(2, get_default(m, 1, [] { return 42; }));
@@ -41,7 +43,7 @@ TEST(MapUtil, get_default_function) {
   EXPECT_EQ(0, get_default(m, 3));
 }
 
-TEST(MapUtil, get_or_throw) {
+TEST(MapUtil, getOrThrow) {
   std::map<int, int> m;
   m[1] = 2;
   EXPECT_EQ(2, get_or_throw(m, 1));
@@ -55,14 +57,14 @@ TEST(MapUtil, get_or_throw) {
   EXPECT_THROW(get_or_throw(cm, 2), std::out_of_range);
 }
 
-TEST(MapUtil, get_or_throw_specified) {
+TEST(MapUtil, getOrThrowSpecified) {
   std::map<int, int> m;
   m[1] = 2;
   EXPECT_EQ(2, get_or_throw<std::runtime_error>(m, 1));
   EXPECT_THROW(get_or_throw<std::runtime_error>(m, 2), std::runtime_error);
 }
 
-TEST(MapUtil, get_optional) {
+TEST(MapUtil, getOptional) {
   std::map<int, int> m;
   m[1] = 2;
   EXPECT_TRUE(get_optional(m, 1).has_value());
@@ -70,7 +72,7 @@ TEST(MapUtil, get_optional) {
   EXPECT_FALSE(get_optional(m, 2).has_value());
 }
 
-TEST(MapUtil, get_optional_path_simple) {
+TEST(MapUtil, getOptionalPathSimple) {
   using std::map;
   map<int, map<int, map<int, map<int, int>>>> m{{1, {{2, {{3, {{4, 5}}}}}}}};
   EXPECT_EQ(folly::Optional<int>(5), get_optional(m, 1, 2, 3, 4));
@@ -84,7 +86,7 @@ TEST(MapUtil, get_optional_path_simple) {
   EXPECT_FALSE(get_optional(m, 0));
 }
 
-TEST(MapUtil, get_optional_path_mixed) {
+TEST(MapUtil, getOptionalPathMixed) {
   using std::map;
   using std::string;
   using std::unordered_map;
@@ -98,7 +100,15 @@ TEST(MapUtil, get_optional_path_mixed) {
   EXPECT_TRUE(get_optional(m, "a"));
 }
 
-TEST(MapUtil, get_ref_default) {
+TEST(MapUtil, getOptionalStd) {
+  std::map<int, int> m;
+  m[1] = 2;
+  EXPECT_TRUE(get_optional<std::optional>(m, 1).has_value());
+  EXPECT_EQ(2, get_optional<std::optional>(m, 1).value());
+  EXPECT_FALSE(get_optional<std::optional>(m, 2).has_value());
+}
+
+TEST(MapUtil, getRefDefault) {
   std::map<int, int> m;
   m[1] = 2;
   const int i = 42;
@@ -107,7 +117,7 @@ TEST(MapUtil, get_ref_default) {
   EXPECT_EQ(std::addressof(i), std::addressof(get_ref_default(m, 2, i)));
 }
 
-TEST(MapUtil, get_ref_default_function) {
+TEST(MapUtil, getRefDefaultFunction) {
   std::map<int, int> m;
   m[1] = 2;
   const int i = 42;
@@ -121,7 +131,7 @@ TEST(MapUtil, get_ref_default_function) {
   // get_ref_default(m, 2, [] { return 7; });
 }
 
-TEST(MapUtil, get_ptr) {
+TEST(MapUtil, getPtr) {
   std::map<int, int> m;
   m[1] = 2;
   EXPECT_EQ(2, *get_ptr(m, 1));
@@ -130,7 +140,34 @@ TEST(MapUtil, get_ptr) {
   EXPECT_EQ(4, m.at(1));
 }
 
-TEST(MapUtil, get_ptr_path_simple) {
+TEST(MapUtil, getPtr2) {
+  folly::sorted_vector_map<int, int> m;
+  m[1] = 7;
+  m[4] = 9;
+  auto r0 = get_ptr2(m, 1, 4);
+  EXPECT_EQ(7, *r0.first);
+  EXPECT_EQ(9, *r0.second);
+  auto r1 = get_ptr2(m, 1, 5);
+  EXPECT_EQ(7, *r1.first);
+  EXPECT_EQ(nullptr, r1.second);
+  auto r2 = get_ptr2(m, 2, 4);
+  EXPECT_EQ(nullptr, r2.first);
+  EXPECT_EQ(9, *r2.second);
+  auto r3 = get_ptr2(m, 2, 5);
+  EXPECT_EQ(nullptr, r3.first);
+  EXPECT_EQ(nullptr, r3.second);
+}
+
+TEST(MapUtil, getPtrReferenceValueType) {
+  std::map<int, const std::string&> testMap;
+  EXPECT_EQ(nullptr, folly::get_ptr(testMap, 3));
+
+  std::string someString = "some";
+  testMap.emplace(3, someString);
+  EXPECT_EQ(&someString, folly::get_ptr(testMap, 3));
+}
+
+TEST(MapUtil, getPtrPathSimple) {
   using std::map;
   map<int, map<int, map<int, map<int, int>>>> m{{1, {{2, {{3, {{4, 5}}}}}}}};
   EXPECT_EQ(5, *get_ptr(m, 1, 2, 3, 4));
@@ -149,7 +186,7 @@ TEST(MapUtil, get_ptr_path_simple) {
   EXPECT_FALSE(get_ptr(cm, 1, 2, 3, 0));
 }
 
-TEST(MapUtil, get_ptr_path_mixed) {
+TEST(MapUtil, getPtrPathMixed) {
   using std::map;
   using std::string;
   using std::unordered_map;
@@ -194,7 +231,7 @@ struct Compiles<
         std::declval<T>()))>> : std::true_type {};
 } // namespace
 
-TEST(MapUtil, get_default_temporary) {
+TEST(MapUtil, getDefaultTemporary) {
   EXPECT_TRUE(Compiles<const int&>::value);
   EXPECT_TRUE(Compiles<int&>::value);
   EXPECT_FALSE(Compiles<const int&&>::value);
@@ -205,7 +242,7 @@ TEST(MapUtil, get_default_temporary) {
   EXPECT_FALSE(Compiles<int()>::value);
 }
 
-TEST(MapUtil, get_default_path) {
+TEST(MapUtil, getDefaultPath) {
   using std::map;
   map<int, map<int, int>> m;
   m[4][2] = 42;
@@ -213,7 +250,7 @@ TEST(MapUtil, get_default_path) {
   EXPECT_EQ(42, get_default(m, 1, 3, 42));
 }
 
-TEST(MapUtil, get_default_path_mixed) {
+TEST(MapUtil, getDefaultPathMixed) {
   using std::map;
   using std::string;
   using std::unordered_map;
@@ -229,7 +266,7 @@ TEST(MapUtil, get_default_path_mixed) {
   EXPECT_EQ(dflt, get_default(m, key1, "bad", "default"));
 }
 
-TEST(MapUtil, get_ref_default_path) {
+TEST(MapUtil, getRefDefaultPath) {
   using std::map;
   map<int, map<int, int>> m;
   m[4][2] = 42;
@@ -238,7 +275,7 @@ TEST(MapUtil, get_ref_default_path) {
   EXPECT_EQ(dflt, get_ref_default(m, 1, 3, dflt));
 }
 
-TEST(MapUtil, get_ref_default_path_mixed) {
+TEST(MapUtil, getRefDefaultPathMixed) {
   using std::map;
   using std::string;
   using std::unordered_map;
@@ -268,7 +305,7 @@ struct GetRefDefaultPathCompiles<
         std::declval<T>()))>> : std::true_type {};
 } // namespace
 
-TEST(MapUtil, get_ref_default_path_temporary) {
+TEST(MapUtil, getRefDefaultPathTemporary) {
   EXPECT_TRUE(GetRefDefaultPathCompiles<const int&>::value);
   EXPECT_TRUE(GetRefDefaultPathCompiles<int&>::value);
   EXPECT_FALSE(GetRefDefaultPathCompiles<const int&&>::value);
@@ -279,15 +316,9 @@ namespace {
 
 class TestConstruction {
  public:
-  TestConstruction() {
-    EXPECT_TRUE(false);
-  }
-  TestConstruction(TestConstruction&&) {
-    EXPECT_TRUE(false);
-  }
-  TestConstruction(const TestConstruction&) {
-    EXPECT_TRUE(false);
-  }
+  TestConstruction() { EXPECT_TRUE(false); }
+  TestConstruction(TestConstruction&&) { EXPECT_TRUE(false); }
+  TestConstruction(const TestConstruction&) { EXPECT_TRUE(false); }
 
   explicit TestConstruction(std::string&& string)
       : string_{std::move(string)} {}
@@ -302,7 +333,7 @@ class TestConstruction {
 
 } // namespace
 
-TEST(MapUtil, test_get_default_deferred_construction) {
+TEST(MapUtil, testGetDefaultDeferredConstruction) {
   auto map = std::unordered_map<int, TestConstruction>{};
   map.emplace(
       std::piecewise_construct,

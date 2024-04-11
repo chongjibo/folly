@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,23 +16,19 @@
 
 #include <folly/init/Phase.h>
 
-#include <folly/Singleton.h>
-#include <folly/portability/GTest.h>
+#include <thread>
 
 #include <glog/logging.h>
 
-#include <thread>
+#include <folly/Singleton.h>
+#include <folly/portability/GTest.h>
 
 /// Types
 
 struct Global {
-  Global() {
-    CHECK(folly::get_process_phase() == folly::ProcessPhase::Init);
-  }
+  Global() { CHECK(folly::get_process_phase() == folly::ProcessPhase::Init); }
 
-  ~Global() {
-    CHECK(folly::get_process_phase() >= folly::ProcessPhase::Exit);
-  }
+  ~Global() { CHECK(folly::get_process_phase() >= folly::ProcessPhase::Exit); }
 };
 
 /// Variables

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,18 +18,40 @@
 
 #include <atomic>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <vector>
 
 #include <folly/executors/SoftRealTimeExecutor.h>
 #include <folly/executors/ThreadPoolExecutor.h>
-#include <folly/synchronization/LifoSem.h>
 
 namespace folly {
 
+class EDFThreadPoolSemaphore {
+ public:
+  virtual ~EDFThreadPoolSemaphore() = default;
+  virtual void post(uint32_t value) = 0;
+  virtual void wait() = 0;
+};
+
+template <class Semaphore>
+class EDFThreadPoolSemaphoreImpl : public EDFThreadPoolSemaphore {
+ public:
+  template <class... Args>
+  explicit EDFThreadPoolSemaphoreImpl(Args&&... args)
+      : sem_(std::forward<Args>(args)...) {}
+
+  void post(uint32_t value) override { sem_.post(value); }
+  void wait() override { sem_.wait(); }
+
+ private:
+  Semaphore sem_;
+};
+
 /**
- * `EDFThreadPoolExecutor` is a `SoftRealTimeExecutor` that implements
- * the earliest-deadline-first scheduling policy.
+ * `EDFThreadPoolExecutor` is a `SoftRealTimeExecutor` that implements the
+ * earliest-deadline-first scheduling policy. Deadline ties are resolved by
+ * submission order.
  */
 class EDFThreadPoolExecutor : public SoftRealTimeExecutor,
                               public ThreadPoolExecutor {
@@ -41,21 +63,26 @@ class EDFThreadPoolExecutor : public SoftRealTimeExecutor,
   static constexpr uint64_t kLatestDeadline =
       std::numeric_limits<uint64_t>::max();
 
+  // Default semaphore is LifoSem.
+  static std::unique_ptr<EDFThreadPoolSemaphore> makeDefaultSemaphore();
+  static std::unique_ptr<EDFThreadPoolSemaphore> makeThrottledLifoSemSemaphore(
+      std::chrono::nanoseconds wakeUpInterval = {});
+
   explicit EDFThreadPoolExecutor(
       std::size_t numThreads,
       std::shared_ptr<ThreadFactory> threadFactory =
-          std::make_shared<NamedThreadFactory>("EDFThreadPool"));
+          std::make_shared<NamedThreadFactory>("EDFThreadPool"),
+      std::unique_ptr<EDFThreadPoolSemaphore> semaphore =
+          makeDefaultSemaphore());
 
   ~EDFThreadPoolExecutor() override;
 
+  using SoftRealTimeExecutor::add;
   using ThreadPoolExecutor::add;
 
   void add(Func f) override;
-  void add(Func f, uint64_t deadline) override;
-  void add(Func f, std::size_t total, uint64_t deadline);
-  void add(std::vector<Func> fs, uint64_t deadline);
-
-  folly::Executor::KeepAlive<> deadlineExecutor(uint64_t deadline);
+  void add(Func f, std::size_t total, uint64_t deadline) override;
+  void add(std::vector<Func> fs, uint64_t deadline) override;
 
  protected:
   void threadRun(ThreadPtr thread) override;
@@ -66,8 +93,11 @@ class EDFThreadPoolExecutor : public SoftRealTimeExecutor,
   bool shouldStop();
   std::shared_ptr<Task> take();
 
+  void fillTaskInfo(const Task& task, TaskInfo& info);
+  void registerTaskEnqueue(const Task& task);
+
   std::unique_ptr<TaskQueue> taskQueue_;
-  LifoSem sem_;
+  std::unique_ptr<EDFThreadPoolSemaphore> sem_;
   std::atomic<int> threadsToStop_{0};
 
   // All operations performed on `numIdleThreads_` explicitly specify memory

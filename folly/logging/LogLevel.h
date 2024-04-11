@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -101,6 +101,8 @@ enum class LogLevel : uint32_t {
 };
 
 constexpr LogLevel kDefaultLogLevel = LogLevel::INFO;
+constexpr LogLevel kMinFatalLogLevel =
+    folly::kIsDebug ? LogLevel::DFATAL : LogLevel::FATAL;
 
 /*
  * Support adding and subtracting integers from LogLevels, to create slightly

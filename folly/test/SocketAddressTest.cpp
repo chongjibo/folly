@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,8 +31,6 @@ using folly::NetworkSocket;
 using folly::SocketAddress;
 using folly::SocketAddressTestHelper;
 using folly::test::TemporaryDirectory;
-using std::cerr;
-using std::endl;
 using std::string;
 
 namespace netops = folly::netops;

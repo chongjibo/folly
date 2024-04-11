@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -73,7 +73,7 @@ inline void TaskIterator<T>::reserve(size_t n) {
   size_t tasksLeft = context_->totalTasks - context_->results.size();
   n = std::min(n, tasksLeft);
 
-  await([this, n](Promise<void> promise) {
+  await_async([this, n](Promise<void> promise) {
     context_->tasksToFulfillPromise = n;
     context_->promise.assign(std::move(promise));
   });

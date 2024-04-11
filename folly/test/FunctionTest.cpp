@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,16 +14,89 @@
  * limitations under the License.
  */
 
-#include <array>
-#include <cstdarg>
-
 #include <folly/Function.h>
 
+#include <array>
+#include <cstdarg>
+#include <functional>
+
 #include <folly/Memory.h>
+#include <folly/lang/Keep.h>
 #include <folly/portability/GTest.h>
 
 using folly::Function;
-using folly::FunctionRef;
+
+extern "C" FOLLY_KEEP void check_folly_function_move(void* src, void* dst) {
+  new (dst) Function<void()>(std::move(*static_cast<Function<void()>*>(src)));
+}
+
+extern "C" FOLLY_KEEP void check_folly_function_nuke(void* fun) {
+  static_cast<Function<void()>*>(fun)->~Function();
+}
+
+extern "C" FOLLY_KEEP void check_folly_function_move_assign(
+    void* src, void* dst) {
+  *static_cast<Function<void()>*>(src) =
+      std::move(*static_cast<Function<void()>*>(dst));
+}
+
+template <bool Triv, bool NxCopy>
+struct check_invocable_base;
+template <bool NxCopy>
+struct check_invocable_base<false, NxCopy> {
+  FOLLY_NOINLINE check_invocable_base(check_invocable_base const&) noexcept(
+      NxCopy) {}
+  void operator=(check_invocable_base const&) = delete;
+  FOLLY_NOINLINE ~check_invocable_base() {}
+};
+template <>
+struct check_invocable_base<true, true> {};
+template <bool Triv, bool NxCopy, size_t Size, size_t Align>
+struct check_invocable : check_invocable_base<Triv, NxCopy> {
+  std::aligned_storage_t<Size, Align> storage;
+  using check_invocable_base<Triv, NxCopy>::check_invocable_base;
+  void operator()() const noexcept {}
+};
+
+extern "C" FOLLY_KEEP void check_folly_function_make_in_situ_trivial(
+    void* fun, void* obj) {
+  constexpr auto size = 6 * sizeof(void*);
+  constexpr auto align = folly::max_align_v;
+  using inv_t = check_invocable<true, true, size, align>;
+  static_assert(std::is_trivially_copyable_v<inv_t>);
+  auto& inv = *static_cast<inv_t*>(obj);
+  ::new (fun) Function<void()>(inv);
+}
+
+extern "C" FOLLY_KEEP void check_folly_function_make_in_situ_default(
+    void* fun, void* obj) {
+  constexpr auto size = 6 * sizeof(void*);
+  constexpr auto align = folly::max_align_v;
+  using inv_t = check_invocable<false, true, size, align>;
+  static_assert(!std::is_trivially_copyable_v<inv_t>);
+  auto& inv = *static_cast<inv_t*>(obj);
+  ::new (fun) Function<void()>(inv);
+}
+
+extern "C" FOLLY_KEEP void check_folly_function_make_on_heap_trivial(
+    void* fun, void* obj) {
+  constexpr auto size = 12 * sizeof(void*);
+  constexpr auto align = folly::max_align_v;
+  using inv_t = check_invocable<true, true, size, align>;
+  static_assert(std::is_trivially_copyable_v<inv_t>);
+  auto& inv = *static_cast<inv_t*>(obj);
+  ::new (fun) Function<void()>(inv);
+}
+
+extern "C" FOLLY_KEEP void check_folly_function_make_on_heap_default(
+    void* fun, void* obj) {
+  constexpr auto size = 12 * sizeof(void*);
+  constexpr auto align = folly::max_align_v;
+  using inv_t = check_invocable<false, true, size, align>;
+  static_assert(!std::is_trivially_copyable_v<inv_t>);
+  auto& inv = *static_cast<inv_t*>(obj);
+  ::new (fun) Function<void()>(inv);
+}
 
 namespace {
 int func_int_int_add_25(int x) {
@@ -42,9 +115,7 @@ struct Functor {
 
   // Two operator() with different argument types.
   // The InvokeReference tests use both
-  T const& operator()(size_t index) const {
-    return data[index];
-  }
+  T const& operator()(size_t index) const { return data[index]; }
   T operator()(size_t index, T const& value) {
     T oldvalue = data[index];
     data[index] = value;
@@ -70,8 +141,7 @@ struct CallableButNotCopyable {
 // TEST =====================================================================
 // Test constructibility and non-constructibility for some tricky conversions
 static_assert(
-    !std::is_assignable<Function<void()>, CallableButNotCopyable>::value,
-    "");
+    !std::is_assignable<Function<void()>, CallableButNotCopyable>::value, "");
 static_assert(
     !std::is_constructible<Function<void()>, CallableButNotCopyable&>::value,
     "");
@@ -85,11 +155,9 @@ static_assert(
     "");
 
 static_assert(
-    !std::is_assignable<Function<void()>, CallableButNotCopyable>::value,
-    "");
+    !std::is_assignable<Function<void()>, CallableButNotCopyable>::value, "");
 static_assert(
-    !std::is_assignable<Function<void()>, CallableButNotCopyable&>::value,
-    "");
+    !std::is_assignable<Function<void()>, CallableButNotCopyable&>::value, "");
 static_assert(
     !std::is_assignable<Function<void() const>, CallableButNotCopyable>::value,
     "");
@@ -177,23 +245,128 @@ static_assert(
     "");
 
 static_assert(
-    !std::is_constructible<Function<int const&()>, int (*)()>::value,
-    "");
+    !std::is_constructible<Function<int const&()>, int (*)()>::value, "");
 
 static_assert(
-    !std::is_constructible<Function<int const&() const>, int (*)()>::value,
-    "");
+    !std::is_constructible<Function<int const&() const>, int (*)()>::value, "");
 
-#if FOLLY_HAVE_NOEXCEPT_FUNCTION_TYPE
-static_assert(
-    !std::is_constructible<Function<int const&() noexcept>, int (*)()>::value,
-    "");
+static_assert( //
+    !std::is_constructible_v< //
+        Function<int() noexcept>,
+        int (*)()>);
 
-static_assert(
-    !std::is_constructible<Function<int const&() const noexcept>, int (*)()>::
-        value,
-    "");
-#endif
+static_assert( //
+    !std::is_constructible_v< //
+        Function<int() const noexcept>,
+        int (*)()>);
+
+static_assert( //
+    std::is_constructible_v< //
+        Function<int() noexcept>,
+        int (*)() noexcept>);
+
+static_assert( //
+    std::is_constructible_v< //
+        Function<int() const noexcept>,
+        int (*)() noexcept>);
+
+static_assert( //
+    !std::is_constructible_v< //
+        Function<int const&() noexcept>,
+        int (*)()>);
+
+static_assert( //
+    !std::is_constructible_v< //
+        Function<int const&() const noexcept>,
+        int (*)()>);
+
+static_assert( //
+    !std::is_constructible_v< //
+        Function<int() noexcept>,
+        Function<int()>>);
+
+static_assert( //
+    !std::is_constructible_v< //
+        Function<int() const noexcept>,
+        Function<int() const>>);
+
+static_assert( //
+    std::is_constructible_v< //
+        Function<int()>,
+        Function<int() noexcept>>);
+
+static_assert( //
+    std::is_constructible_v< //
+        Function<int() const>,
+        Function<int() const noexcept>>);
+
+static_assert(std::is_nothrow_destructible<Function<int(int)>>::value, "");
+
+struct ctor_guide {
+  static void fn();
+  static void fn_nx() noexcept;
+
+  struct call {
+    void operator()();
+  };
+  struct call_c {
+    void operator()() const;
+  };
+  struct call_nx {
+    void operator()() noexcept;
+  };
+  struct call_c_nx {
+    void operator()() const noexcept;
+  };
+};
+
+static_assert( //
+    std::is_same_v< //
+        Function<void()>,
+        decltype(Function{ctor_guide::fn})>);
+static_assert( //
+    std::is_same_v< //
+        Function<void()>,
+        decltype(Function{&ctor_guide::fn})>);
+static_assert( //
+    std::is_same_v< //
+        Function<void()>,
+        decltype(Function{ctor_guide::call{}})>);
+static_assert( //
+    std::is_same_v< //
+        Function<void() const>,
+        decltype(Function{ctor_guide::call_c{}})>);
+static_assert( //
+    std::is_same_v< //
+        Function<void() noexcept>,
+        decltype(Function{ctor_guide::fn_nx})>);
+static_assert( //
+    std::is_same_v< //
+        Function<void() noexcept>,
+        decltype(Function{&ctor_guide::fn_nx})>);
+static_assert( //
+    std::is_same_v< //
+        Function<void() noexcept>,
+        decltype(Function{ctor_guide::call_nx{}})>);
+static_assert( //
+    std::is_same_v< //
+        Function<void() const noexcept>,
+        decltype(Function{ctor_guide::call_c_nx{}})>);
+
+struct RecStd {
+  using type = std::function<RecStd()>;
+  /* implicit */ RecStd(type f) : func(f) {}
+  explicit operator type() { return func; }
+  type func;
+};
+
+// Recursive class - regression case
+struct RecFolly {
+  using type = folly::Function<RecFolly()>;
+  /* implicit */ RecFolly(type f) : func(std::move(f)) {}
+  explicit operator type() { return std::move(func); }
+  type func;
+};
 
 // TEST =====================================================================
 // InvokeFunctor & InvokeReference
@@ -230,7 +403,7 @@ TEST(Function, InvokeReference) {
 // TEST =====================================================================
 // Emptiness
 
-TEST(Function, Emptiness_T) {
+TEST(Function, EmptinessT) {
   Function<int(int)> f;
   EXPECT_EQ(f, nullptr);
   EXPECT_EQ(nullptr, f);
@@ -266,21 +439,15 @@ TEST(Function, Emptiness_T) {
   struct CastableToBool {
     bool val;
     /* implicit */ CastableToBool(bool b) : val(b) {}
-    explicit operator bool() {
-      return val;
-    }
+    explicit operator bool() { return val; }
   };
   // models std::function
   struct NullptrTestableInSitu {
     int res;
-    explicit NullptrTestableInSitu(std::nullptr_t) : res(1) {}
+    [[maybe_unused]] explicit NullptrTestableInSitu(std::nullptr_t);
     explicit NullptrTestableInSitu(int i) : res(i) {}
-    CastableToBool operator==(std::nullptr_t) const {
-      return res % 3 != 1;
-    }
-    int operator()(int in) const {
-      return res * in;
-    }
+    CastableToBool operator==(std::nullptr_t) const { return res % 3 != 1; }
+    int operator()(int in) const { return res * in; }
   };
   struct NullptrTestableOnHeap : NullptrTestableInSitu {
     unsigned char data[1024 - sizeof(NullptrTestableInSitu)];
@@ -306,12 +473,6 @@ TEST(Function, Emptiness_T) {
   EXPECT_NE(nullptr, m);
   EXPECT_TRUE(m);
   EXPECT_EQ(428, m(107));
-
-  auto noopfun = [] {};
-  EXPECT_EQ(nullptr, FunctionRef<void()>(nullptr));
-  EXPECT_NE(nullptr, FunctionRef<void()>(noopfun));
-  EXPECT_EQ(FunctionRef<void()>(nullptr), nullptr);
-  EXPECT_NE(FunctionRef<void()>(noopfun), nullptr);
 }
 
 // TEST =====================================================================
@@ -418,34 +579,22 @@ TEST(Function, NonCopyableLambda) {
 TEST(Function, OverloadedFunctor) {
   struct OverloadedFunctor {
     // variant 1
-    int operator()(int x) {
-      return 100 + 1 * x;
-    }
+    int operator()(int x) { return 100 + 1 * x; }
 
     // variant 2 (const-overload of v1)
-    int operator()(int x) const {
-      return 100 + 2 * x;
-    }
+    int operator()(int x) const { return 100 + 2 * x; }
 
     // variant 3
-    int operator()(int x, int) {
-      return 100 + 3 * x;
-    }
+    int operator()(int x, int) { return 100 + 3 * x; }
 
     // variant 4 (const-overload of v3)
-    int operator()(int x, int) const {
-      return 100 + 4 * x;
-    }
+    int operator()(int x, int) const { return 100 + 4 * x; }
 
     // variant 5 (non-const, has no const-overload)
-    int operator()(int x, char const*) {
-      return 100 + 5 * x;
-    }
+    int operator()(int x, char const*) { return 100 + 5 * x; }
 
     // variant 6 (const only)
-    int operator()(int x, std::vector<int> const&) const {
-      return 100 + 6 * x;
-    }
+    int operator()(int x, std::vector<int> const&) const { return 100 + 6 * x; }
   };
   OverloadedFunctor of;
 
@@ -552,12 +701,8 @@ TEST(Function, Lambda) {
 
 struct MemberFunc {
   int x;
-  int getX() const {
-    return x;
-  }
-  void setX(int xx) {
-    x = xx;
-  }
+  int getX() const { return x; }
+  void setX(int xx) { x = xx; }
 };
 
 TEST(Function, DataMember) {
@@ -627,18 +772,10 @@ class CopyMoveTracker {
     return *this;
   }
 
-  size_t copyCount() const {
-    return data_->first;
-  }
-  size_t moveCount() const {
-    return data_->second;
-  }
-  size_t refCount() const {
-    return data_.use_count();
-  }
-  void resetCounters() {
-    data_->first = data_->second = 0;
-  }
+  size_t copyCount() const { return data_->first; }
+  size_t moveCount() const { return data_->second; }
+  size_t refCount() const { return data_.use_count(); }
+  void resetCounters() { data_->first = data_->second = 0; }
 
  private:
   // copy, move
@@ -742,9 +879,7 @@ TEST(Function, ParameterCopyMoveCount) {
 // VariadicTemplate & VariadicArguments
 
 struct VariadicTemplateSum {
-  int operator()() const {
-    return 0;
-  }
+  int operator()() const { return 0; }
   template <class... Args>
   int operator()(int x, Args... args) const {
     return x + (*this)(args...);
@@ -849,7 +984,12 @@ TEST(Function, ReturnConvertible) {
   Function<double()> f1 = []() -> int { return 5; };
   EXPECT_EQ(5.0, f1());
 
-  Function<int()> f2 = []() -> double { return 5.2; };
+  struct Convertible {
+    double value;
+    /* implicit */ Convertible(double v) noexcept : value{v} {}
+    /* implicit */ operator int() const noexcept { return int(value); }
+  };
+  Function<int()> f2 = []() -> Convertible { return 5.2; };
   EXPECT_EQ(5, f2());
 
   CDerived derived;
@@ -887,14 +1027,20 @@ TEST(Function, ConvertReturnType) {
   };
   struct CDerived : CBase {};
 
+  struct Convertible {
+    double value;
+    /* implicit */ Convertible(double v) noexcept : value{v} {}
+    /* implicit */ operator int() const noexcept { return int(value); }
+  };
+
   Function<int()> f1 = []() -> int { return 5; };
   Function<double()> cf1 = std::move(f1);
   EXPECT_EQ(5.0, cf1());
-  Function<int()> ccf1 = std::move(cf1);
+  Function<Convertible()> ccf1 = std::move(cf1);
   EXPECT_EQ(5, ccf1());
 
   Function<double()> f2 = []() -> double { return 5.2; };
-  Function<int()> cf2 = std::move(f2);
+  Function<Convertible()> cf2 = std::move(f2);
   EXPECT_EQ(5, cf2());
   Function<double()> ccf2 = std::move(cf2);
   EXPECT_EQ(5.0, ccf2());
@@ -940,7 +1086,7 @@ TEST(Function, ConvertReturnType) {
 // TEST =====================================================================
 // asStdFunction_*
 
-TEST(Function, asStdFunction_void) {
+TEST(Function, asStdFunctionVoid) {
   int i = 0;
   folly::Function<void()> f = [&] { ++i; };
   auto sf = std::move(f).asStdFunction();
@@ -951,7 +1097,7 @@ TEST(Function, asStdFunction_void) {
   EXPECT_EQ(1, i);
 }
 
-TEST(Function, asStdFunction_void_const) {
+TEST(Function, asStdFunctionVoidConst) {
   int i = 0;
   folly::Function<void() const> f = [&] { ++i; };
   auto sf = std::move(f).asStdFunction();
@@ -962,7 +1108,7 @@ TEST(Function, asStdFunction_void_const) {
   EXPECT_EQ(1, i);
 }
 
-TEST(Function, asStdFunction_return) {
+TEST(Function, asStdFunctionReturn) {
   int i = 0;
   folly::Function<int()> f = [&] {
     ++i;
@@ -976,7 +1122,7 @@ TEST(Function, asStdFunction_return) {
   EXPECT_EQ(1, i);
 }
 
-TEST(Function, asStdFunction_return_const) {
+TEST(Function, asStdFunctionReturnConst) {
   int i = 0;
   folly::Function<int() const> f = [&] {
     ++i;
@@ -990,7 +1136,7 @@ TEST(Function, asStdFunction_return_const) {
   EXPECT_EQ(1, i);
 }
 
-TEST(Function, asStdFunction_args) {
+TEST(Function, asStdFunctionArgs) {
   int i = 0;
   folly::Function<void(int, int)> f = [&](int x, int y) {
     ++i;
@@ -1004,7 +1150,7 @@ TEST(Function, asStdFunction_args) {
   EXPECT_EQ(1, i);
 }
 
-TEST(Function, asStdFunction_args_const) {
+TEST(Function, asStdFunctionArgsConst) {
   int i = 0;
   folly::Function<void(int, int) const> f = [&](int x, int y) {
     ++i;
@@ -1021,7 +1167,7 @@ TEST(Function, asStdFunction_args_const) {
 // TEST =====================================================================
 // asSharedProxy_*
 
-TEST(Function, asSharedProxy_void) {
+TEST(Function, asSharedProxyVoid) {
   int i = 0;
   folly::Function<void()> f = [&i] { ++i; };
   auto sp = std::move(f).asSharedProxy();
@@ -1032,7 +1178,7 @@ TEST(Function, asSharedProxy_void) {
   EXPECT_EQ(2, i);
 }
 
-TEST(Function, asSharedProxy_void_const) {
+TEST(Function, asSharedProxyVoidConst) {
   int i = 0;
   folly::Function<void() const> f = [&i] { ++i; };
   auto sp = std::move(f).asSharedProxy();
@@ -1043,7 +1189,7 @@ TEST(Function, asSharedProxy_void_const) {
   EXPECT_EQ(2, i);
 }
 
-TEST(Function, asSharedProxy_return) {
+TEST(Function, asSharedProxyReturn) {
   folly::Function<int()> f = [i = 0]() mutable {
     ++i;
     return i;
@@ -1054,7 +1200,7 @@ TEST(Function, asSharedProxy_return) {
   EXPECT_EQ(2, spcopy());
 }
 
-TEST(Function, asSharedProxy_return_const) {
+TEST(Function, asSharedProxyReturnConst) {
   int i = 0;
   folly::Function<int() const> f = [&i] {
     ++i;
@@ -1066,7 +1212,7 @@ TEST(Function, asSharedProxy_return_const) {
   EXPECT_EQ(2, spcopy());
 }
 
-TEST(Function, asSharedProxy_args) {
+TEST(Function, asSharedProxyArgs) {
   int i = 0;
   folly::Function<int(int, int)> f = [&](int x, int y) mutable {
     ++i;
@@ -1080,7 +1226,7 @@ TEST(Function, asSharedProxy_args) {
   EXPECT_EQ(2, i);
 }
 
-TEST(Function, asSharedProxy_args_const) {
+TEST(Function, asSharedProxyArgsConst) {
   int i = 0;
   folly::Function<int(int, int) const> f = [&i](int x, int y) {
     ++i;
@@ -1092,18 +1238,18 @@ TEST(Function, asSharedProxy_args_const) {
   EXPECT_EQ(562, spcopy(5, 6));
 }
 
-TEST(Function, asSharedProxy_nullptr) {
+TEST(Function, asSharedProxyNullptr) {
   auto sp = folly::Function<int(int, int) const>::SharedProxy(nullptr);
   EXPECT_THROW(sp(3, 4), std::bad_function_call);
 }
 
-TEST(Function, asSharedProxy_empty) {
+TEST(Function, asSharedProxyEmpty) {
   auto func = folly::Function<int(int, int) const>();
   auto sp = std::move(func).asSharedProxy();
   EXPECT_THROW(sp(3, 4), std::bad_function_call);
 }
 
-TEST(Function, asSharedProxy_explicit_bool_conversion) {
+TEST(Function, asSharedProxyExplicitBoolConversion) {
   folly::Function<void(void)> f = []() {};
   auto sp = std::move(f).asSharedProxy();
   auto spcopy = sp;
@@ -1115,6 +1261,47 @@ TEST(Function, asSharedProxy_explicit_bool_conversion) {
   auto emptySpcopy = emptySp;
   EXPECT_FALSE(emptySp);
   EXPECT_FALSE(emptySpcopy);
+}
+
+struct BadCopier {
+  explicit BadCopier(int v) : v_(v) {}
+  BadCopier(const BadCopier& o) : v_(o.v_ + 1) {}
+  BadCopier(BadCopier&&) = default;
+  int v_;
+};
+std::array<int, 3> badCopierF(BadCopier a, const BadCopier& b, BadCopier&& c) {
+  std::array<int, 3> ret;
+  ret[0] = a.v_;
+  ret[1] = b.v_;
+  ret[2] = c.v_;
+  a.v_ *= -1;
+  c.v_ *= -1;
+  return ret;
+}
+TEST(Function, asSharedProxyForwarding) {
+  folly::Function<decltype(badCopierF)> ff(badCopierF);
+  EXPECT_TRUE((std::is_same_v<
+               decltype(ff),
+               folly::Function<std::array<int, 3>(
+                   BadCopier a, const BadCopier& b, BadCopier&& c)>>));
+  auto sp = std::move(ff).asSharedProxy();
+
+  BadCopier bca(100);
+  BadCopier bcb(200);
+  BadCopier bcc(300);
+  auto vals = sp(bca, bcb, std::move(bcc));
+
+  // bca was passed into f by value, so was copied at least once
+  EXPECT_GT(vals[0], 100);
+  EXPECT_EQ(bca.v_, 100);
+
+  // bcb was passed into f by const&, so was never copied
+  EXPECT_EQ(vals[1], 200);
+  EXPECT_EQ(bcb.v_, 200);
+
+  // bcc was passed into f by &&, so was never copied but was mutated in f
+  EXPECT_EQ(vals[2], 300);
+  EXPECT_EQ(bcc.v_, -300);
 }
 
 TEST(Function, NoAllocatedMemoryAfterMove) {
@@ -1174,16 +1361,10 @@ TEST(Function, SelfMove2) {
   int alive{0};
   struct arg {
     int* ptr_;
-    explicit arg(int* ptr) noexcept : ptr_(ptr) {
-      ++*ptr_;
-    }
-    arg(arg&& o) noexcept : ptr_(o.ptr_) {
-      ++*ptr_;
-    }
+    explicit arg(int* ptr) noexcept : ptr_(ptr) { ++*ptr_; }
+    arg(arg&& o) noexcept : ptr_(o.ptr_) { ++*ptr_; }
     arg& operator=(arg&&) = delete;
-    ~arg() {
-      --*ptr_;
-    }
+    ~arg() { --*ptr_; }
   };
   EXPECT_EQ(0, alive);
   Function<int()> f = [myarg = arg{&alive}] { return 42; };
@@ -1191,7 +1372,7 @@ TEST(Function, SelfMove2) {
   Function<int()>& g = f;
   f = std::move(g);
   EXPECT_FALSE(bool(f)) << "self-assign is self-destruct";
-  EXPECT_EQ(0, alive) << "self-asign is self-destruct";
+  EXPECT_EQ(0, alive) << "self-assign is self-destruct";
   f = [] { return 43; };
   EXPECT_EQ(0, alive) << "sanity check against double-destruction";
   EXPECT_TRUE(bool(f));
@@ -1223,7 +1404,7 @@ TEST(Function, CtorWithCopy) {
   EXPECT_FALSE(noexcept(Function<void()>(ly)));
 }
 
-TEST(Function, Bug_T23346238) {
+TEST(Function, BugT23346238) {
   const Function<void()> nullfun;
 }
 
@@ -1251,4 +1432,98 @@ TEST(Function, AllocatedSize) {
   EXPECT_GE(fromLambda.heapAllocatedMemory(), kCaptureBytes)
       << "Lambda-derived Function's allocated size is smaller than the "
          "lambda's capture size";
+}
+
+TEST(Function, TrivialSmallBig) {
+  auto tsl = [] { return 7; };
+  static_assert(std::is_trivially_copyable_v<decltype(tsl)>);
+  static_assert(sizeof(tsl) == 1);
+
+  auto thl = [x = std::array<int, 64>{{7}}] { return x[0]; };
+  static_assert(std::is_trivially_copyable_v<decltype(thl)>);
+  static_assert(sizeof(thl) >= sizeof(Function<int()>));
+
+  struct move_nx {
+    move_nx() {}
+    ~move_nx() {}
+    move_nx(move_nx&&) noexcept {}
+    void operator=(move_nx&&) = delete;
+  };
+  auto sl = [o = move_nx{}] { return 7; };
+  static_assert(!std::is_trivially_copyable_v<decltype(sl)>);
+  static_assert(std::is_nothrow_move_constructible_v<decltype(sl)>);
+
+  struct move_x {
+    move_x() {}
+    ~move_x() {}
+    move_x(move_x&&) noexcept(false) {}
+    void operator=(move_x&&) = delete;
+  };
+  auto hl = [o = move_x{}] { return 7; };
+  static_assert(!std::is_trivially_copyable_v<decltype(hl)>);
+  static_assert(!std::is_nothrow_move_constructible_v<decltype(hl)>);
+
+  Function<int()> ts{std::move(tsl)};
+  Function<int()> th{std::move(thl)};
+  Function<int()> s{std::move(sl)};
+  Function<int()> h{std::move(hl)};
+
+  EXPECT_EQ(7, ts());
+  EXPECT_EQ(7, th());
+  EXPECT_EQ(7, s());
+  EXPECT_EQ(7, h());
+
+  auto ts2 = std::move(ts);
+  auto th2 = std::move(th);
+  auto s2 = std::move(s);
+  auto h2 = std::move(h);
+
+  EXPECT_EQ(7, ts2());
+  EXPECT_EQ(7, th2());
+  EXPECT_EQ(7, s2());
+  EXPECT_EQ(7, h2());
+}
+
+TEST(Function, ConstInitEmpty) {
+  static FOLLY_CONSTINIT Function<int()> func;
+  EXPECT_THROW(func(), std::bad_function_call);
+}
+
+TEST(Function, ConstInitNullptr) {
+  static FOLLY_CONSTINIT Function<int()> func{nullptr};
+  EXPECT_THROW(func(), std::bad_function_call);
+}
+
+TEST(Function, ConstInitStaticLambda) {
+  static FOLLY_CONSTINIT Function<int()> func{[] { return 3; }};
+  EXPECT_EQ(3, func());
+}
+
+namespace {
+template <typename T>
+union consteval_immortal {
+  T value;
+  template <typename... A>
+  explicit FOLLY_CONSTEVAL consteval_immortal(std::in_place_t, A&&... a)
+      : value{static_cast<A&&>(a)...} {}
+  ~consteval_immortal() {}
+};
+} // namespace
+
+TEST(Function, ConstEvalEmpty) {
+  static FOLLY_CONSTINIT consteval_immortal<Function<int()>> func{
+      std::in_place};
+  EXPECT_THROW(func.value(), std::bad_function_call);
+}
+
+TEST(Function, ConstEvalNullptr) {
+  static FOLLY_CONSTINIT consteval_immortal<Function<int()>> func{
+      std::in_place, nullptr};
+  EXPECT_THROW(func.value(), std::bad_function_call);
+}
+
+TEST(Function, ConstEvalStaticLambda) {
+  static FOLLY_CONSTINIT consteval_immortal<Function<int()>> func{
+      std::in_place, [] { return 3; }};
+  EXPECT_EQ(3, func.value());
 }

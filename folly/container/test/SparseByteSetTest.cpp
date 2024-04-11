@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,4 +65,41 @@ TEST_F(SparseByteSetTest, each_random) {
     EXPECT_TRUE(added.count(c)); // sanity
     EXPECT_TRUE(s.contains(c));
   }
+}
+
+TEST_F(SparseByteSetTest, clear) {
+  for (auto c = lims::min(); c < lims::max(); ++c) {
+    EXPECT_TRUE(s.add(c));
+  }
+  s.clear();
+  for (auto c = lims::max() - 1; c > lims::min(); --c) {
+    EXPECT_FALSE(s.contains(c));
+    EXPECT_TRUE(s.add(c));
+  }
+}
+
+TEST_F(SparseByteSetTest, remove) {
+  for (auto c = lims::min(); c < lims::max(); ++c) {
+    EXPECT_TRUE(s.add(c));
+  }
+  for (auto c = lims::min(); c < lims::max() / 2; ++c) {
+    EXPECT_TRUE(s.remove(c));
+    EXPECT_FALSE(s.contains(c));
+  }
+
+  // did not corrupt rest data
+  for (auto c = lims::max() / 2; c < lims::max(); ++c) {
+    EXPECT_TRUE(s.contains(c));
+  }
+
+  // check deleting last elements
+  for (auto c = lims::max() - 1; c >= lims::max() / 2; --c) {
+    EXPECT_TRUE(s.remove(c));
+    EXPECT_FALSE(s.contains(c));
+  }
+}
+
+TEST_F(SparseByteSetTest, remove_nop) {
+  bool r = s.remove(12);
+  EXPECT_FALSE(r);
 }

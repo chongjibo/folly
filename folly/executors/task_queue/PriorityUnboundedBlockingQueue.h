@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,17 +25,17 @@
 
 namespace folly {
 
-template <class T>
+template <class T, class Semaphore = folly::LifoSem>
 class PriorityUnboundedBlockingQueue : public BlockingQueue<T> {
  public:
   // Note: To use folly::Executor::*_PRI, for numPriorities == 2
   //       MID_PRI and HI_PRI are treated at the same priority level.
-  explicit PriorityUnboundedBlockingQueue(uint8_t numPriorities)
-      : queue_(numPriorities) {}
+  explicit PriorityUnboundedBlockingQueue(
+      uint8_t numPriorities,
+      const typename Semaphore::Options& semaphoreOptions = {})
+      : sem_(semaphoreOptions), queue_(numPriorities) {}
 
-  uint8_t getNumPriorities() override {
-    return queue_.priorities();
-  }
+  uint8_t getNumPriorities() override { return queue_.priorities(); }
 
   // Add at medium priority by default
   BlockingQueueAddResult add(T item) override {
@@ -66,13 +66,9 @@ class PriorityUnboundedBlockingQueue : public BlockingQueue<T> {
     return dequeue();
   }
 
-  size_t size() override {
-    return queue_.size();
-  }
+  size_t size() override { return queue_.size(); }
 
-  size_t sizeGuess() const {
-    return queue_.size();
-  }
+  size_t sizeGuess() const { return queue_.size(); }
 
  private:
   size_t translatePriority(int8_t const priority) {
@@ -91,7 +87,7 @@ class PriorityUnboundedBlockingQueue : public BlockingQueue<T> {
     terminate_with<std::logic_error>("bug in task queue");
   }
 
-  LifoSem sem_;
+  Semaphore sem_;
   PriorityUMPMCQueueSet<T, /* MayBlock = */ true> queue_;
 };
 

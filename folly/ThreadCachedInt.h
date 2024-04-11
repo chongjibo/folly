@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,6 @@
 
 /**
  * Higher performance (up to 10x) atomic increment using thread caching.
- *
- * @author Spencer Ahrens (sahrens)
  */
 
 #pragma once
@@ -46,7 +44,7 @@ class ThreadCachedInt {
 
   void increment(IntT inc) {
     auto cache = cache_.get();
-    if (UNLIKELY(cache == nullptr)) {
+    if (FOLLY_UNLIKELY(cache == nullptr)) {
       cache = new IntCache(*this);
       cache_.reset(cache);
     }
@@ -55,9 +53,7 @@ class ThreadCachedInt {
 
   // Quickly grabs the current value which may not include some cached
   // increments.
-  IntT readFast() const {
-    return target_.load(std::memory_order_relaxed);
-  }
+  IntT readFast() const { return target_.load(std::memory_order_relaxed); }
 
   // Reads the current value plus all the cached increments.  Requires grabbing
   // a lock, so this is significantly slower than readFast().
@@ -101,9 +97,7 @@ class ThreadCachedInt {
     cacheSize_.store(newSize, std::memory_order_release);
   }
 
-  uint32_t getCacheSize() const {
-    return cacheSize_.load();
-  }
+  uint32_t getCacheSize() const { return cacheSize_.load(); }
 
   ThreadCachedInt& operator+=(IntT inc) {
     increment(inc);
@@ -150,7 +144,7 @@ class ThreadCachedInt {
         : parent_(&parent), val_(0), numUpdates_(0), reset_(false) {}
 
     void increment(IntT inc) {
-      if (LIKELY(!reset_.load(std::memory_order_acquire))) {
+      if (FOLLY_LIKELY(!reset_.load(std::memory_order_acquire))) {
         // This thread is the only writer to val_, so it's fine do do
         // a relaxed load and do the addition non-atomically.
         val_.store(
@@ -161,7 +155,7 @@ class ThreadCachedInt {
         reset_.store(false, std::memory_order_release);
       }
       ++numUpdates_;
-      if (UNLIKELY(
+      if (FOLLY_UNLIKELY(
               numUpdates_ >
               parent_->cacheSize_.load(std::memory_order_acquire))) {
         flush();
@@ -174,9 +168,7 @@ class ThreadCachedInt {
       numUpdates_ = 0;
     }
 
-    ~IntCache() {
-      flush();
-    }
+    ~IntCache() { flush(); }
   };
 };
 

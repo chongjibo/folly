@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
+#include <folly/futures/Retrying.h>
+
 #include <algorithm>
 #include <atomic>
 #include <vector>
 
-#include <folly/futures/Retrying.h>
 #include <folly/futures/test/TestExecutor.h>
 #include <folly/portability/GTest.h>
 #include <folly/portability/SysResource.h>
@@ -32,10 +33,7 @@ using namespace folly;
 // max_duration.
 template <typename D, typename F>
 void multiAttemptExpectDurationWithin(
-    size_t num_tries,
-    D min_duration,
-    D max_duration,
-    const F& func) {
+    size_t num_tries, D min_duration, D max_duration, const F& func) {
   vector<thread> threads(num_tries);
   vector<D> durations(num_tries, D::min());
   for (size_t i = 0; i < num_tries; ++i) {
@@ -50,12 +48,12 @@ void multiAttemptExpectDurationWithin(
   }
   sort(durations.begin(), durations.end());
   for (auto d : durations) {
-    EXPECT_GE(d, min_duration);
+    EXPECT_GE(d.count(), min_duration.count());
   }
-  EXPECT_LE(durations[0], max_duration);
+  EXPECT_LE(durations[0].count(), max_duration.count());
 }
 
-TEST(RetryingTest, has_op_call) {
+TEST(RetryingTest, hasOpCall) {
   using ew = exception_wrapper;
   auto policy_raw = [](size_t n, const ew&) { return n < 3; };
   auto policy_fut = [](size_t n, const ew&) { return makeFuture(n < 3); };
@@ -80,7 +78,18 @@ TEST(RetryingTest, basic) {
   EXPECT_EQ(2, r.value());
 }
 
-TEST(RetryingTest, future_factory_throws) {
+TEST(RetryingTest, basicUnsafe) {
+  auto r = futures::retryingUnsafe(
+               [](size_t n, const exception_wrapper&) { return n < 3; },
+               [](size_t n) {
+                 return n < 2 ? makeFuture<size_t>(runtime_error("ha"))
+                              : makeFuture(n);
+               })
+               .wait();
+  EXPECT_EQ(2, r.value());
+}
+
+TEST(RetryingTest, futureFactoryThrows) {
   struct ReturnedException : exception {};
   struct ThrownException : exception {};
   auto result = futures::retrying(
@@ -97,11 +106,32 @@ TEST(RetryingTest, future_factory_throws) {
                       }
                     })
                     .wait()
-                    .getTry();
-  EXPECT_THROW(result.throwIfFailed(), ThrownException);
+                    .result();
+  EXPECT_THROW(result.throwUnlessValue(), ThrownException);
 }
 
-TEST(RetryingTest, policy_throws) {
+TEST(RetryingTest, futureFactoryThrowsUnsafe) {
+  struct ReturnedException : exception {};
+  struct ThrownException : exception {};
+  auto result = futures::retryingUnsafe(
+                    [](size_t n, const exception_wrapper&) { return n < 2; },
+                    [](size_t n) {
+                      switch (n) {
+                        case 0:
+                          return makeFuture<size_t>(
+                              make_exception_wrapper<ReturnedException>());
+                        case 1:
+                          throw ThrownException();
+                        default:
+                          return makeFuture(n);
+                      }
+                    })
+                    .wait()
+                    .result();
+  EXPECT_THROW(result.throwUnlessValue(), ThrownException);
+}
+
+TEST(RetryingTest, policyThrows) {
   struct eggs : exception {};
   auto r = futures::retrying(
       [](size_t, exception_wrapper) -> bool { throw eggs(); },
@@ -109,7 +139,15 @@ TEST(RetryingTest, policy_throws) {
   EXPECT_THROW(std::move(r).get(), eggs);
 }
 
-TEST(RetryingTest, policy_future) {
+TEST(RetryingTest, policyThrowsUnsafe) {
+  struct eggs : exception {};
+  auto r = futures::retryingUnsafe(
+      [](size_t, exception_wrapper) -> bool { throw eggs(); },
+      [](size_t) -> Future<size_t> { throw std::runtime_error("ha"); });
+  EXPECT_THROW(std::move(r).get(), eggs);
+}
+
+TEST(RetryingTest, policyFuture) {
   atomic<size_t> sleeps{0};
   auto r =
       futures::retrying(
@@ -127,7 +165,25 @@ TEST(RetryingTest, policy_future) {
   EXPECT_EQ(2, sleeps);
 }
 
-TEST(RetryingTest, policy_semi_future) {
+TEST(RetryingTest, policyFutureUnsafe) {
+  atomic<size_t> sleeps{0};
+  auto r =
+      futures::retryingUnsafe(
+          [&](size_t n, const exception_wrapper&) {
+            return n < 3
+                ? makeFuture(++sleeps).thenValue([](auto&&) { return true; })
+                : makeFuture(false);
+          },
+          [](size_t n) {
+            return n < 2 ? makeFuture<size_t>(runtime_error("ha"))
+                         : makeFuture(n);
+          })
+          .wait();
+  EXPECT_EQ(2, r.value());
+  EXPECT_EQ(2, sleeps);
+}
+
+TEST(RetryingTest, policySemiFuture) {
   atomic<size_t> sleeps{0};
   auto r = futures::retrying(
                [&](size_t n, const exception_wrapper&) {
@@ -144,29 +200,31 @@ TEST(RetryingTest, policy_semi_future) {
   EXPECT_EQ(2, sleeps);
 }
 
-TEST(RetryingTest, policy_basic) {
-  auto r = futures::retrying(
-               futures::retryingPolicyBasic(3),
-               [](size_t n) {
-                 return n < 2 ? makeFuture<size_t>(runtime_error("ha"))
-                              : makeFuture(n);
-               })
-               .wait();
+TEST(RetryingTest, policyBasic) {
+  auto r =
+      futures::retrying(futures::retryingPolicyBasic(3), [](size_t n) {
+        return n < 2 ? makeFuture<size_t>(runtime_error("ha")) : makeFuture(n);
+      }).wait();
   EXPECT_EQ(2, r.value());
 }
 
-TEST(RetryingTest, semifuture_policy_basic) {
-  auto r = futures::retrying(
-               futures::retryingPolicyBasic(3),
-               [](size_t n) {
-                 return n < 2 ? makeSemiFuture<size_t>(runtime_error("ha"))
-                              : makeSemiFuture(n);
-               })
-               .wait();
+TEST(RetryingTest, policyBasicUnsafe) {
+  auto r =
+      futures::retryingUnsafe(futures::retryingPolicyBasic(3), [](size_t n) {
+        return n < 2 ? makeFuture<size_t>(runtime_error("ha")) : makeFuture(n);
+      }).wait();
   EXPECT_EQ(2, r.value());
 }
 
-TEST(RetryingTest, policy_capped_jittered_exponential_backoff) {
+TEST(RetryingTest, semifuturePolicyBasic) {
+  auto r = futures::retrying(futures::retryingPolicyBasic(3), [](size_t n) {
+             return n < 2 ? makeSemiFuture<size_t>(runtime_error("ha"))
+                          : makeSemiFuture(n);
+           }).wait();
+  EXPECT_EQ(2, r.value());
+}
+
+TEST(RetryingTest, policyCappedJitteredExponentialBackoff) {
   multiAttemptExpectDurationWithin(5, milliseconds(200), milliseconds(400), [] {
     using ms = milliseconds;
     auto r = futures::retrying(
@@ -186,7 +244,27 @@ TEST(RetryingTest, policy_capped_jittered_exponential_backoff) {
   });
 }
 
-TEST(RetryingTest, policy_capped_jittered_exponential_backoff_many_retries) {
+TEST(RetryingTest, policyCappedJitteredExponentialBackoffUnsafe) {
+  multiAttemptExpectDurationWithin(5, milliseconds(200), milliseconds(400), [] {
+    using ms = milliseconds;
+    auto r = futures::retryingUnsafe(
+                 futures::retryingPolicyCappedJitteredExponentialBackoff(
+                     3,
+                     ms(100),
+                     ms(1000),
+                     0.1,
+                     mt19937_64(0),
+                     [](size_t, const exception_wrapper&) { return true; }),
+                 [](size_t n) {
+                   return n < 2 ? makeFuture<size_t>(runtime_error("ha"))
+                                : makeFuture(n);
+                 })
+                 .wait();
+    EXPECT_EQ(2, r.value());
+  });
+}
+
+TEST(RetryingTest, policyCappedJitteredExponentialBackoffManyRetries) {
   using namespace futures::detail;
   mt19937_64 rng(0);
   Duration min_backoff(1);
@@ -194,20 +272,44 @@ TEST(RetryingTest, policy_capped_jittered_exponential_backoff_many_retries) {
   Duration max_backoff(10000000);
   Duration backoff = retryingJitteredExponentialBackoffDur(
       80, min_backoff, max_backoff, 0, rng);
-  EXPECT_EQ(backoff, max_backoff);
+  EXPECT_EQ(backoff.count(), max_backoff.count());
 
   max_backoff = Duration(std::numeric_limits<int64_t>::max());
   backoff = retryingJitteredExponentialBackoffDur(
       63, min_backoff, max_backoff, 0, rng);
-  EXPECT_LT(backoff, max_backoff);
+  EXPECT_LT(backoff.count(), max_backoff.count());
 
   max_backoff = Duration(std::numeric_limits<int64_t>::max());
   backoff = retryingJitteredExponentialBackoffDur(
       64, min_backoff, max_backoff, 0, rng);
-  EXPECT_EQ(backoff, max_backoff);
+  EXPECT_EQ(backoff.count(), max_backoff.count());
 }
 
-TEST(RetryingTest, policy_sleep_defaults) {
+TEST(RetryingTest, policyCappedJitteredExponentialBackoffMinZero) {
+  using namespace futures::detail;
+  mt19937_64 rng(0);
+
+  Duration min_backoff(0);
+  Duration max_backoff(2000);
+
+  EXPECT_EQ(
+      retryingJitteredExponentialBackoffDur(5, min_backoff, max_backoff, 0, rng)
+          .count(),
+      0);
+
+  EXPECT_EQ(
+      retryingJitteredExponentialBackoffDur(5, min_backoff, max_backoff, 1, rng)
+          .count(),
+      0);
+
+  EXPECT_EQ(
+      retryingJitteredExponentialBackoffDur(
+          1025, min_backoff, max_backoff, 0, rng)
+          .count(),
+      0);
+}
+
+TEST(RetryingTest, policySleepDefaults) {
   multiAttemptExpectDurationWithin(5, milliseconds(200), milliseconds(400), [] {
     //  To ensure that this compiles with default params.
     using ms = milliseconds;
@@ -223,7 +325,7 @@ TEST(RetryingTest, policy_sleep_defaults) {
   });
 }
 
-TEST(RetryingTest, large_retries) {
+TEST(RetryingTest, largeRetries) {
 #ifndef _WIN32
   rlimit oldMemLimit;
   PCHECK(getrlimit(RLIMIT_AS, &oldMemLimit) == 0);
@@ -232,12 +334,9 @@ TEST(RetryingTest, large_retries) {
   newMemLimit.rlim_cur =
       std::min(static_cast<rlim_t>(1UL << 30), oldMemLimit.rlim_max);
   newMemLimit.rlim_max = oldMemLimit.rlim_max;
-  if (!folly::kIsSanitizeAddress) { // ASAN reserves outside of the rlimit
-    PCHECK(setrlimit(RLIMIT_AS, &newMemLimit) == 0);
-  }
-  SCOPE_EXIT {
-    PCHECK(setrlimit(RLIMIT_AS, &oldMemLimit) == 0);
-  };
+  auto const lowered = // sanitizers reserve outside of the rlimit
+      !folly::kIsSanitize && setrlimit(RLIMIT_AS, &newMemLimit) != 0;
+  SCOPE_EXIT { PCHECK(!lowered || setrlimit(RLIMIT_AS, &oldMemLimit) == 0); };
 #endif
 
   TestExecutor executor(4);
@@ -252,7 +351,7 @@ TEST(RetryingTest, large_retries) {
     });
   };
 
-  vector<Future<LargeReturn>> futures;
+  vector<SemiFuture<LargeReturn>> futures;
   for (auto idx = 0; idx < 40; ++idx) {
     futures.emplace_back(futures::retrying(
         [&executor](size_t, const exception_wrapper&) {
@@ -322,7 +421,7 @@ TEST(RetryingTest, retryingJitteredExponentialBackoffDur) {
 }
 
 /*
-TEST(RetryingTest, policy_sleep_cancel) {
+TEST(RetryingTest, policySleepCancel) {
   multiAttemptExpectDurationWithin(5, milliseconds(0), milliseconds(10), []{
     mt19937_64 rng(0);
     using ms = milliseconds;

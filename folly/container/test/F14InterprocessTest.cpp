@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,8 @@
 #include <boost/interprocess/allocators/adaptive_pool.hpp>
 #include <boost/interprocess/managed_shared_memory.hpp>
 
-#include <folly/Format.h>
+#include <fmt/core.h>
+
 #include <folly/Random.h>
 #include <folly/Traits.h>
 #include <folly/container/F14Map.h>
@@ -108,12 +109,11 @@ using ShmF14VectorI2VVI = folly::F14VectorMap<
 
 namespace {
 std::string makeRandomName() {
-  return folly::sformat("f14test_{}", folly::Random::rand64());
+  return fmt::format("f14test_{}", folly::Random::rand64());
 }
 
 std::shared_ptr<managed_shared_memory> makeShmSegment(
-    std::size_t n,
-    std::string name = makeRandomName()) {
+    std::size_t n, std::string name = makeRandomName()) {
   auto deleter = [=](managed_shared_memory* p) {
     delete p;
     shared_memory_object::remove(name.c_str());

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,13 +19,13 @@
 #include <algorithm>
 #include <limits>
 
+#include <glog/logging.h>
+
 #include <folly/Portability.h>
 #include <folly/chrono/Hardware.h>
 #include <folly/detail/Futex.h>
 #include <folly/portability/Asm.h>
 #include <folly/portability/Unistd.h>
-
-#include <glog/logging.h>
 
 namespace folly {
 

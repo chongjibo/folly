@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,12 +74,8 @@ class TestBothIndexingAndIter {
     using pointer = int*;
     using reference = int&;
     using iterator_category = std::random_access_iterator_tag;
-    int& operator*() {
-      return this->val;
-    }
-    Iterator operator+(int) {
-      return *this;
-    }
+    int& operator*() { return this->val; }
+    Iterator operator+(int) { return *this; }
     explicit Iterator(int& val_in) : val{val_in} {}
     int& val;
   };
@@ -87,12 +83,8 @@ class TestBothIndexingAndIter {
     this->called_begin = true;
     return Iterator{val};
   }
-  auto end() {
-    return Iterator{val};
-  }
-  int& operator[](int) {
-    return this->val;
-  }
+  auto end() { return Iterator{val}; }
+  int& operator[](int) { return this->val; }
 
   int val{0};
   bool called_begin = false;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
+#include <folly/ssl/SSLSessionManager.h>
 
+#include <folly/portability/GTest.h>
 #include <folly/portability/OpenSSL.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
-#include <folly/ssl/SSLSessionManager.h>
 #include <folly/ssl/detail/OpenSSLSession.h>
 
 using folly::ssl::SSLSessionManager;
@@ -66,7 +66,7 @@ TEST(SSLSessionManagerTest, SetRawSesionTest) {
 
 TEST(SSLSessionManagerTest, GetFromSSLTest) {
   SSLSessionManager manager;
-  SSL_CTX* ctx = SSL_CTX_new(SSLv23_method());
+  SSL_CTX* ctx = SSL_CTX_new(TLS_method());
 
   SSL* ssl1 = SSL_new(ctx);
   EXPECT_EQ(nullptr, SSLSessionManager::getFromSSL(ssl1));

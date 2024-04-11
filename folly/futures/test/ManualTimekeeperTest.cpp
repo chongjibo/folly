@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
 
 #include <folly/futures/ManualTimekeeper.h>
 
-#include <folly/portability/GTest.h>
-
 #include <chrono>
+
+#include <folly/portability/GTest.h>
 
 using namespace std::literals;
 
@@ -89,4 +89,13 @@ TEST_F(ManualTimekeeperTest, AdvanceWithManyFutures) {
   EXPECT_TRUE(four.isReady());
 }
 
+TEST_F(ManualTimekeeperTest, Cancel) {
+  auto timekeeper = folly::ManualTimekeeper{};
+  auto future = timekeeper.after(100s);
+  future.cancel();
+  ASSERT_TRUE(future.isReady());
+  EXPECT_TRUE(future.result().hasException<FutureCancellation>());
+  timekeeper.advance(100s);
+  EXPECT_TRUE(future.result().hasException<FutureCancellation>());
+}
 } // namespace folly

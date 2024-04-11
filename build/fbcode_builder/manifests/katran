@@ -20,7 +20,6 @@ BUILD_TESTS=ON
 [cmake.defines.test=off]
 BUILD_TESTS=OFF
 
-
 [dependencies]
 folly
 fizz
@@ -28,7 +27,10 @@ libbpf
 libmnl
 zlib
 googletest
+fmt
 
+[debs]
+libssl-dev
 
 [shipit.pathmap]
 fbcode/katran/public_root = .

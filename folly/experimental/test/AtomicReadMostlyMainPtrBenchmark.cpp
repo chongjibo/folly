@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
 /*
  * Output:
 ============================================================================
-folly/experimental/test/AtomicReadMostlyMainPtrBenchmark.cpprelative  time/iter  iters/s
+AtomicReadMostlyMainPtrBenchmark.cpp            relative  time/iter  iters/s
 ============================================================================
 SingleThreadedLoads                                         14.36ns   69.65M
 SingleThreadedStores                                         5.88us  170.15K

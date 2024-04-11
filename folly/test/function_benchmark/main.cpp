@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-#include <folly/test/function_benchmark/benchmark_impl.h>
-#include <folly/test/function_benchmark/test_functions.h>
-
 #include <glog/logging.h>
 
 #include <folly/Benchmark.h>
 #include <folly/ScopeGuard.h>
 #include <folly/portability/GFlags.h>
+#include <folly/test/function_benchmark/benchmark_impl.h>
+#include <folly/test/function_benchmark/test_functions.h>
 
 using folly::makeGuard;
 

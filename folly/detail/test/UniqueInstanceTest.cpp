@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,40 +22,37 @@
 #include <folly/Traits.h>
 #include <folly/portability/GTest.h>
 
-struct Key1 {};
-struct Key2 {};
-struct TagA {};
-struct TagB {};
+struct Key1;
+struct Key2;
+struct TagA;
+struct TagB;
+
+template <typename...>
+struct Template0 {};
+template <typename...>
+struct Template1 {};
 
 namespace folly {
 namespace detail {
 
 class UniqueInstanceDeathTest : public testing::Test {};
 
-template <typename... Key, typename... Mapped>
-static void make(char const* tmpl, tag_t<Key...> key, tag_t<Mapped...> mapped) {
-  UniqueInstance _(tmpl, key, mapped);
-  std::ignore = _;
+template <template <typename...> class Z, typename... Key, typename... Mapped>
+static void make(tag_t<Key...> key, tag_t<Mapped...> mapped) {
+  std::ignore = UniqueInstance{tag<Z<Key..., Mapped...>>, key, mapped};
 }
 
 TEST_F(UniqueInstanceDeathTest, basic) {
-  constexpr auto const tname = "tname";
-  make(tname, tag_t<Key1, Key2>{}, tag_t<TagA, TagB>{});
-  make(tname, tag_t<Key1, Key2>{}, tag_t<TagA, TagB>{}); // same everything
-  make(tname, tag_t<Key2, Key1>{}, tag_t<TagA, TagB>{}); // different key
-  EXPECT_DEATH( // different name
-      make("wrong", tag_t<Key1, Key2>{}, tag_t<TagA, TagB>{}),
-      stripLeftMargin(R"MESSAGE(
-        Overloaded unique instance over <Key1, Key2, ...> with differing trailing arguments:
-          tname<Key1, Key2, TagA, TagB>
-          wrong<Key1, Key2, TagA, TagB>
-      )MESSAGE"));
+  make<Template0>(tag<Key1, Key2>, tag<TagA, TagB>);
+  make<Template0>(tag<Key1, Key2>, tag<TagA, TagB>); // same everything
+  make<Template1>(tag<Key1, Key2>, tag<TagA, TagB>); // different name
+  make<Template0>(tag<Key2, Key1>, tag<TagA, TagB>); // different key
   EXPECT_DEATH( // different mapped
-      make(tname, tag_t<Key1, Key2>{}, tag_t<TagB, TagA>{}),
+      make<Template0>(tag<Key1, Key2>, tag<TagB, TagA>),
       stripLeftMargin(R"MESSAGE(
         Overloaded unique instance over <Key1, Key2, ...> with differing trailing arguments:
-          tname<Key1, Key2, TagA, TagB>
-          tname<Key1, Key2, TagB, TagA>
+          Template0<Key1, Key2, TagA, TagB>
+          Template0<Key1, Key2, TagB, TagA>
       )MESSAGE"));
 }
 

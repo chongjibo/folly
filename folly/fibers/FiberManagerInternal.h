@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,6 +53,8 @@ namespace fibers {
 class Baton;
 class Fiber;
 
+struct TaskOptions;
+
 template <typename T>
 class LocalType {};
 
@@ -87,14 +89,18 @@ class FiberManager : public ::folly::Executor {
     size_t stackSize{kDefaultStackSize};
 
     /**
-     * Sanitizers need a lot of extra stack space. 16x is a conservative
-     * estimate, but 8x also worked with tests where it mattered. Similarly,
-     * debug builds need extra stack space due to reduced inlining.
+     * Sanitizers need a lot of extra stack space. Benchmarks results at
+     * https://www.usenix.org/system/files/conference/atc12/atc12-final39.pdf,
+     * table 2, show that average stack increase with ASAN is 10% and extreme is
+     * 306%. Setting to 400% as "works for majority of clients" setting. If
+     * stack data layout of the service leads to even higher ASAN memory
+     * overhead, those services can tune their fiber stack sizes further.
      *
-     * Note that over-allocating here does not necessarily increase RSS, since
-     * unused memory is pretty much free.
+     * Even in the absence of ASAN, debug builds still need extra stack space
+     * due to reduced inlining.
+     *
      */
-    size_t stackSizeMultiplier{kIsSanitize ? 16 : (kIsDebug ? 2 : 1)};
+    size_t stackSizeMultiplier{kIsSanitize ? 4 : (kIsDebug ? 2 : 1)};
 
     /**
      * Record exact amount of stack used.
@@ -156,7 +162,7 @@ class FiberManager : public ::folly::Executor {
   };
 
   using ExceptionCallback =
-      folly::Function<void(std::exception_ptr, std::string)>;
+      folly::Function<void(const std::exception_ptr&, StringPiece context)>;
 
   FiberManager(const FiberManager&) = delete;
   FiberManager& operator=(const FiberManager&) = delete;
@@ -164,7 +170,7 @@ class FiberManager : public ::folly::Executor {
   /**
    * Initializes, but doesn't start FiberManager loop
    *
-   * @param loopController
+   * @param loopController A LoopController object
    * @param options FiberManager options
    */
   explicit FiberManager(
@@ -174,7 +180,7 @@ class FiberManager : public ::folly::Executor {
   /**
    * Initializes, but doesn't start FiberManager loop
    *
-   * @param loopController
+   * @param loopController A LoopController object
    * @param options FiberManager options
    * @tparam LocalT only local of this type may be stored on fibers.
    *                Locals of other types will be considered thread-locals.
@@ -217,6 +223,7 @@ class FiberManager : public ::folly::Executor {
    * @return true if there are outstanding tasks.
    */
   bool hasTasks() const;
+  bool isRemoteScheduled() const;
 
   /**
    * @return The number of currently active fibers (ready to run or blocked).
@@ -224,7 +231,7 @@ class FiberManager : public ::folly::Executor {
    * run yet.
    */
   size_t numActiveTasks() const noexcept {
-    return fibersActive_;
+    return fibersActive_.load(std::memory_order_relaxed);
   }
 
   /**
@@ -236,7 +243,7 @@ class FiberManager : public ::folly::Executor {
    * Sets exception callback which will be called if any of the tasks throws an
    * exception.
    *
-   * @param ec
+   * @param ec An ExceptionCallback object.
    */
   void setExceptionCallback(ExceptionCallback ec);
 
@@ -245,9 +252,10 @@ class FiberManager : public ::folly::Executor {
    *
    * @param func Task functor; must have a signature of `void func()`.
    *             The object will be destroyed once task execution is complete.
+   * @param taskOptions Task specific configs.
    */
   template <typename F>
-  void addTask(F&& func);
+  void addTask(F&& func, TaskOptions taskOptions = TaskOptions());
 
   /**
    * Add a new task to be executed and return a future that will be set on
@@ -305,9 +313,7 @@ class FiberManager : public ::folly::Executor {
       -> folly::Future<folly::lift_unit_t<invoke_result_t<F>>>;
 
   // Executor interface calls addTaskRemote
-  void add(folly::Func f) override {
-    addTaskRemote(std::move(f));
-  }
+  void add(folly::Func f) override { addTaskRemote(std::move(f)); }
 
   /**
    * Add a new task. When the task is complete, execute finally(Try<Result>&&)
@@ -370,16 +376,22 @@ class FiberManager : public ::folly::Executor {
   size_t fibersPoolSize() const;
 
   /**
-   * return     true if running activeFiber_ is not nullptr.
+   * @return true if running activeFiber_ is not nullptr.
    */
   bool hasActiveFiber() const;
 
   /**
+   * @return How long has the currently running task on the fiber ran, in
+   * terms of wallclock time. This excludes the time spent in preempted or
+   * waiting stages. This only works if TaskOptions.logRunningTime is true
+   * during addTask().
+   */
+  folly::Optional<std::chrono::nanoseconds> getCurrentTaskRunningTime() const;
+
+  /**
    * @return The currently running fiber or null if no fiber is executing.
    */
-  Fiber* currentFiber() const {
-    return currentFiber_;
-  }
+  Fiber* currentFiber() const { return currentFiber_; }
 
   /**
    * @return What was the most observed fiber stack usage (in bytes).
@@ -400,13 +412,15 @@ class FiberManager : public ::folly::Executor {
    *
    * @param observer  Fiber's execution observer.
    */
-  void setObserver(ExecutionObserver* observer);
+  void addObserver(ExecutionObserver* observer);
+
+  void removeObserver(ExecutionObserver* observer);
 
   /**
    * @return Current observer for this FiberManager. Returns nullptr
    * if no observer has been set.
    */
-  ExecutionObserver* getObserver();
+  ExecutionObserver::List& getObserverList();
 
   /**
    * Setup fibers preempt runner.
@@ -424,9 +438,7 @@ class FiberManager : public ::folly::Executor {
   static FiberManager& getFiberManager();
   static FiberManager* getFiberManagerUnsafe();
 
-  const Options& getOptions() const {
-    return options_;
-  }
+  const Options& getOptions() const { return options_; }
 
  private:
   friend class Baton;
@@ -451,8 +463,11 @@ class FiberManager : public ::folly::Executor {
     AtomicIntrusiveLinkedListHook<RemoteTask> nextRemoteTask;
   };
 
+  static void defaultExceptionCallback(
+      const std::exception_ptr& eptr, StringPiece context);
+
   template <typename F>
-  Fiber* createTask(F&& func);
+  Fiber* createTask(F&& func, TaskOptions taskOptions);
 
   template <typename F, typename G>
   Fiber* createTaskFinally(F&& func, G&& finally);
@@ -464,6 +479,8 @@ class FiberManager : public ::folly::Executor {
 
   template <typename LoopFunc>
   void runFibersHelper(LoopFunc&& loopFunc);
+
+  size_t recordStackPosition(size_t position);
 
   typedef folly::IntrusiveList<Fiber, &Fiber::listHook_> FiberTailQueue;
   typedef folly::IntrusiveList<Fiber, &Fiber::globalListHook_>
@@ -483,9 +500,12 @@ class FiberManager : public ::folly::Executor {
 
   GlobalFiberTailQueue allFibers_; /**< list of all Fiber objects owned */
 
-  size_t fibersAllocated_{0}; /**< total number of fibers allocated */
-  size_t fibersPoolSize_{0}; /**< total number of fibers in the free pool */
-  size_t fibersActive_{0}; /**< number of running or blocked fibers */
+  // total number of fibers allocated
+  std::atomic<size_t> fibersAllocated_{0};
+  // total number of fibers in the free pool
+  std::atomic<size_t> fibersPoolSize_{0};
+  std::atomic<size_t> fibersActive_{
+      0}; /**< number of running or blocked fibers */
   size_t fiberId_{0}; /**< id of last fiber used */
 
   /**
@@ -514,7 +534,7 @@ class FiberManager : public ::folly::Executor {
   /**
    * Largest observed individual Fiber stack usage in bytes.
    */
-  size_t stackHighWatermark_{0};
+  std::atomic<size_t> stackHighWatermark_{0};
 
   /**
    * Schedules a loop with loopController (unless already scheduled before).
@@ -549,7 +569,7 @@ class FiberManager : public ::folly::Executor {
   /**
    * Fiber's execution observer.
    */
-  ExecutionObserver* observer_{nullptr};
+  ExecutionObserver::List observerList_{};
 
   ExceptionCallback exceptionCallback_; /**< task exception callback */
 
@@ -577,10 +597,8 @@ class FiberManager : public ::folly::Executor {
 
    private:
     FiberManager& fiberManager_;
-    void timeoutExpired() noexcept {
-      run();
-    }
-    void callbackCanceled() noexcept {}
+    void timeoutExpired() noexcept override { run(); }
+    void callbackCanceled() noexcept override {}
   };
 
   FibersPoolResizer fibersPoolResizer_;
@@ -596,29 +614,18 @@ class FiberManager : public ::folly::Executor {
   void runReadyFiber(Fiber* fiber);
   void remoteReadyInsert(Fiber* fiber);
 
-#ifdef FOLLY_SANITIZE_ADDRESS
-
   // These methods notify ASAN when a fiber is entered/exited so that ASAN can
   // find the right stack extents when it needs to poison/unpoison the stack.
-
   void registerStartSwitchStackWithAsan(
-      void** saveFakeStack,
-      const void* stackBase,
-      size_t stackSize);
+      void** saveFakeStack, const void* stackBase, size_t stackSize);
   void registerFinishSwitchStackWithAsan(
-      void* fakeStack,
-      const void** saveStackBase,
-      size_t* saveStackSize);
+      void* fakeStack, const void** saveStackBase, size_t* saveStackSize);
   void freeFakeStack(void* fakeStack);
   void unpoisonFiberStack(const Fiber* fiber);
 
-#endif // FOLLY_SANITIZE_ADDRESS
-
-#ifndef _WIN32
   bool alternateSignalStackRegistered_{false};
 
-  void registerAlternateSignalStack();
-#endif
+  void maybeRegisterAlternateSignalStack();
 };
 
 /**
@@ -676,7 +683,13 @@ inline void addTaskFinallyEager(F&& func, G&& finally) {
  * @return data which was used to fulfill the promise.
  */
 template <typename F>
-typename FirstArgOf<F>::type::value_type inline await(F&& func);
+typename FirstArgOf<F>::type::value_type inline await_async(F&& func);
+#if !defined(_MSC_VER)
+template <typename F>
+FOLLY_ERASE typename FirstArgOf<F>::type::value_type await(F&& func) {
+  return await_async(static_cast<F&&>(func));
+}
+#endif
 
 /**
  * If called from a fiber, immediately switches to the FiberManager's context

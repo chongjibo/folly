@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,10 +19,10 @@
 #endif
 
 #include <folly/String.h>
-#include <tuple>
 
 #include <cinttypes>
 #include <set>
+#include <tuple>
 
 #include <boost/regex.hpp>
 #include <glog/logging.h>
@@ -78,14 +78,10 @@ TEST(StringPrintf, Appending) {
 void vprintfCheck(const char* expected, const char* fmt, ...) {
   va_list apOrig;
   va_start(apOrig, fmt);
-  SCOPE_EXIT {
-    va_end(apOrig);
-  };
+  SCOPE_EXIT { va_end(apOrig); };
   va_list ap;
   va_copy(ap, apOrig);
-  SCOPE_EXIT {
-    va_end(ap);
-  };
+  SCOPE_EXIT { va_end(ap); };
 
   // Check both APIs for calling stringVPrintf()
   EXPECT_EQ(expected, stringVPrintf(fmt, ap));
@@ -109,9 +105,7 @@ void vprintfCheck(const char* expected, const char* fmt, ...) {
 void vprintfError(const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SCOPE_EXIT {
-    va_end(ap);
-  };
+  SCOPE_EXIT { va_end(ap); };
 
 #ifdef HAVE_VSNPRINTF_ERRORS
   // OSX's sprintf family does not return a negative number on a bad format
@@ -236,6 +230,18 @@ TEST(Escape, uriUnescape) {
   EXPECT_THROW({ uriUnescape<std::string>("hello%2"); }, std::invalid_argument);
   EXPECT_THROW(
       { uriUnescape<std::string>("hello%2g"); }, std::invalid_argument);
+}
+
+TEST(Escape, tryUriUnescape) {
+  EXPECT_EQ(
+      "hello, /world",
+      tryUriUnescape<std::string>("hello, /world").value_or(""));
+  EXPECT_EQ(
+      "hello, /world",
+      tryUriUnescape<std::string>("hello%2c+%2fworld", UriEscapeMode::QUERY)
+          .value_or(""));
+  EXPECT_FALSE(tryUriUnescape<std::string>("hello%").hasValue());
+  EXPECT_FALSE(tryUriUnescape<std::string>("hello%2g").hasValue());
 }
 
 namespace {
@@ -679,10 +685,10 @@ void splitTest() {
   EXPECT_EQ(parts[3], "");
 }
 
-template <template <class, class> class VectorType>
+template <class Str, template <class, class> class VectorType>
 void piecesTest() {
-  VectorType<StringPiece, std::allocator<StringPiece>> pieces;
-  VectorType<StringPiece, std::allocator<StringPiece>> pieces2;
+  VectorType<Str, std::allocator<Str>> pieces;
+  VectorType<Str, std::allocator<Str>> pieces2;
 
   folly::split(',', "a,b,c", pieces);
   EXPECT_EQ(pieces.size(), 3);
@@ -805,15 +811,15 @@ void piecesTest() {
   pieces.clear();
 
   const char* str = "a,b";
-  folly::split(',', StringPiece(str), pieces);
+  folly::split(',', Str(str), pieces);
   EXPECT_EQ(pieces.size(), 2);
   EXPECT_EQ(pieces[0], "a");
   EXPECT_EQ(pieces[1], "b");
-  EXPECT_EQ(pieces[0].start(), str);
-  EXPECT_EQ(pieces[1].start(), str + 2);
+  EXPECT_EQ(pieces[0].begin(), str);
+  EXPECT_EQ(pieces[1].begin(), str + 2);
 
-  std::set<StringPiece> unique;
-  folly::splitTo<StringPiece>(
+  std::set<Str> unique;
+  folly::splitTo<Str>(
       ":",
       "asd:bsd:asd:asd:bsd:csd::asd",
       std::inserter(unique, unique.begin()),
@@ -831,17 +837,24 @@ void piecesTest() {
 
 } // namespace
 
-TEST(Split, split_vector) {
+TEST(Split, splitVector) {
   splitTest<std::vector>();
 }
-TEST(Split, split_fbvector) {
+TEST(Split, splitFbvector) {
   splitTest<folly::fbvector>();
 }
-TEST(Split, pieces_vector) {
-  piecesTest<std::vector>();
+
+TEST(Split, piecesVector) {
+  piecesTest<StringPiece, std::vector>();
 }
-TEST(Split, pieces_fbvector) {
-  piecesTest<folly::fbvector>();
+TEST(Split, piecesFbvector) {
+  piecesTest<StringPiece, folly::fbvector>();
+}
+TEST(Split, viewVector) {
+  piecesTest<std::string_view, std::vector>();
+}
+TEST(Split, viewFbvector) {
+  piecesTest<std::string_view, folly::fbvector>();
 }
 
 TEST(Split, fixed) {
@@ -887,7 +900,7 @@ TEST(Split, fixed) {
   EXPECT_FALSE(folly::split('.', "a.b", a));
 }
 
-TEST(Split, std_string_fixed) {
+TEST(Split, stdStringFixed) {
   std::string a, b, c, d;
 
   EXPECT_TRUE(folly::split<false>('.', "a.b.c.d", a, b, c, d));
@@ -930,7 +943,7 @@ TEST(Split, std_string_fixed) {
   EXPECT_FALSE(folly::split('.', "a.b", a));
 }
 
-TEST(Split, fixed_convert) {
+TEST(Split, fixedConvert) {
   StringPiece a, d;
   int b;
   double c = 0;
@@ -995,8 +1008,7 @@ ColorError makeConversionError(ColorErrorCode, StringPiece sp) {
 }
 
 Expected<StringPiece, ColorErrorCode> parseTo(
-    StringPiece in,
-    Color& out) noexcept {
+    StringPiece in, Color& out) noexcept {
   if (in == "R") {
     out = Color::Red;
   } else if (in == "B") {
@@ -1008,7 +1020,7 @@ Expected<StringPiece, ColorErrorCode> parseTo(
 }
 } // namespace my
 
-TEST(Split, fixed_convert_custom) {
+TEST(Split, fixedConvertCustom) {
   my::Color c1, c2;
 
   EXPECT_TRUE(folly::split(',', "R,B", c1, c2));
@@ -1278,20 +1290,20 @@ TEST(String, trim) {
   EXPECT_EQ("aakavabang", rtrim("aakavabangaa", removeA));
 }
 
-TEST(String, stripLeftMargin_really_empty) {
+TEST(String, stripLeftMarginReallyEmpty) {
   auto input = "";
   auto expected = "";
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_empty) {
+TEST(String, stripLeftMarginEmpty) {
   auto input = R"TEXT(
   )TEXT";
   auto expected = "";
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_only_whitespace) {
+TEST(String, stripLeftMarginOnlyWhitespace) {
   //  using ~ as a marker
   string input = R"TEXT(
     ~
@@ -1302,7 +1314,7 @@ TEST(String, stripLeftMargin_only_whitespace) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_only_uneven_whitespace) {
+TEST(String, stripLeftMarginOnlyUnevenWhitespace) {
   //  using ~ as a marker1
   string input = R"TEXT(
     ~
@@ -1315,7 +1327,7 @@ TEST(String, stripLeftMargin_only_uneven_whitespace) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_one_line) {
+TEST(String, stripLeftMarginOneLine) {
   auto input = R"TEXT(
     hi there bob!
   )TEXT";
@@ -1323,7 +1335,7 @@ TEST(String, stripLeftMargin_one_line) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_two_lines) {
+TEST(String, stripLeftMarginTwoLines) {
   auto input = R"TEXT(
     hi there bob!
     nice weather today!
@@ -1332,7 +1344,7 @@ TEST(String, stripLeftMargin_two_lines) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_three_lines_uneven) {
+TEST(String, stripLeftMarginThreeLinesUneven) {
   auto input = R"TEXT(
       hi there bob!
     nice weather today!
@@ -1342,7 +1354,7 @@ TEST(String, stripLeftMargin_three_lines_uneven) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_preceding_blank_lines) {
+TEST(String, stripLeftMarginPrecedingBlankLines) {
   auto input = R"TEXT(
 
 
@@ -1352,7 +1364,7 @@ TEST(String, stripLeftMargin_preceding_blank_lines) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_succeeding_blank_lines) {
+TEST(String, stripLeftMarginSucceedingBlankLines) {
   auto input = R"TEXT(
     hi there bob!
 
@@ -1362,7 +1374,7 @@ TEST(String, stripLeftMargin_succeeding_blank_lines) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_interstitial_undented_whiteline) {
+TEST(String, stripLeftMarginInterstitialUndentedWhiteline) {
   //  using ~ as a marker
   string input = R"TEXT(
       hi there bob!
@@ -1375,7 +1387,7 @@ TEST(String, stripLeftMargin_interstitial_undented_whiteline) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_interstitial_dedented_whiteline) {
+TEST(String, stripLeftMarginInterstitialDedentedWhiteline) {
   //  using ~ as a marker
   string input = R"TEXT(
       hi there bob!
@@ -1388,7 +1400,7 @@ TEST(String, stripLeftMargin_interstitial_dedented_whiteline) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_interstitial_equidented_whiteline) {
+TEST(String, stripLeftMarginInterstitialEquidentedWhiteline) {
   //  using ~ as a marker
   string input = R"TEXT(
       hi there bob!
@@ -1401,7 +1413,7 @@ TEST(String, stripLeftMargin_interstitial_equidented_whiteline) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_interstitial_indented_whiteline) {
+TEST(String, stripLeftMarginInterstitialIndentedWhiteline) {
   //  using ~ as a marker
   string input = R"TEXT(
       hi there bob!
@@ -1414,7 +1426,7 @@ TEST(String, stripLeftMargin_interstitial_indented_whiteline) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_no_pre_whitespace) {
+TEST(String, stripLeftMarginNoPreWhitespace) {
   //  using ~ as a marker
   string input = R"TEXT(      hi there bob!
         ~
@@ -1426,7 +1438,7 @@ TEST(String, stripLeftMargin_no_pre_whitespace) {
   EXPECT_EQ(expected, stripLeftMargin(input));
 }
 
-TEST(String, stripLeftMargin_no_post_whitespace) {
+TEST(String, stripLeftMarginNoPostWhitespace) {
   //  using ~ as a marker
   string input = R"TEXT(
       hi there bob!
@@ -1436,4 +1448,15 @@ TEST(String, stripLeftMargin_no_post_whitespace) {
   EXPECT_EQ("\n      hi there bob!\n        \n      so long!  ", input);
   auto expected = "hi there bob!\n  \nso long!  ";
   EXPECT_EQ(expected, stripLeftMargin(input));
+}
+
+TEST(String, hasSpaceOrCntrlSymbolsTest) {
+  // tested through implementation tests and fuzzers.
+  ASSERT_TRUE(hasSpaceOrCntrlSymbols("a  3"));
+  ASSERT_FALSE(hasSpaceOrCntrlSymbols("abc3"));
+
+  std::string hasCntrl = "abc";
+  hasCntrl[0] = 1;
+  ASSERT_TRUE(std::iscntrl(1));
+  ASSERT_TRUE(hasSpaceOrCntrlSymbols(hasCntrl));
 }

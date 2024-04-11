@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,6 @@
 
 #include <folly/Function.h>
 #include <folly/Likely.h>
-
 #include <folly/fibers/FiberManager.h>
 #include <folly/fibers/LoopController.h>
 
@@ -46,7 +45,7 @@ class SimpleLoopController : public LoopController {
     bool waiting = false;
     stopRequested_ = false;
 
-    while (LIKELY(waiting || !stopRequested_)) {
+    while (FOLLY_LIKELY(waiting || !stopRequested_)) {
       func();
       runTimeouts();
       if (scheduled_) {
@@ -62,15 +61,12 @@ class SimpleLoopController : public LoopController {
   /**
    * Requests exit from loop() as soon as all waiting tasks complete.
    */
-  void stop() {
-    stopRequested_ = true;
-  }
+  void stop() { stopRequested_ = true; }
 
-  int remoteScheduleCalled() const {
-    return remoteScheduleCalled_;
-  }
+  int remoteScheduleCalled() const { return remoteScheduleCalled_; }
 
   void runLoop() override {
+    runLoopThread_.store(std::this_thread::get_id(), std::memory_order_release);
     do {
       if (remoteLoopRun_ < remoteScheduleCalled_) {
         for (; remoteLoopRun_ < remoteScheduleCalled_; ++remoteLoopRun_) {
@@ -82,23 +78,22 @@ class SimpleLoopController : public LoopController {
         fm_->loopUntilNoReadyImpl();
       }
     } while (remoteLoopRun_ < remoteScheduleCalled_);
+    runLoopThread_.store({}, std::memory_order_release);
   }
 
-  void runEagerFiber(Fiber* fiber) override {
-    fm_->runEagerFiberImpl(fiber);
-  }
+  void runEagerFiber(Fiber* fiber) override { fm_->runEagerFiberImpl(fiber); }
 
-  void schedule() override {
-    scheduled_ = true;
-  }
+  void schedule() override { scheduled_ = true; }
 
-  HHWheelTimer* timer() override {
-    return timer_.get();
-  }
+  HHWheelTimer* timer() override { return timer_.get(); }
 
-  bool isInLoopThread() const {
-    auto tid = loopThread_.load(std::memory_order_relaxed);
-    return tid == std::thread::id() || tid == std::this_thread::get_id();
+  bool isInLoopThread() override {
+    // One of the two will be set depending on how FiberManager is being looped
+    // in tests.
+    auto loopThread = loopThread_.load(std::memory_order_relaxed);
+    auto runInLoopThread = runLoopThread_.load(std::memory_order_relaxed);
+    auto thisThread = std::this_thread::get_id();
+    return loopThread == thisThread || runInLoopThread == thisThread;
   }
 
  private:
@@ -108,6 +103,7 @@ class SimpleLoopController : public LoopController {
   std::atomic<int> remoteScheduleCalled_{0};
   int remoteLoopRun_{0};
   std::atomic<std::thread::id> loopThread_;
+  std::atomic<std::thread::id> runLoopThread_;
 
   class SimpleTimeoutManager;
   std::unique_ptr<SimpleTimeoutManager> timeoutManager_;
@@ -115,9 +111,7 @@ class SimpleLoopController : public LoopController {
 
   /* LoopController interface */
 
-  void setFiberManager(FiberManager* fm) override {
-    fm_ = fm;
-  }
+  void setFiberManager(FiberManager* fm) override { fm_ = fm; }
 
   void scheduleThreadSafe() override {
     ++remoteScheduleCalled_;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,6 @@
 
 namespace folly {
 namespace coro {
-
-namespace invoke_detail {
-void folly_co_invoke(folly::detail::invoke_private_overload&);
-}
 
 //  co_invoke
 //
@@ -77,24 +73,27 @@ void folly_co_invoke(folly::detail::invoke_private_overload&);
 //      auto task = co_invoke([](string n) -> Task<T> {
 //        co_return co_await make<T>(n);
 //      }, std::move(name)); // passed as &&
-struct co_invoke_type {
+struct co_invoke_fn {
   template <typename F, typename... A>
   FOLLY_ERASE constexpr auto operator()(F&& f, A&&... a) const
-      noexcept(noexcept(folly_co_invoke(
+      noexcept(noexcept(tag_invoke(
+          tag<co_invoke_fn>,
           tag<invoke_result_t<F, A...>, F, A...>,
           static_cast<F&&>(f),
           static_cast<A&&>(a)...)))
-          -> decltype(folly_co_invoke(
+          -> decltype(tag_invoke(
+              tag<co_invoke_fn>,
               tag<invoke_result_t<F, A...>, F, A...>,
               static_cast<F&&>(f),
               static_cast<A&&>(a)...)) {
-    return folly_co_invoke(
+    return tag_invoke(
+        tag<co_invoke_fn>,
         tag<invoke_result_t<F, A...>, F, A...>,
         static_cast<F&&>(f),
         static_cast<A&&>(a)...);
   }
 };
-FOLLY_DEFINE_CPO(co_invoke_type, co_invoke)
+FOLLY_DEFINE_CPO(co_invoke_fn, co_invoke)
 
 } // namespace coro
 } // namespace folly

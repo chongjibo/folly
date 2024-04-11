@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ TEST(TestAutoTimer, HandleBasicClosure) {
   timer.log("foo");
   ASSERT_EQ("foo", StubLogger::m);
   ASSERT_EQ(2, StubLogger::t);
-  timer.logFormat("bar {}", 5e-2);
+  timer.logFormat(fmt::runtime("bar {}"), 5e-2);
   ASSERT_EQ("bar 0.05", StubLogger::m);
   ASSERT_EQ(0, StubLogger::t);
 }
@@ -70,7 +70,7 @@ TEST(TestAutoTimer, HandleBasic) {
   timer.log("foo");
   ASSERT_EQ("foo", StubLogger::m);
   ASSERT_EQ(2, StubLogger::t);
-  timer.logFormat("bar {}", 5e-2);
+  timer.logFormat(fmt::runtime("bar {}"), 5e-2);
   ASSERT_EQ("bar 0.05", StubLogger::m);
   ASSERT_EQ(0, StubLogger::t);
 }
@@ -120,9 +120,7 @@ TEST(TestAutoTimer, MovedObjectDestructionDoesntLog) {
   const std::vector<std::string> expectedMsgs = {
       "BEFORE_MOVE", "AFTER_MOVE", "END"};
   int32_t current = 0;
-  SCOPE_EXIT {
-    EXPECT_EQ(3, current);
-  };
+  SCOPE_EXIT { EXPECT_EQ(3, current); };
 
   auto timer = [&expectedMsgs, &current] {
     auto oldTimer = folly::makeAutoTimer(

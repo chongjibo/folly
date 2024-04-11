@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,17 @@
  */
 
 #include <folly/hash/Checksum.h>
-#include <boost/crc.hpp>
-#include <folly/CpuId.h>
-#include <folly/hash/detail/ChecksumDetail.h>
+
 #include <algorithm>
 #include <stdexcept>
+
+#include <boost/crc.hpp>
+
+#include <folly/CpuId.h>
+#include <folly/detail/TrapOnAvx512.h>
+#include <folly/external/fast-crc32/avx512_crc32c_v8s3x4.h> // @manual
+#include <folly/external/fast-crc32/sse_crc32c_v8s3x3.h> // @manual
+#include <folly/hash/detail/ChecksumDetail.h>
 
 #if FOLLY_SSE_PREREQ(4, 2)
 #include <emmintrin.h>
@@ -30,16 +36,16 @@ namespace folly {
 
 namespace detail {
 
-uint32_t
-crc32c_sw(const uint8_t* data, size_t nbytes, uint32_t startingChecksum);
+uint32_t crc32c_sw(
+    const uint8_t* data, size_t nbytes, uint32_t startingChecksum);
 #if FOLLY_SSE_PREREQ(4, 2)
 
-uint32_t
-crc32_sw(const uint8_t* data, size_t nbytes, uint32_t startingChecksum);
+uint32_t crc32_sw(
+    const uint8_t* data, size_t nbytes, uint32_t startingChecksum);
 
 // Fast SIMD implementation of CRC-32 for x86 with pclmul
-uint32_t
-crc32_hw(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
+uint32_t crc32_hw(
+    const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
   uint32_t sum = startingChecksum;
   size_t offset = 0;
 
@@ -58,12 +64,21 @@ crc32_hw(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
   }
 
   // Remaining unaligned bytes
+  if (nbytes == 0) {
+    return sum;
+  }
   return crc32_sw(data + offset, nbytes, sum);
 }
 
 bool crc32c_hw_supported() {
   static folly::CpuId id;
   return id.sse42();
+}
+
+bool crc32c_hw_supported_avx512() {
+  static folly::CpuId id;
+  static bool supported = id.avx512vl() && !detail::hasTrapOnAvx512();
+  return supported;
 }
 
 bool crc32_hw_supported() {
@@ -81,6 +96,10 @@ uint32_t crc32_hw(
 }
 
 bool crc32c_hw_supported() {
+  return false;
+}
+
+bool crc32c_hw_supported_avx512() {
   return false;
 }
 
@@ -111,14 +130,14 @@ uint32_t crc_sw(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
   return sum.checksum();
 }
 
-uint32_t
-crc32c_sw(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
+uint32_t crc32c_sw(
+    const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
   constexpr uint32_t CRC32C_POLYNOMIAL = 0x1EDC6F41;
   return crc_sw<CRC32C_POLYNOMIAL>(data, nbytes, startingChecksum);
 }
 
-uint32_t
-crc32_sw(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
+uint32_t crc32_sw(
+    const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
   constexpr uint32_t CRC32_POLYNOMIAL = 0x04C11DB7;
   return crc_sw<CRC32_POLYNOMIAL>(data, nbytes, startingChecksum);
 }
@@ -126,7 +145,18 @@ crc32_sw(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
 } // namespace detail
 
 uint32_t crc32c(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
+#if defined(FOLLY_ENABLE_AVX512_CRC32C_V8S3X4)
+  if (detail::crc32c_hw_supported_avx512() && nbytes > 4096) {
+    return detail::avx512_crc32c_v8s3x4(data, nbytes, startingChecksum);
+  }
+#endif
+
   if (detail::crc32c_hw_supported()) {
+#if defined(FOLLY_ENABLE_SSE42_CRC32C_V8S3X3)
+    if (nbytes > 4096) {
+      return detail::sse_crc32c_v8s3x3(data, nbytes, startingChecksum);
+    }
+#endif
     return detail::crc32c_hw(data, nbytes, startingChecksum);
   } else {
     return detail::crc32c_sw(data, nbytes, startingChecksum);
@@ -141,8 +171,8 @@ uint32_t crc32(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
   }
 }
 
-uint32_t
-crc32_type(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
+uint32_t crc32_type(
+    const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
   return ~crc32(data, nbytes, startingChecksum);
 }
 

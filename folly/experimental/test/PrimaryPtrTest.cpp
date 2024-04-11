@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -99,9 +99,7 @@ struct Primed : folly::Cleanup, folly::EnablePrimaryFromThis<Primed> {
         folly::makeSemiFuture().defer([this](auto&&) { this->pool_.join(); }));
   }
   using folly::Cleanup::addCleanup;
-  std::shared_ptr<Primed> get_shared() {
-    return masterLockFromThis();
-  }
+  std::shared_ptr<Primed> get_shared() { return masterLockFromThis(); }
 };
 
 TEST(PrimaryPtrTest, BasicCleanup) {
@@ -268,4 +266,38 @@ TEST(PrimaryPtrTest, EnablePrimaryFromThis) {
       std::future_status::ready);
 
   EXPECT_TRUE(!primaryPtr);
+}
+
+TEST(PrimaryPtrTest, Moves) {
+  folly::PrimaryPtr<int> a{std::make_unique<int>(42)};
+  folly::PrimaryPtr<int> b{std::make_unique<int>(0)};
+  folly::PrimaryPtr<int> c = exchange(a, std::move(b));
+
+  EXPECT_EQ(*c.lock(), 42);
+  EXPECT_EQ(*a.lock(), 0);
+  EXPECT_FALSE((bool)b);
+
+  swap(c, a);
+  EXPECT_EQ(*c.lock(), 0);
+  EXPECT_EQ(*a.lock(), 42);
+
+  a.join();
+  b.join();
+  c.join();
+}
+
+TEST(PrimaryPtrTest, DefaultConstructPtrRef) {
+  auto ptr = std::make_unique<Primed>();
+  auto primaryPtr = folly::PrimaryPtr<Primed>{std::move(ptr)};
+
+  folly::PrimaryPtrRef<Primed> primaryPtrRef;
+  EXPECT_FALSE((bool)primaryPtrRef.lock());
+
+  primaryPtrRef = primaryPtr.ref();
+  EXPECT_TRUE((bool)primaryPtrRef.lock());
+  EXPECT_EQ(primaryPtrRef.lock(), primaryPtr.lock());
+
+  primaryPtr.join();
+  EXPECT_FALSE((bool)primaryPtr);
+  EXPECT_EQ(primaryPtrRef.lock().get(), nullptr);
 }

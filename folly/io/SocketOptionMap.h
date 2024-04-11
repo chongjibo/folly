@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 
 #pragma once
 
+#include <map>
+
+#include <folly/io/SocketOptionValue.h>
 #include <folly/net/NetworkSocket.h>
 #include <folly/portability/Sockets.h>
-
-#include <map>
 
 namespace folly {
 
@@ -32,24 +33,32 @@ class SocketOptionKey {
  public:
   enum class ApplyPos { POST_BIND = 0, PRE_BIND = 1 };
 
-  bool operator<(const SocketOptionKey& other) const {
-    if (level == other.level) {
-      return optname < other.optname;
+  friend bool operator<(
+      const SocketOptionKey& lhs, const SocketOptionKey& rhs) {
+    if (lhs.level == rhs.level) {
+      return lhs.optname < rhs.optname;
     }
-    return level < other.level;
+    return lhs.level < rhs.level;
   }
 
-  int apply(NetworkSocket fd, int val) const;
+  friend bool operator==(
+      const SocketOptionKey& lhs, const SocketOptionKey& rhs) {
+    return lhs.level == rhs.level && lhs.optname == rhs.optname;
+  }
+
+  int apply(NetworkSocket fd, const SocketOptionValue& val) const;
 
   int level;
   int optname;
   ApplyPos applyPos_{ApplyPos::POST_BIND};
 };
 
-// Maps from a socket option key to its value
-using SocketOptionMap = std::map<SocketOptionKey, int>;
+using SocketOptionMap = std::map<SocketOptionKey, SocketOptionValue>;
 
 extern const SocketOptionMap emptySocketOptionMap;
+
+using SocketCmsgMap = std::map<SocketOptionKey, int>;
+using SocketNontrivialCmsgMap = std::map<SocketOptionKey, std::string>;
 
 int applySocketOptions(
     NetworkSocket fd,

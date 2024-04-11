@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ using folly::AsyncUDPServerSocket;
 using folly::AsyncUDPSocket;
 using folly::EventBase;
 using folly::IOBuf;
+using namespace std::chrono_literals;
 using namespace testing;
 
 struct TestData {
@@ -52,12 +53,12 @@ struct TestData {
   }
 
   TestData(
-      const std::vector<int>& gsoVec,
+      const std::vector<folly::AsyncUDPSocket::WriteOptions>& optionsVec,
       bool useSocketGSO,
       const std::vector<std::vector<int>>& in,
       const int* expected,
       size_t expectedLen)
-      : gsoVec_(gsoVec), useSocketGSO_(useSocketGSO), in_(in) {
+      : optionsVec_(optionsVec), useSocketGSO_(useSocketGSO), in_(in) {
     expected_.assign(expected, expected + expectedLen);
 
     expectedSize_ = std::accumulate(expected_.begin(), expected_.end(), 0);
@@ -91,12 +92,10 @@ struct TestData {
     return (outSize_ >= expectedSize_);
   }
 
-  bool isMulti() const {
-    return (in_.size() > 1);
-  }
+  bool isMulti() const { return (in_.size() > 1); }
 
-  const int* getGSOVec() const {
-    return (!gsoVec_.empty()) ? gsoVec_.data() : nullptr;
+  const folly::AsyncUDPSocket::WriteOptions* getOptionsVec() const {
+    return (!optionsVec_.empty()) ? optionsVec_.data() : nullptr;
   }
 
   std::unique_ptr<folly::IOBuf> getInBuf() {
@@ -143,7 +142,7 @@ struct TestData {
   }
 
   int gso_{0};
-  std::vector<int> gsoVec_;
+  std::vector<folly::AsyncUDPSocket::WriteOptions> optionsVec_;
   bool useSocketGSO_{false};
   std::vector<std::vector<int>> in_;
   std::vector<int> expected_; // expected
@@ -167,13 +166,13 @@ class UDPAcceptor : public AsyncUDPServerSocket::Callback {
       bool /*unused*/,
       OnDataAvailableParams params) noexcept override {
     // send pong(s)
-    if (params.gro_ == -1) {
+    if (params.gro == -1) {
       socket->write(client, data->clone());
     } else {
       int total = data->length();
       size_t offset = 0;
       while (total > 0) {
-        auto size = (total > params.gro_) ? params.gro_ : total;
+        auto size = (total > params.gro) ? params.gro : total;
         auto sendData = IOBuf::copyBuffer(data->data() + offset, size);
         offset += size;
         total -= size;
@@ -226,9 +225,7 @@ class UDPServer {
     socket_->listen();
   }
 
-  folly::SocketAddress address() const {
-    return socket_->address();
-  }
+  folly::SocketAddress address() const { return socket_->address(); }
 
   void shutdown() {
     CHECK(evb_->isInEventBaseThread());
@@ -244,13 +241,9 @@ class UDPServer {
     }
   }
 
-  void pauseAccepting() {
-    socket_->pauseAccepting();
-  }
+  void pauseAccepting() { socket_->pauseAccepting(); }
 
-  void resumeAccepting() {
-    socket_->resumeAccepting();
-  }
+  void resumeAccepting() { socket_->resumeAccepting(); }
 
  private:
   EventBase* const evb_{nullptr};
@@ -316,9 +309,11 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
   }
 
   void sendPing() {
-    scheduleTimeout(5);
+    // this should ensure the test finishes
+    // even if the server does not reply
+    scheduleTimeout(5s);
     if (testData_.isMulti()) {
-      writePing(testData_.getInBufs(), testData_.getGSOVec());
+      writePing(testData_.getInBufs(), testData_.getOptionsVec());
     } else {
       writePing(
           testData_.getInBuf(), testData_.useSocketGSO_ ? -1 : testData_.gso_);
@@ -326,14 +321,18 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
   }
 
   virtual void writePing(std::unique_ptr<folly::IOBuf> buf, int gso) {
-    socket_->writeGSO(server_, std::move(buf), gso);
+    socket_->writeGSO(
+        server_,
+        std::move(buf),
+        folly::AsyncUDPSocket::WriteOptions(
+            gso /*gsoVal*/, false /* zerocopyVal*/));
   }
 
   virtual void writePing(
       const std::vector<std::unique_ptr<folly::IOBuf>>& vec,
-      const int* gso) {
+      const folly::AsyncUDPSocket::WriteOptions* options) {
     socket_->writemGSO(
-        folly::range(&server_, &server_ + 1), vec.data(), vec.size(), gso);
+        folly::range(&server_, &server_ + 1), vec.data(), vec.size(), options);
   }
 
   void getReadBuffer(void** buf, size_t* len) noexcept override {
@@ -347,7 +346,7 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
       bool /*unused*/,
       OnDataAvailableParams params) noexcept override {
     // no GRO on the client side
-    CHECK_EQ(params.gro_, -1);
+    CHECK_EQ(params.gro, -1);
     VLOG(0) << "Got " << len << " bytes";
     if (testData_.appendOut(len)) {
       shutdown();
@@ -370,9 +369,7 @@ class UDPClient : private AsyncUDPSocket::ReadCallback, private AsyncTimeout {
     shutdown();
   }
 
-  AsyncUDPSocket& getSocket() {
-    return *socket_;
-  }
+  AsyncUDPSocket& getSocket() { return *socket_; }
 
   void setShouldConnect(const folly::SocketAddress& connectAddr) {
     connectAddr_ = connectAddr;
@@ -492,20 +489,21 @@ TEST_F(AsyncSocketGSOIntegrationTest, PingPongRequestGSO) {
 }
 
 TEST_F(AsyncSocketGSOIntegrationTest, MultiPingPongGlobalGSO) {
-  std::vector<int> gsoVec = {1000, 800, 1100, 1200};
+  std::vector<folly::AsyncUDPSocket::WriteOptions> optionsVec = {
+      {1000, false}, {800, false}, {1100, false}, {1200, false}};
   std::vector<std::vector<int>> inVec;
-  inVec.reserve(gsoVec.size());
+  inVec.reserve(optionsVec.size());
   std::vector<int> in = {100, 1200, 3000, 200, 100, 300};
   int total = std::accumulate(in.begin(), in.end(), 0);
   std::vector<int> expected;
-  for (size_t i = 0; i < gsoVec.size(); i++) {
+  for (size_t i = 0; i < optionsVec.size(); i++) {
     inVec.push_back(in);
 
     auto remaining = total;
     while (remaining) {
-      if (remaining > gsoVec[i]) {
-        expected.push_back(gsoVec[i]);
-        remaining -= gsoVec[i];
+      if (remaining > optionsVec[i].gso) {
+        expected.push_back(optionsVec[i].gso);
+        remaining -= optionsVec[i].gso;
       } else {
         expected.push_back(remaining);
         remaining = 0;
@@ -514,7 +512,11 @@ TEST_F(AsyncSocketGSOIntegrationTest, MultiPingPongGlobalGSO) {
   }
 
   TestData testData(
-      gsoVec, true /*useSocketGSO*/, inVec, expected.data(), expected.size());
+      optionsVec,
+      true /*useSocketGSO*/,
+      inVec,
+      expected.data(),
+      expected.size());
   ASSERT_TRUE(testData.checkIn());
   startServer();
   auto pingClient = performPingPongTest(testData, folly::none);
@@ -522,21 +524,22 @@ TEST_F(AsyncSocketGSOIntegrationTest, MultiPingPongGlobalGSO) {
 }
 
 TEST_F(AsyncSocketGSOIntegrationTest, MultiPingPongRequestGSO) {
-  std::vector<int> gsoVec = {421, 300, 528, 680};
+  std::vector<folly::AsyncUDPSocket::WriteOptions> optionsVec = {
+      {421, false}, {300, false}, {528, false}, {680, false}};
   std::vector<std::vector<int>> inVec;
-  inVec.reserve(gsoVec.size());
+  inVec.reserve(optionsVec.size());
 
   std::vector<int> in = {100, 1200, 3000, 200, 100, 300};
   int total = std::accumulate(in.begin(), in.end(), 0);
   std::vector<int> expected;
-  for (size_t i = 0; i < gsoVec.size(); i++) {
+  for (size_t i = 0; i < optionsVec.size(); i++) {
     inVec.push_back(in);
 
     auto remaining = total;
     while (remaining) {
-      if (remaining > gsoVec[i]) {
-        expected.push_back(gsoVec[i]);
-        remaining -= gsoVec[i];
+      if (remaining > optionsVec[i].gso) {
+        expected.push_back(optionsVec[i].gso);
+        remaining -= optionsVec[i].gso;
       } else {
         expected.push_back(remaining);
         remaining = 0;
@@ -545,7 +548,11 @@ TEST_F(AsyncSocketGSOIntegrationTest, MultiPingPongRequestGSO) {
   }
 
   TestData testData(
-      gsoVec, false /*useSocketGSO*/, inVec, expected.data(), expected.size());
+      optionsVec,
+      false /*useSocketGSO*/,
+      inVec,
+      expected.data(),
+      expected.size());
   ASSERT_TRUE(testData.checkIn());
   startServer();
   auto pingClient = performPingPongTest(testData, folly::none);
@@ -570,9 +577,7 @@ class GSOBuf {
     }
   }
 
-  const std::unique_ptr<IOBuf>& get() const {
-    return ioBuf_;
-  }
+  const std::unique_ptr<IOBuf>& get() const { return ioBuf_; }
 
  private:
   std::unique_ptr<IOBuf> ioBuf_;
@@ -588,12 +593,14 @@ class GSOSendTest {
       size_t size2 = 0) {
     GSOBuf buf(size1, size2);
 
-    ret_ = socket.writeGSO(address, buf.get(), gso);
+    ret_ = socket.writeGSO(
+        address,
+        buf.get(),
+        folly::AsyncUDPSocket::WriteOptions(
+            gso /*gsoVal*/, false /* zerocopyVal*/));
   }
 
-  ssize_t get() const {
-    return ret_;
-  }
+  ssize_t get() const { return ret_; }
 
  private:
   ssize_t ret_;

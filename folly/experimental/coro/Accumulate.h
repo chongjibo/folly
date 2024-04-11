@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,10 @@
 #pragma once
 
 #include <folly/experimental/coro/AsyncGenerator.h>
+#include <folly/experimental/coro/Coroutine.h>
 #include <folly/experimental/coro/Task.h>
+
+#if FOLLY_HAS_COROUTINES
 
 namespace folly {
 namespace coro {
@@ -33,12 +36,11 @@ namespace coro {
 //   AsyncGenerator<int> stream();
 //
 //   Task<void> consumer() {
-//     auto sum = accumulate(stream(), 0, std::plus{});
+//     auto sum = co_await accumulate(stream(), 0, std::plus{});
 //   }
 template <typename Reference, typename Value, typename Output>
 Task<Output> accumulate(
-    AsyncGenerator<Reference, Value> generator,
-    Output init);
+    AsyncGenerator<Reference, Value> generator, Output init);
 
 template <
     typename Reference,
@@ -46,11 +48,11 @@ template <
     typename Output,
     typename BinaryOp>
 Task<Output> accumulate(
-    AsyncGenerator<Reference, Value> generator,
-    Output init,
-    BinaryOp op);
+    AsyncGenerator<Reference, Value> generator, Output init, BinaryOp op);
 
 } // namespace coro
 } // namespace folly
+
+#endif // FOLLY_HAS_COROUTINES
 
 #include <folly/experimental/coro/Accumulate-inl.h>

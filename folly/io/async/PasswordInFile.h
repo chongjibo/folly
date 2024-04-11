@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,11 @@
 
 #pragma once
 
-#include <folly/io/async/SSLContext.h> // PasswordCollector
+#include <folly/ssl/PasswordCollector.h>
 
 namespace folly {
 
-class PasswordInFile : public PasswordCollector {
+class PasswordInFile : public ssl::PasswordCollector {
  public:
   explicit PasswordInFile(const std::string& file);
   ~PasswordInFile() override;
@@ -29,13 +29,9 @@ class PasswordInFile : public PasswordCollector {
     password = password_;
   }
 
-  const char* getPasswordStr() const {
-    return password_.c_str();
-  }
+  const char* getPasswordStr() const { return password_.c_str(); }
 
-  const std::string& describe() const override {
-    return fileName_;
-  }
+  const std::string& describe() const override { return fileName_; }
 
  protected:
   std::string fileName_;

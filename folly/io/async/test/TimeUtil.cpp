@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
 #include <cerrno>
 #ifdef __linux__
 #include <sys/utsname.h>
@@ -32,6 +33,8 @@
 #include <ostream>
 #include <stdexcept>
 
+#include <glog/logging.h>
+
 #include <folly/Conv.h>
 #include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
@@ -39,13 +42,12 @@
 #include <folly/portability/Unistd.h>
 #include <folly/system/ThreadId.h>
 
-#include <glog/logging.h>
-
 using std::string;
 using namespace std::chrono;
 
 namespace folly {
 
+#ifdef __linux__
 static int getLinuxVersion(StringPiece release) {
   auto dot1 = release.find('.');
   if (dot1 == StringPiece::npos) {
@@ -65,7 +67,6 @@ static int getLinuxVersion(StringPiece release) {
   return ((v1 * 1000 + v2) * 1000) + v3;
 }
 
-#ifdef __linux__
 /**
  * Determine the time units used in /proc/<pid>/schedstat
  *
@@ -120,9 +121,7 @@ static int64_t determineSchedstatUnits() {
                << configPath;
     return -1;
   }
-  SCOPE_EXIT {
-    fclose(f);
-  };
+  SCOPE_EXIT { fclose(f); };
 
   int64_t hz = -1;
   char buf[1024];

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -153,7 +153,7 @@ size_t prependHeader(std::unique_ptr<IOBuf>& buf, uint32_t fileId) {
   } else {
     auto b = IOBuf::create(headerSize());
     b->append(headerSize());
-    b->appendChain(std::move(buf));
+    b->insertAfterThisOne(std::move(buf));
     buf = std::move(b);
   }
   auto header = reinterpret_cast<Header*>(buf->writableData());
@@ -206,8 +206,8 @@ RecordInfo validateRecord(ByteRange range, uint32_t fileId) {
   return validateRecordData(range);
 }
 
-RecordInfo
-findRecord(ByteRange searchRange, ByteRange wholeRange, uint32_t fileId) {
+RecordInfo findRecord(
+    ByteRange searchRange, ByteRange wholeRange, uint32_t fileId) {
   static const uint32_t magic = Header::kMagic;
   static const ByteRange magicRange(
       reinterpret_cast<const uint8_t*>(&magic), sizeof(magic));

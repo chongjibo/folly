@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,29 +16,42 @@
 
 #pragma once
 
+#include <glog/logging.h>
+
 #include <folly/Executor.h>
 #include <folly/MPMCQueue.h>
 #include <folly/Range.h>
 #include <folly/executors/task_queue/BlockingQueue.h>
 #include <folly/synchronization/LifoSem.h>
-#include <glog/logging.h>
 
 namespace folly {
 
-template <class T, QueueBehaviorIfFull kBehavior = QueueBehaviorIfFull::THROW>
+template <
+    class T,
+    QueueBehaviorIfFull kBehavior = QueueBehaviorIfFull::THROW,
+    class Semaphore = folly::LifoSem>
 class PriorityLifoSemMPMCQueue : public BlockingQueue<T> {
  public:
   // Note A: The queue pre-allocates all memory for max_capacity
   // Note B: To use folly::Executor::*_PRI, for numPriorities == 2
   //         MID_PRI and HI_PRI are treated at the same priority level.
-  PriorityLifoSemMPMCQueue(uint8_t numPriorities, size_t max_capacity) {
+  PriorityLifoSemMPMCQueue(
+      uint8_t numPriorities,
+      size_t max_capacity,
+      const typename Semaphore::Options& semaphoreOptions = {})
+      : sem_(semaphoreOptions) {
+    CHECK_GT(numPriorities, 0) << "Number of priorities should be positive";
     queues_.reserve(numPriorities);
     for (int8_t i = 0; i < numPriorities; i++) {
       queues_.emplace_back(max_capacity);
     }
   }
 
-  PriorityLifoSemMPMCQueue(folly::Range<const size_t*> capacities) {
+  PriorityLifoSemMPMCQueue(
+      folly::Range<const size_t*> capacities,
+      const typename Semaphore::Options& semaphoreOptions = {})
+      : sem_(semaphoreOptions) {
+    CHECK_GT(capacities.size(), 0) << "Number of priorities should be positive";
     CHECK_LT(capacities.size(), 256) << "At most 255 priorities supported";
 
     queues_.reserve(capacities.size());
@@ -47,9 +60,7 @@ class PriorityLifoSemMPMCQueue : public BlockingQueue<T> {
     }
   }
 
-  uint8_t getNumPriorities() override {
-    return queues_.size();
-  }
+  uint8_t getNumPriorities() override { return queues_.size(); }
 
   // Add at medium priority by default
   BlockingQueueAddResult add(T item) override {
@@ -123,7 +134,7 @@ class PriorityLifoSemMPMCQueue : public BlockingQueue<T> {
   }
 
  private:
-  folly::LifoSem sem_;
+  Semaphore sem_;
   std::vector<folly::MPMCQueue<T>> queues_;
 };
 

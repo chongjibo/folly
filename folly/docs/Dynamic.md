@@ -5,7 +5,7 @@
 C++, similar to the way languages with runtime type systems work
 (e.g. Python). It can hold types from a predetermined set of types
 (ints, bools, arrays of other dynamics, etc), similar to something like
-`boost::variant`, but the syntax is intended to be a little more like
+`std::variant`, but the syntax is intended to be a little more like
 using the native type directly.
 
 ### Overview
@@ -35,7 +35,7 @@ folly::dynamic;` was used):
     map["something"] = 12;
     map["another_something"] = map["something"] * 2;
 
-    // Dynamic objects may be intialized this way
+    // Dynamic objects may be initialized this way
     dynamic map2 = dynamic::object("something", 12)("another_something", 24);
 ```
 
@@ -71,6 +71,40 @@ Explicit type conversions can be requested for some of the basic types:
 ```
 
 For more complicated conversions, see [DynamicConverter](DynamicConverter.md).
+
+### Comparison Operators and Hashing
+#### Equality Operators
+Equality operators (`==`, `!=`) are supported for all types.
+
+For dynamics of the same type, the underlying equality operator shall apply.
+
+For comparisons between different numeric types (double and int64), numeric
+equality will apply - thus `2.0 == 2`.
+
+Values of any other different types will be deemed to not be equal.
+
+#### Ordering operators
+Ordering operators (`<`, `<=`, `>`, `>=`) are supported for all types, except
+`dynamic::object` which will throw if it is involved in an ordering operator.
+
+For dynamics of the same type, the underlying ordering operator shall apply.
+
+For comparisons between different numeric types (double and int64), numeric
+ordering will apply - thus `1.5 < 2`.
+
+Ordering of values between other different types will maintain total ordering
+properties and be consistent within a given binary run, and thus safe for use in
+e.g. `std::set`. The actual ordering is undefined and could change across
+versions, thus a dependency should not be taken outside of the total ordering
+property within a given binary.
+
+#### Hashing
+Hashing is supported by all types, and the hashes of two values will match if
+they are equal per `dynamic::operator==`.
+
+As a result, numerical types have the same numerical hashing regardless of int64
+vs double - so e.g. `std::hash<dynamic>()(2)` will give the same value as
+`std::hash<dynamic>()(2.0)`.
 
 ### Iteration and Lookup
 ***
@@ -139,7 +173,7 @@ here's what it looks like:
     assert(parsed["key2"][0] == false);
     assert(parsed["key2"][1] == nullptr);
 
-    // Building the same document programatically.
+    // Building the same document programmatically.
     dynamic sonOfAJ = dynamic::object
       ("key", 12)
       ("key2", dynamic::array(false, nullptr, true, "yay"));

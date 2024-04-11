@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,28 +15,38 @@
  */
 
 #include <folly/executors/Codel.h>
-#include <folly/portability/GTest.h>
+
 #include <chrono>
 #include <thread>
+
+#include <folly/portability/GFlags.h>
+#include <folly/portability/GTest.h>
+
+DECLARE_int32(codel_target_delay);
 
 using std::chrono::milliseconds;
 using std::this_thread::sleep_for;
 
 TEST(CodelTest, Basic) {
   folly::Codel c;
-  std::this_thread::sleep_for(milliseconds(110));
+  auto now = c.getIntervalTime();
+
+  now += milliseconds(110);
   // This interval is overloaded
-  EXPECT_FALSE(c.overloaded(milliseconds(100)));
-  std::this_thread::sleep_for(milliseconds(90));
+  EXPECT_FALSE(c.overloaded_explicit_now(milliseconds(100), now));
+
+  now += milliseconds(90);
   // At least two requests must happen in an interval before they will fail
-  EXPECT_FALSE(c.overloaded(milliseconds(50)));
-  EXPECT_TRUE(c.overloaded(milliseconds(50)));
-  std::this_thread::sleep_for(milliseconds(110));
+  EXPECT_FALSE(c.overloaded_explicit_now(milliseconds(50), now));
+  EXPECT_TRUE(c.overloaded_explicit_now(milliseconds(50), now));
+
+  now += milliseconds(110);
   // Previous interval is overloaded, but 2ms isn't enough to fail
-  EXPECT_FALSE(c.overloaded(milliseconds(2)));
-  std::this_thread::sleep_for(milliseconds(90));
+  EXPECT_FALSE(c.overloaded_explicit_now(milliseconds(2), now));
+
+  now += milliseconds(90);
   // 20 ms > target interval * 2
-  EXPECT_TRUE(c.overloaded(milliseconds(20)));
+  EXPECT_TRUE(c.overloaded_explicit_now(milliseconds(20), now));
 }
 
 TEST(CodelTest, highLoad) {

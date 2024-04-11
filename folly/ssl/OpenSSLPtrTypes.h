@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,29 +36,26 @@ namespace ssl {
 // ASN1
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(ASN1Time, ASN1_TIME, ASN1_TIME_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    ASN1Ia5Str,
-    ASN1_IA5STRING,
-    ASN1_IA5STRING_free);
+    ASN1Ia5Str, ASN1_IA5STRING, ASN1_IA5STRING_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(ASN1Int, ASN1_INTEGER, ASN1_INTEGER_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(ASN1Obj, ASN1_OBJECT, ASN1_OBJECT_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(ASN1Str, ASN1_STRING, ASN1_STRING_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(ASN1Type, ASN1_TYPE, ASN1_TYPE_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    ASN1UTF8Str,
-    ASN1_UTF8STRING,
-    ASN1_UTF8STRING_free);
+    ASN1UTF8Str, ASN1_UTF8STRING, ASN1_UTF8STRING_free);
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
+    ASN1BitStr, ASN1_BIT_STRING, ASN1_BIT_STRING_free);
 
 // X509
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509, X509, X509_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    X509Extension,
-    X509_EXTENSION,
-    X509_EXTENSION_free);
+    X509Extension, X509_EXTENSION, X509_EXTENSION_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509Store, X509_STORE, X509_STORE_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    X509StoreCtx,
-    X509_STORE_CTX,
-    X509_STORE_CTX_free);
+    X509StoreCtx, X509_STORE_CTX, X509_STORE_CTX_free);
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509Sig, X509_SIG, X509_SIG_free);
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509Algor, X509_ALGOR, X509_ALGOR_free);
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509Pubkey, X509_PUBKEY, X509_PUBKEY_free);
 using X509VerifyParamDeleter =
     folly::static_function_deleter<X509_VERIFY_PARAM, &X509_VERIFY_PARAM_free>;
 using X509VerifyParam =
@@ -66,26 +63,16 @@ using X509VerifyParam =
 
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(GeneralName, GENERAL_NAME, GENERAL_NAME_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    GeneralNames,
-    GENERAL_NAMES,
-    GENERAL_NAMES_free);
+    GeneralNames, GENERAL_NAMES, GENERAL_NAMES_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    AccessDescription,
-    ACCESS_DESCRIPTION,
-    ACCESS_DESCRIPTION_free);
+    AccessDescription, ACCESS_DESCRIPTION, ACCESS_DESCRIPTION_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    AuthorityInfoAccess,
-    AUTHORITY_INFO_ACCESS,
-    AUTHORITY_INFO_ACCESS_free);
+    AuthorityInfoAccess, AUTHORITY_INFO_ACCESS, AUTHORITY_INFO_ACCESS_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    DistPointName,
-    DIST_POINT_NAME,
-    DIST_POINT_NAME_free);
+    DistPointName, DIST_POINT_NAME, DIST_POINT_NAME_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(DistPoint, DIST_POINT, DIST_POINT_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    CrlDistPoints,
-    CRL_DIST_POINTS,
-    CRL_DIST_POINTS_free);
+    CrlDistPoints, CRL_DIST_POINTS, CRL_DIST_POINTS_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509Crl, X509_CRL, X509_CRL_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509Name, X509_NAME, X509_NAME_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509Req, X509_REQ, X509_REQ_free);
@@ -95,18 +82,14 @@ FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(X509Revoked, X509_REVOKED, X509_REVOKED_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(EvpPkey, EVP_PKEY, EVP_PKEY_free);
 using EvpPkeySharedPtr = std::shared_ptr<EVP_PKEY>;
 
-// No EVP_PKEY_CTX <= 0.9.8b
-#if OPENSSL_VERSION_NUMBER >= 0x10000002L
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
+    EvpEncodeCtx, EVP_ENCODE_CTX, EVP_ENCODE_CTX_free);
+
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(EvpPkeyCtx, EVP_PKEY_CTX, EVP_PKEY_CTX_free);
-#else
-struct EVP_PKEY_CTX;
-#endif
 
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(EvpMdCtx, EVP_MD_CTX, EVP_MD_CTX_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
-    EvpCipherCtx,
-    EVP_CIPHER_CTX,
-    EVP_CIPHER_CTX_free);
+    EvpCipherCtx, EVP_CIPHER_CTX, EVP_CIPHER_CTX_free);
 
 // HMAC
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(HmacCtx, HMAC_CTX, HMAC_CTX_free);
@@ -138,6 +121,94 @@ FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(BNCtx, BN_CTX, BN_CTX_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(SSL, SSL, SSL_free);
 FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(SSLSession, SSL_SESSION, SSL_SESSION_free);
 
+// OCSP
+#ifndef OPENSSL_NO_OCSP
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(OcspRequest, OCSP_REQUEST, OCSP_REQUEST_free);
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
+    OcspResponse, OCSP_RESPONSE, OCSP_RESPONSE_free);
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(
+    OcspBasicResponse, OCSP_BASICRESP, OCSP_BASICRESP_free);
+FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE(OcspCertId, OCSP_CERTID, OCSP_CERTID_free);
+#endif
+
+// OpenSSL STACK_OF(T) can both represent owned or borrowed values.
+//
+// This isn't represented in the OpenSSL "safestack" type (e.g. STACK_OF(Foo)).
+// Whether or not a STACK is owning or borrowing is determined purely based on
+// which destructor is called.
+// * sk_T_free     - This only deallocates the STACK, but does not free the
+//                   contained items within. This is the "borrowing" version.
+// * sk_T_pop_free - This deallocates both the STACK and it invokes a free
+//                   function for each element. This is the "owning" version.
+//
+// The below macro,
+//    FOLLY_SSL_DETAIL_DEFINE_STACK_PTR_TYPE(Alias, Element)
+//
+// can be used to define two unique_ptr types that correspond to the "owned"
+// or "borrowing" version of each.
+//
+// For example,
+//    FOLLY_SSL_DETAIL_DEFINE_STACK_PTR_TYPE(X509Name, X509_NAME)
+// creates two unique ptr type aliases
+//    * OwningStackOfX509NameUniquePtr
+//    * BorrowingStackOfX509NameUniquePtr
+// which corresponds to a unique_ptr of `STACK_OF(X509_NAME)` that will invoke
+// the appropriate destructor:
+//    * OwningStackOf* -> Invokes sk_T_free
+//    * BorrowingStackOf* -> Invokes sk_T_pop_free
+namespace detail {
+template <
+    class StackType,
+    class ElementType,
+    void (*ElementDestructor)(ElementType*)>
+struct OpenSSLOwnedStackDeleter {
+  void operator()(StackType* stack) const {
+    OPENSSL_sk_pop_free(
+        reinterpret_cast<OPENSSL_STACK*>(stack),
+        reinterpret_cast<OPENSSL_sk_freefunc>(ElementDestructor));
+  }
+};
+
+template <class StackType>
+struct OpenSSLBorrowedStackDestructor {
+  void operator()(StackType* stack) {
+    OPENSSL_sk_free(reinterpret_cast<OPENSSL_STACK*>(stack));
+  }
+};
+
+} // namespace detail
+
+#define FOLLY_SSL_DETAIL_OWNING_STACK_DESTRUCTOR(T) \
+  ::folly::ssl::detail::OpenSSLOwnedStackDeleter<STACK_OF(T), T, T##_free>
+
+#define FOLLY_SSL_DETAIL_BORROWING_STACK_DESTRUCTOR(T) \
+  ::folly::ssl::detail::OpenSSLBorrowedStackDestructor<STACK_OF(T)>
+
+#define FOLLY_SSL_DETAIL_DEFINE_OWNING_STACK_PTR_TYPE(             \
+    element_alias, element_type)                                   \
+  using OwningStackOf##element_alias##UniquePtr = std::unique_ptr< \
+      STACK_OF(element_type),                                      \
+      FOLLY_SSL_DETAIL_OWNING_STACK_DESTRUCTOR(element_type)>
+
+#define FOLLY_SSL_DETAIL_DEFINE_BORROWING_STACK_PTR_TYPE(             \
+    element_alias, element_type)                                      \
+  using BorrowingStackOf##element_alias##UniquePtr = std::unique_ptr< \
+      STACK_OF(element_type),                                         \
+      FOLLY_SSL_DETAIL_BORROWING_STACK_DESTRUCTOR(element_type)>
+
+#define FOLLY_SSL_DETAIL_DEFINE_STACK_PTR_TYPE(element_alias, element_type) \
+  FOLLY_SSL_DETAIL_DEFINE_BORROWING_STACK_PTR_TYPE(                         \
+      element_alias, element_type);                                         \
+  FOLLY_SSL_DETAIL_DEFINE_OWNING_STACK_PTR_TYPE(element_alias, element_type)
+
+FOLLY_SSL_DETAIL_DEFINE_STACK_PTR_TYPE(X509Name, X509_NAME);
+
+#undef FOLLY_SSL_DETAIL_BORROWING_STACK_DESTRUCTOR
+#undef FOLLY_SSL_DETAIL_OWNING_STACK_DESTRUCTOR
+#undef FOLLY_SSL_DETAIL_DEFINE_OWNING_STACK_PTR_TYPE
+#undef FOLLY_SSL_DETAIL_DEFINE_BORROWING_STACK_PTR_TYPE
+#undef FOLLY_SSL_DETAIL_DEFINE_STACK_PTR_TYPE
 #undef FOLLY_SSL_DETAIL_DEFINE_PTR_TYPE
+
 } // namespace ssl
 } // namespace folly

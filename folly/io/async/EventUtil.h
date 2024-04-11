@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@
 
 namespace folly {
 
-#if LIBEVENT_VERSION_NUMBER <= 0x02010101
+#if !defined(LIBEVENT_VERSION_NUMBER) || LIBEVENT_VERSION_NUMBER <= 0x02010101
 #define FOLLY_LIBEVENT_COMPAT_PLUCK(name) ev_##name
 #define FOLLY_LIBEVENT_COMPAT_PLUCK2(name) ev_##name
 #else

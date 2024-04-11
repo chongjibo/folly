@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -211,21 +211,13 @@ ssize_t sendto(
 }
 
 int setsockopt(
-    int s,
-    int level,
-    int optname,
-    const void* optval,
-    socklen_t optlen) {
+    int s, int level, int optname, const void* optval, socklen_t optlen) {
   return wrapSocketFunction<int>(
       netops::setsockopt, s, level, optname, optval, optlen);
 }
 
 int setsockopt(
-    int s,
-    int level,
-    int optname,
-    const char* optval,
-    socklen_t optlen) {
+    int s, int level, int optname, const char* optval, socklen_t optlen) {
   return setsockopt(s, level, optname, (const void*)optval, optlen);
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,9 @@
 
 #include <folly/Portability.h>
 
-#if FOLLY_HAS_COROUTINES
-
 #include <folly/CancellationToken.h>
 #include <folly/ScopeGuard.h>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/experimental/coro/AsyncGenerator.h>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/Collect.h>
@@ -30,7 +29,10 @@
 
 #include <folly/portability/GTest.h>
 
+#if FOLLY_HAS_COROUTINES
+
 using namespace folly::coro;
+using namespace std::chrono_literals;
 
 class MergeTest : public testing::Test {};
 
@@ -72,9 +74,7 @@ TEST_F(MergeTest, TruncateStream) {
           co_invoke([&]() -> AsyncGenerator<AsyncGenerator<int>> {
             auto makeGenerator = [&]() -> AsyncGenerator<int> {
               ++started;
-              SCOPE_EXIT {
-                ++completed;
-              };
+              SCOPE_EXIT { ++completed; };
               co_yield 1;
               co_await co_reschedule_on_current_executor;
               co_yield 2;
@@ -100,6 +100,40 @@ TEST_F(MergeTest, TruncateStream) {
     }
 
     CHECK_EQ(3, completed);
+  }());
+}
+
+TEST_F(MergeTest, TruncateStreamMultiThreaded) {
+  blockingWait([]() -> Task<void> {
+    std::atomic<int> completed = 0;
+    folly::Baton allCompleted;
+    {
+      auto generator = merge(
+          folly::getGlobalCPUExecutor(),
+          co_invoke([&]() -> AsyncGenerator<AsyncGenerator<int>> {
+            auto makeGenerator = [&]() -> AsyncGenerator<int> {
+              SCOPE_EXIT {
+                if (++completed == 3) {
+                  allCompleted.post();
+                }
+              };
+              co_yield 1;
+              co_yield 2;
+            };
+
+            co_yield co_invoke(makeGenerator);
+            co_yield co_invoke(makeGenerator);
+            co_yield co_invoke(makeGenerator);
+          }));
+
+      auto item = co_await generator.next();
+      CHECK_EQ(1, *item);
+      co_await generator.next();
+      // Truncate the stream after consuming only 2 of the 6 values it
+      // would have produced.
+    }
+
+    CHECK(allCompleted.try_wait_for(1s));
   }());
 }
 
@@ -236,6 +270,154 @@ TEST_F(MergeTest, CancellationTokenPropagatesToInnerFromConsumer) {
           cancelSource.requestCancellation();
         }());
     CHECK(done);
+  }());
+}
+
+// Check that by the time merged generator's next() returns an empty value
+// (end of stream) or throws an exception all source generators are destroyed.
+TEST_F(MergeTest, SourcesAreDestroyedBeforeEof) {
+  std::atomic<int> runningSourceGenerators = 0;
+  std::atomic<int> runningListGenerators = 0;
+
+  auto sourceGenerator =
+      [&](bool shouldThrow) -> folly::coro::AsyncGenerator<int> {
+    ++runningSourceGenerators;
+    SCOPE_EXIT { --runningSourceGenerators; };
+    co_await folly::coro::co_reschedule_on_current_executor;
+    co_yield 42;
+    co_await folly::coro::co_reschedule_on_current_executor;
+    if (shouldThrow) {
+      throw std::runtime_error("test exception");
+    }
+  };
+
+  auto listGenerator = [&](bool shouldThrow)
+      -> folly::coro::AsyncGenerator<folly::coro::AsyncGenerator<int>> {
+    CHECK(runningListGenerators == 0);
+    ++runningListGenerators;
+    SCOPE_EXIT {
+      /* sleep override */
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      --runningListGenerators;
+    };
+    for (int i = 0;; ++i) {
+      co_await folly::coro::co_reschedule_on_current_executor;
+      co_yield sourceGenerator(shouldThrow && (i % 2 == 1));
+    }
+  };
+
+  folly::CPUThreadPoolExecutor exec(4);
+
+  // Stream interrupted by cancellation.
+  auto future =
+      folly::coro::co_invoke([&]() -> folly::coro::Task<void> {
+        auto gen =
+            folly::coro::merge(&exec, listGenerator(/* shouldThrow */ false));
+        folly::CancellationSource cancelSource;
+        auto r = co_await folly::coro::co_withCancellation(
+            cancelSource.getToken(), gen.next());
+        CHECK(r.has_value());
+        CHECK_EQ(*r, 42);
+        CHECK_GT(
+            runningSourceGenerators.load() + runningListGenerators.load(), 0);
+        cancelSource.requestCancellation();
+        // Currently the merged generator discards items produced
+        // after cancellation. But this behavior is not important, and
+        // it would probably be equally fine to return them (but stop
+        // calling source generators for more), so this test accepts
+        // either behavior.
+        while (true) {
+          r = co_await folly::coro::co_withCancellation(
+              cancelSource.getToken(), gen.next());
+          if (!r.has_value()) {
+            break;
+          }
+          CHECK_EQ(*r, 42);
+        }
+        CHECK_EQ(runningSourceGenerators.load(), 0);
+        CHECK_EQ(runningListGenerators.load(), 0);
+      })
+          .scheduleOn(&exec)
+          .start();
+  std::move(future).get();
+
+  // Stream interrupted by exception.
+  future =
+      folly::coro::co_invoke([&]() -> folly::coro::Task<void> {
+        auto gen =
+            folly::coro::merge(&exec, listGenerator(/* shouldThrow */ true));
+        auto r = co_await gen.next();
+        CHECK(r.has_value());
+        CHECK_EQ(*r, 42);
+        CHECK_GT(
+            runningSourceGenerators.load() + runningListGenerators.load(), 0);
+        while (true) {
+          auto r2 = co_await folly::coro::co_awaitTry(gen.next());
+          if (!r2.hasValue()) {
+            CHECK(
+                r2.exception().what().find("test exception") !=
+                std::string::npos);
+            break;
+          }
+          CHECK(r2->has_value());
+          CHECK_EQ(r2->value(), 42);
+        }
+        CHECK_EQ(runningSourceGenerators.load(), 0);
+        CHECK_EQ(runningListGenerators.load(), 0);
+      })
+          .scheduleOn(&exec)
+          .start();
+  std::move(future).get();
+}
+
+TEST_F(MergeTest, DontLeakRequestContext) {
+  class TestData : public folly::RequestData {
+   public:
+    explicit TestData() noexcept {}
+    bool hasCallback() override { return false; }
+
+    static void set() {
+      folly::RequestContext::get()->setContextData(
+          "test", std::make_unique<TestData>());
+    }
+    static auto get() {
+      return folly::RequestContext::get()->getContextData("test");
+    }
+  };
+  blockingWait([]() -> Task<void> {
+    folly::RequestContextScopeGuard requestScope;
+
+    TestData::set();
+    auto initialContextData = TestData::get();
+    CHECK(initialContextData != nullptr);
+
+    auto generator = merge(
+        co_await co_current_executor,
+        co_invoke([&]() -> AsyncGenerator<AsyncGenerator<int>> {
+          auto makeGenerator = [&]() -> AsyncGenerator<int> {
+            for (int i = 0; i < 10; ++i) {
+              CHECK(TestData::get() == initialContextData);
+              folly::RequestContextScopeGuard childScope;
+              CHECK(TestData::get() == nullptr);
+              co_await co_reschedule_on_current_executor;
+              CHECK(TestData::get() == nullptr);
+              TestData::set();
+              auto newContextData = TestData::get();
+              CHECK(newContextData != nullptr);
+              CHECK(newContextData != initialContextData);
+              co_await co_reschedule_on_current_executor;
+              CHECK(TestData::get() == newContextData);
+            }
+          };
+          for (int i = 0; i < 5; ++i) {
+            co_yield makeGenerator();
+          }
+        }));
+
+    while (auto val = co_await generator.next()) {
+    }
+
+    CHECK(TestData::get() == initialContextData);
   }());
 }
 

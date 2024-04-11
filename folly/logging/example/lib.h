@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ class ExampleObject {
  public:
   explicit ExampleObject(folly::StringPiece str) : value_{str.str()} {
     // All XLOG() statements in this file will log to the category
-    // folly.experimental.logging.example.lib
+    // folly.logging.example.lib
     XLOGF(DBG1, "ExampleObject({}) constructed at {}", value_, fmt::ptr(this));
   }
   ~ExampleObject();

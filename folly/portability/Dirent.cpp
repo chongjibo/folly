@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,9 +29,7 @@ struct DIR {
   char currentName[MAX_PATH * 3];
   std::string pattern;
 
-  int close() {
-    return FindClose(searchHandle) ? 0 : -1;
-  }
+  int close() { return FindClose(searchHandle) ? 0 : -1; }
 
   DIR* open() {
     wchar_t patternBuf[MAX_PATH + 3];

@@ -4,7 +4,7 @@
 
 # Overview
 
-Folly Futures is an async C++ framework inspired by [Twitter's Futures](https://twitter.github.io/finagle/guide/Futures.html) implementation in Scala (see also [Future.scala](https://github.com/twitter/util/blob/master/util-core/src/main/scala/com/twitter/util/Future.scala), [Promise.scala](https://github.com/twitter/util/blob/master/util-core/src/main/scala/com/twitter/util/Promise.scala), and friends), and loosely builds upon the existing but anemic Futures code found in the C++11 standard ([std::future](http://en.cppreference.com/w/cpp/thread/future)) and [boost::future](http://www.boost.org/doc/libs/1_53_0/doc/html/thread/synchronization.html#thread.synchronization.futures) (especially >= 1.53.0). Although inspired by the C++11 std::future interface, it is not a drop-in replacement because some ideas don't translate well enough to maintain API compatibility.
+Folly Futures is an async C++ framework inspired by [Twitter's Futures](https://twitter.github.io/finagle/guide/Futures.html) implementation in Scala (see also [Future.scala](https://github.com/twitter/util/blob/master/util-core/src/main/scala/com/twitter/util/Future.scala), [Promise.scala](https://github.com/twitter/util/blob/master/util-core/src/main/scala/com/twitter/util/Promise.scala), and friends), and loosely builds upon the existing but anemic Futures code found in the C++11 standard ([std::future](https://en.cppreference.com/w/cpp/thread/future)) and [boost::future](https://www.boost.org/doc/libs/1_53_0/doc/html/thread/synchronization.html#thread.synchronization.futures) (especially >= 1.53.0). Although inspired by the C++11 std::future interface, it is not a drop-in replacement because some ideas don't translate well enough to maintain API compatibility.
 
 The primary difference from std::future is that you can attach callbacks to Futures (with `thenValue` or `thenTry`), under the control of an executor to manage where work runs, which enables sequential and parallel composition of Futures for cleaner asynchronous code.
 
@@ -39,11 +39,13 @@ void foo(int x) {
 
 This would print:
 
+```
 making Promise
 Future chain made
 fulfilling Promise
 foo(42)
 Promise fulfilled
+```
 
 ## Blog Post
 
@@ -134,9 +136,15 @@ for (auto& key : keys) {
   futs.push_back(mc.future_get(key));
 }
 auto any = collectAny(futs.begin(), futs.end());
+
+vector<SemiFuture<GetReply>> futs;
+for (auto& key : keys) {
+  futs.push_back(mc.future_get(key));
+}
+auto anyv = collectAnyWithoutException(futs.begin(), futs.end());
 ```
 
-`all` and `any` are Futures (for the exact type and usage see the header files). They will be complete when all/one of futs are complete, respectively. (There is also `collectN()` for when you need some.)
+`all` and `any` are Futures (for the exact type and usage see the header files). They will be complete when all/one of futs are complete, respectively. (There is also `collectN()` for when you need some, and `collectAnyWithoutException` when you need one value if some value would be available.)
 
 Second, we can associate a Future with an executor. An executor specifies where work will run, and we detail this more later. In summary, given an executor we can convert a `SemiFuture` to a `Future` with an executor, or a `Future` on one executor to a `Future` on another executor.
 
@@ -175,7 +183,7 @@ Future<Unit> fut3 = std::move(fut2)
 
 That example is a little contrived but the idea is that you can transform a result from one type to another, potentially in a chain, and unhandled errors propagate. Of course, the intermediate variables are optional.
 
-Using `.thenValue` or `.thenTry` to add callbacks is idiomatic. It brings all the code into one place, which avoids callback hell. `.thenValue` appends a continuation that takes `T&&` for some `Future<T>` and an error bypasses the callback and is passed to the next, `thenTry` takes a callback taking `folly::Try<T>` which encapsulates both value and exception. `thenError(tag_t<ExceptionType>{},...` will bypass a value and only run if there is an exception, the `ExceptionType` template parameter to the tag type allows filtering by exception type; `tag_t<ExceptionType>{}` is optional and if no tag is passed passed the function will be parameterised with a `folly::exception_wrapper`. For C++17 there is a global inline variable and `folly::tag<ExceptionType>` may be passed directly without explicit construction.
+Using `.thenValue` or `.thenTry` to add callbacks is idiomatic. It brings all the code into one place, which avoids callback hell. `.thenValue` appends a continuation that takes `T&&` for some `Future<T>` and an error bypasses the callback and is passed to the next, `thenTry` takes a callback taking `folly::Try<T>` which encapsulates both value and exception. `thenError(tag_t<ExceptionType>{},...` will bypass a value and only run if there is an exception, the `ExceptionType` template parameter to the tag type allows filtering by exception type; `tag_t<ExceptionType>{}` is optional and if no tag is passed passed the function will be parameterized with a `folly::exception_wrapper`. For C++17 there is a global inline variable and `folly::tag<ExceptionType>` may be passed directly without explicit construction.
 
 
 
@@ -206,23 +214,7 @@ std::move(aFuture)
   .via(e2).thenValue(z);
 ```
 
-`x` will execute in the context of the executor associated with `aFuture`. `y1` and `y2` will execute in the context of `e1`, and `z` will execute in the context of `e2`. If after `z` you want to get back to the original context, you need to get there with a call to `via` passing the original executor. Another way to express this is using an overload of `then` that takes an Executor:
-
-```cpp
-std::move(aFuture)
-  .thenValue(x)
-  .thenValue(e1, y1, y2)
-  .thenValue(e2, z);
-```
-
-Either way, there is no ambiguity about which executor will run `y1`, `y2`, or `z`.
-
-You can still have a race after `via` if you break it into multiple statements, e.g. in this counterexample:
-
-```cpp
-f2 = std::move(f).via(e1).thenValue(y1).thenValue(y2); // nothing racy here
-std::move(f2).thenValue(y3); // racy
-```
+`x` will execute in the context of the executor associated with `aFuture`. `y1` and `y2` will execute in the context of `e1`, and `z` will execute in the context of `e2`. If after `z` you want to get back to the original context, you need to get there with a call to `via` passing the original executor.
 
 # You make me Promises, Promises
 

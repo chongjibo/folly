@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 
 #include <folly/detail/SocketFastOpen.h>
 
-#include <folly/portability/Sockets.h>
-
 #include <cerrno>
 #include <cstdio>
+#include <fstream>
+
+#include <folly/portability/Sockets.h>
 
 namespace folly {
 namespace detail {
@@ -63,6 +64,40 @@ bool tfo_succeeded(NetworkSocket sockfd) {
   return info.tcpi_options & TCPI_OPT_SYN_DATA;
 }
 
+PlatformTFOSettings tfo_platform_availability() {
+  static PlatformTFOSettings TFOSettings = [] {
+    size_t fastOpen = 0;
+    try {
+      std::ifstream ifs("/proc/sys/net/ipv4/tcp_fastopen");
+      if (ifs.is_open()) {
+        ifs >> fastOpen;
+      }
+    } catch (std::exception&) {
+    }
+
+    PlatformTFOSettings settings{};
+    if ((fastOpen & 1) == 0) {
+      settings.client = TFOAvailability::None;
+    } else if ((fastOpen & 4) == 0) {
+      settings.client = TFOAvailability::WithCookies;
+    } else {
+      settings.client = TFOAvailability::Unconditional;
+    }
+
+    if ((fastOpen & 2) == 0) {
+      settings.server = TFOAvailability::None;
+    } else if ((fastOpen & 0x200) == 0) {
+      settings.server = TFOAvailability::WithCookies;
+    } else {
+      settings.server = TFOAvailability::Unconditional;
+    }
+
+    return settings;
+  }();
+
+  return TFOSettings;
+}
+
 #elif FOLLY_ALLOW_TFO && defined(__APPLE__)
 
 ssize_t tfo_sendmsg(NetworkSocket sockfd, const struct msghdr* msg, int flags) {
@@ -103,6 +138,12 @@ bool tfo_succeeded(NetworkSocket /* sockfd */) {
   return false;
 }
 
+PlatformTFOSettings tfo_platform_availability() {
+  static PlatformTFOSettings TFOSettings{
+      TFOAvailability::None, TFOAvailability::None};
+  return TFOSettings;
+}
+
 #else
 
 ssize_t tfo_sendmsg(
@@ -121,6 +162,12 @@ int tfo_enable(NetworkSocket /* sockfd */, size_t /* max_queue_size */) {
 bool tfo_succeeded(NetworkSocket /* sockfd */) {
   errno = EOPNOTSUPP;
   return false;
+}
+
+PlatformTFOSettings tfo_platform_availability() {
+  static PlatformTFOSettings TFOSettings{
+      TFOAvailability::None, TFOAvailability::None};
+  return TFOSettings;
 }
 
 #endif
