@@ -51,18 +51,17 @@ TEST_F(ThreadLocalDetailTest, Basic) {
   // local copy. Wrappers should still be 0.
   ASSERT_EQ(meta.totalElementWrappers_.load(), 0);
 
-  // Access 1st element. At least 2 wrapper arrays will be allocated. One for
-  // the current thread and one for the embedded head_ in the StaticMeta.
-  // Vector growth is not precise to minimize churn. Can only check it should be
-  // >= 2.
+  // Access 1st element. A wrapper array will be allocated. One for
+  // the current thread. Vector growth is not precise to minimize churn. Can
+  // only check it should be >= 1.
   *helper.elements[0] = 0;
-  ASSERT_GE(meta.totalElementWrappers_.load(), 2);
+  ASSERT_GE(meta.totalElementWrappers_.load(), 1);
   ;
 
   for (int32_t i = 0; i < count; ++i) {
     *helper.elements[i] = i;
   }
-  ASSERT_GE(meta.totalElementWrappers_.load(), 2 * count);
+  ASSERT_GE(meta.totalElementWrappers_.load(), count);
   ;
 }
 
@@ -83,14 +82,14 @@ TEST_F(ThreadLocalDetailTest, MultiThreadedTest) {
   for (int32_t i = 0; i < count; ++i) {
     *helper.elements[i] = i;
   }
-  ASSERT_GE(meta.totalElementWrappers_.load(), 2 * count);
+  ASSERT_GE(meta.totalElementWrappers_.load(), count);
 
   std::vector<std::thread> threads;
-  std::vector<std::unique_ptr<test::Barrier>> threadBarriers;
+  std::vector<std::unique_ptr<test::Barrier>> threadBarriers(count);
   test::Barrier allThreadsBarriers{count + 1};
 
   for (int32_t i = 0; i < count; ++i) {
-    threadBarriers.push_back(std::make_unique<test::Barrier>(2));
+    threadBarriers[i] = std::make_unique<test::Barrier>(2);
     threads.push_back(std::thread([&, index = i]() {
       // This thread's vector will sized to have index elements at least.
       *helper.elements[index] = index;
@@ -105,21 +104,22 @@ TEST_F(ThreadLocalDetailTest, MultiThreadedTest) {
   // check totalElementWrappers_ is within expected range. Due to vector growth,
   // we cannot assume precise counts but can use a crude range. Thread i touches
   // thread local with index i, and its array should be a bit over i in size.
-  // Total count will be 2*count (baseline) plus summation(i) for i over
+  // Total count will be count (baseline) plus summation(i) for i over
   // range(num threads).
   auto lowerBound = [](int32_t numThreads) {
-    return numThreads * (numThreads - 1) / 2 + (2 * count);
+    return numThreads * (numThreads - 1) / 2 + (count);
   };
 
   auto upperBound = [](int32_t numThreads) { return (numThreads + 2) * count; };
 
+  int32_t threadBarriersIndex = count - 1;
   while (!threads.empty()) {
     ASSERT_GE(meta.totalElementWrappers_.load(), lowerBound(threads.size()));
     ASSERT_LE(meta.totalElementWrappers_.load(), upperBound(threads.size()));
-    threadBarriers.back()->wait();
+    threadBarriers[threadBarriersIndex]->wait();
     threads.back().join();
     threads.pop_back();
-    threadBarriers.pop_back();
+    threadBarriersIndex -= 1;
   }
 }
 
@@ -140,7 +140,7 @@ TEST_F(ThreadLocalDetailTest, TLObjectsChurn) {
   for (int32_t i = 0; i < count; ++i) {
     *helper.wlock()->elements[i] = i;
   }
-  ASSERT_GE(meta.totalElementWrappers_.load(), 2 * count);
+  ASSERT_GE(meta.totalElementWrappers_.load(), count);
 
   std::vector<std::thread> threads;
   std::vector<std::unique_ptr<test::Barrier>> threadBarriers;
@@ -166,7 +166,7 @@ TEST_F(ThreadLocalDetailTest, TLObjectsChurn) {
   allThreadsBarriers.wait();
 
   auto lowerBound = [](int32_t numThreads) {
-    return numThreads * (numThreads - 1) / 2 + (2 * count);
+    return numThreads * (numThreads - 1) / 2 + (count);
   };
 
   auto upperBound = [](int32_t numThreads) { return (numThreads + 2) * count; };

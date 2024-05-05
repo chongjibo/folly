@@ -454,6 +454,10 @@ class FOLLY_NODISCARD TaskWithExecutor {
       folly::CancellationToken cancelToken,
       void* returnAddress) && {
     coro_.promise().setCancelToken(std::move(cancelToken));
+    // If the task replaces the request context and reaches a suspension point,
+    // it will not have a chance to restore the previous context before we
+    // return, so we need to ensure it is restored. This simulates starting the
+    // coroutine in an actual executor, which would wrap the task with a guard.
     RequestContextScopeGuard contextScope{RequestContext::saveContext()};
     startInlineImpl(std::move(*this), static_cast<F&&>(tryCallback))
         .start(returnAddress);
@@ -539,12 +543,16 @@ class FOLLY_NODISCARD TaskWithExecutor {
     T await_resume() {
       DCHECK(coro_);
       // Eagerly destroy the coroutine-frame once we have retrieved the result.
-      SCOPE_EXIT { std::exchange(coro_, {}).destroy(); };
+      SCOPE_EXIT {
+        std::exchange(coro_, {}).destroy();
+      };
       return std::move(coro_.promise().result()).value();
     }
 
     folly::Try<StorageType> await_resume_try() {
-      SCOPE_EXIT { std::exchange(coro_, {}).destroy(); };
+      SCOPE_EXIT {
+        std::exchange(coro_, {}).destroy();
+      };
       return std::move(coro_.promise().result());
     }
 
@@ -593,7 +601,9 @@ class FOLLY_NODISCARD TaskWithExecutor {
     folly::Try<StorageType> await_resume() {
       DCHECK(coro_);
       // Eagerly destroy the coroutine-frame once we have retrieved the result.
-      SCOPE_EXIT { std::exchange(coro_, {}).destroy(); };
+      SCOPE_EXIT {
+        std::exchange(coro_, {}).destroy();
+      };
       return std::move(coro_.promise().result());
     }
 
@@ -818,13 +828,17 @@ class FOLLY_NODISCARD Task {
 
     T await_resume() {
       DCHECK(coro_);
-      SCOPE_EXIT { std::exchange(coro_, {}).destroy(); };
+      SCOPE_EXIT {
+        std::exchange(coro_, {}).destroy();
+      };
       return std::move(coro_.promise().result()).value();
     }
 
     folly::Try<StorageType> await_resume_try() {
       DCHECK(coro_);
-      SCOPE_EXIT { std::exchange(coro_, {}).destroy(); };
+      SCOPE_EXIT {
+        std::exchange(coro_, {}).destroy();
+      };
       return std::move(coro_.promise().result());
     }
 

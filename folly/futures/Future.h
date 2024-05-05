@@ -108,6 +108,18 @@ template <class T>
 class SemiFuture;
 
 template <class T>
+struct PromiseContract {
+  Promise<T> promise;
+  Future<T> future;
+};
+
+template <class T>
+struct SemiPromiseContract {
+  Promise<T> promise;
+  SemiFuture<T> future;
+};
+
+template <class T>
 class FutureSplitter;
 
 namespace futures {
@@ -1002,10 +1014,10 @@ class SemiFuture : private futures::detail::FutureBase<T> {
 };
 
 template <class T>
-std::pair<Promise<T>, SemiFuture<T>> makePromiseContract() {
+SemiPromiseContract<T> makePromiseContract() {
   auto p = Promise<T>();
   auto f = p.getSemiFuture();
-  return std::make_pair(std::move(p), std::move(f));
+  return {std::move(p), std::move(f)};
 }
 
 /// The interface (along with SemiFuture) for the consumer-side of a
@@ -1124,7 +1136,7 @@ class Future : private futures::detail::FutureBase<T> {
           int>::type = 0>
   Future& operator=(Future<T2>&& other) {
     return operator=(
-        std::move(other).thenValue([](T2&& v) { return T(std::move(v)); }));
+        std::move(other).thenValue([](T2 && v) { return T(std::move(v)); }));
   }
 
   using Base::cancel;
@@ -1993,10 +2005,10 @@ class Timekeeper {
 };
 
 template <class T>
-std::pair<Promise<T>, Future<T>> makePromiseContract(Executor::KeepAlive<> e) {
+PromiseContract<T> makePromiseContract(Executor::KeepAlive<> e) {
   auto p = Promise<T>();
   auto f = p.getSemiFuture().via(std::move(e));
-  return std::make_pair(std::move(p), std::move(f));
+  return {std::move(p), std::move(f)};
 }
 
 template <class F>
@@ -2525,8 +2537,12 @@ Future<T> reduce(It first, It last, T&& initial, F&& func);
 
 /// Sugar for the most common case
 template <class Collection, class T, class F>
-auto reduce(Collection&& c, T&& initial, F&& func) -> decltype(folly::reduce(
-    c.begin(), c.end(), static_cast<T&&>(initial), static_cast<F&&>(func))) {
+auto reduce(Collection&& c, T&& initial, F&& func)
+    -> decltype(folly::reduce(
+        c.begin(),
+        c.end(),
+        static_cast<T&&>(initial),
+        static_cast<F&&>(func))) {
   return folly::reduce(
       c.begin(), c.end(), static_cast<T&&>(initial), static_cast<F&&>(func));
 }

@@ -471,6 +471,32 @@ TEST_F(TaskTest, StartInlineUnsafe) {
   }());
 }
 
+TEST_F(TaskTest, StartInlineUnsafePreservesRequestContext) {
+  folly::coro::blockingWait([]() -> folly::coro::Task<void> {
+    RequestContextScopeGuard parentGuard;
+    auto* parentCtx = RequestContext::try_get();
+    auto executor = co_await folly::coro::co_current_executor;
+
+    bool hasStarted = false;
+    coro::Baton baton;
+
+    auto makeTask = [&]() -> folly::coro::Task<void> {
+      RequestContextScopeGuard childGuard;
+      auto* childCtx = RequestContext::try_get();
+      hasStarted = true;
+      co_await baton;
+      EXPECT_EQ(childCtx, RequestContext::try_get());
+    };
+    auto sf = makeTask().scheduleOn(executor).startInlineUnsafe();
+
+    EXPECT_TRUE(hasStarted);
+    EXPECT_EQ(parentCtx, RequestContext::try_get());
+
+    baton.post();
+    co_await std::move(sf);
+  }());
+}
+
 TEST_F(TaskTest, YieldTry) {
   folly::coro::blockingWait([]() -> folly::coro::Task<void> {
     auto innerTaskVoid = []() -> folly::coro::Task<void> {
@@ -727,11 +753,17 @@ TEST_F(TaskTest, CoAwaitNothrowDestructorOrdering) {
   int i = 0;
   folly::coro::blockingWait(co_awaitTry([&]() -> folly::coro::Task<> {
     co_await folly::coro::co_nothrow([&]() -> folly::coro::Task<> {
-      SCOPE_EXIT { i *= i; };
+      SCOPE_EXIT {
+        i *= i;
+      };
       co_await folly::coro::co_nothrow([&]() -> folly::coro::Task<> {
-        SCOPE_EXIT { i *= 3; };
+        SCOPE_EXIT {
+          i *= 3;
+        };
         co_await folly::coro::co_nothrow([&]() -> folly::coro::Task<> {
-          SCOPE_EXIT { i += 1; };
+          SCOPE_EXIT {
+            i += 1;
+          };
           co_return;
         }());
       }());
@@ -751,7 +783,9 @@ TEST_F(TaskTest, CoYieldCoErrorSameExecutor) {
     auto eb = dynamic_cast<folly::EventBase*>(
         co_await folly::coro::co_current_executor);
     CHECK(eb);
-    SCOPE_EXIT { CHECK(eb->inRunningEventBaseThread()); };
+    SCOPE_EXIT {
+      CHECK(eb->inRunningEventBaseThread());
+    };
     co_yield folly::coro::co_error(ExpectedException());
   };
   auto scopeAndThrowWrapper = [&]() -> folly::coro::Task<void> {

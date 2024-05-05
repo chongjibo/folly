@@ -46,6 +46,7 @@
 #include <folly/lang/CheckedMath.h>
 #include <folly/lang/Exception.h>
 #include <folly/memory/Malloc.h>
+#include <folly/memory/SanitizeLeak.h>
 #include <folly/portability/Malloc.h>
 
 #if (FOLLY_X64 || FOLLY_PPC64 || FOLLY_AARCH64 || FOLLY_RISCV64)
@@ -679,8 +680,8 @@ class small_vector
    * of in-place vs. heap between this and o.
    */
   void swap(small_vector& o) noexcept(
-      std::is_nothrow_move_constructible<Value>::value&&
-          std::is_nothrow_swappable_v<Value>) {
+      std::is_nothrow_move_constructible<Value>::value &&
+      std::is_nothrow_swappable_v<Value>) {
     using std::swap; // Allow ADL on swap for our value_type.
 
     if (this->isExtern() && o.isExtern()) {
@@ -1043,11 +1044,14 @@ class small_vector
   void moveInlineStorageRelocatable(small_vector&& o) {
     static_assert(IsRelocatable<Value>::value);
     const auto n = o.size();
+    FOLLY_PUSH_WARNING
+    FOLLY_GCC_DISABLE_WARNING("-Wclass-memaccess")
     if constexpr (kMayCopyWholeInlineStorage) {
       std::memcpy(u.buffer(), o.u.buffer(), MaxInline * kSizeOfValue);
     } else {
       std::memcpy(u.buffer(), o.u.buffer(), n * kSizeOfValue);
     }
+    FOLLY_POP_WARNING
     this->setSize(n);
     o.resetSizePolicy();
   }
@@ -1171,8 +1175,7 @@ class small_vector
     if (newSize <= capacity()) {
       return;
     }
-    makeSizeInternal(
-        newSize, false, [](void*) { assume_unreachable(); }, 0);
+    makeSizeInternal(newSize, false, [](void*) { assume_unreachable(); }, 0);
   }
 
   template <typename EmplaceFunc>
@@ -1260,6 +1263,7 @@ class small_vector
       }
       rollback.dismiss();
     }
+    annotate_object_leaked(newh);
     std::destroy(begin(), end());
     freeHeap();
     // Store shifted pointer if capacity is heapified
@@ -1383,9 +1387,12 @@ class small_vector
     if (hasCapacity()) {
       auto extraBytes = u.pdata_.allocationExtraBytes();
       auto vp = detail::unshiftPointer(u.pdata_.heap_, extraBytes);
+      annotate_object_collected(vp);
       sizedFree(vp, u.getCapacity() * sizeof(value_type) + extraBytes);
     } else {
-      free(u.pdata_.heap_);
+      auto vp = u.pdata_.heap_;
+      annotate_object_collected(vp);
+      free(vp);
     }
   }
 

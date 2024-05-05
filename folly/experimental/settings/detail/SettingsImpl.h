@@ -24,6 +24,7 @@
 
 #include <folly/Conv.h>
 #include <folly/Function.h>
+#include <folly/Optional.h>
 #include <folly/Range.h>
 #include <folly/SharedMutex.h>
 #include <folly/ThreadLocal.h>
@@ -450,7 +451,7 @@ class SettingCore : public SettingCoreBase {
             getKey(), *settingVersion_, BoxedValue(*globalValue_));
       }
       globalValue_ = std::make_shared<Contents>(reason.str(), t);
-      if (IsSmallPOD<T>::value) {
+      if constexpr (IsSmallPOD<T>::value) {
         uint64_t v = 0;
         std::memcpy(&v, &t, sizeof(T));
         trivialStorage_.store(v);

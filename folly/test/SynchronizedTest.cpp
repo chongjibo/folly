@@ -680,8 +680,7 @@ void testTryLock(Func func) {
     folly::Synchronized<int, TryLockable<kLockable>> synchronized{
         std::piecewise_construct,
         std::make_tuple(),
-        std::make_tuple(
-            true, [&] { ++locked; }, [&] { ++unlocked; })};
+        std::make_tuple(true, [&] { ++locked; }, [&] { ++unlocked; })};
 
     {
       auto lock = func(synchronized);
@@ -697,8 +696,7 @@ void testTryLock(Func func) {
     folly::Synchronized<int, TryLockable<kLockable>> synchronized{
         std::piecewise_construct,
         std::make_tuple(),
-        std::make_tuple(
-            false, [&] { ++locked; }, [&] { ++unlocked; })};
+        std::make_tuple(false, [&] { ++locked; }, [&] { ++unlocked; })};
 
     {
       auto lock = func(synchronized);
@@ -712,7 +710,6 @@ void testTryLock(Func func) {
 
 class MutexTrack {
  public:
-  static int gId;
   static int gOrder;
 
   void lock_shared() {}
@@ -723,10 +720,8 @@ class MutexTrack {
     --gOrder;
   }
 
-  int current{gId++};
   int order{-1};
 };
-int MutexTrack::gId{0};
 int MutexTrack::gOrder{0};
 } // namespace
 
